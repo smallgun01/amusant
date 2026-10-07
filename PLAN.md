@@ -37,7 +37,7 @@
 | 次序 | 階段 | 粗估 | 交付與通過條件 |
 |---|---|---:|---|
 | P0 | Foundation | 已完成 | SPEC/PLAN/STATUS 權責、Amusant scope、Kai upstream baseline 與 private repo 已定；本次 spec reconciliation 完成後視為關閉。 |
-| P1 | kai-sim software smoke | 3–5 工作日 | LAN 主機列舉麥克風／喇叭並以 Kai kai-sim 連到 private host mock probe，完成 PTT PCM 收音、文字卡片及 tone/echo 播放。無需 M5、Live provider、OpenClaw 或 AWS。此 probe 是測試工具，不是完整 Kai relay／正式 Amusant Relay；4 個單元測試與 private host 本機合成 smoke 通過，真實 kai-sim client 尚待測。 |
+| P1 | kai-sim software smoke | 3–5 工作日 | LAN 主機列舉麥克風／喇叭並以 Kai kai-sim 連到 private host mock probe，完成 PTT PCM 收音、文字卡片及 tone/echo 播放。無需 M5、Live provider、OpenClaw 或 AWS。此 probe 是測試工具，不是完整 Kai relay／正式 Amusant Relay；4 個單元測試、真實跨 LAN 音訊閉環與一次重連 smoke PASS。使用者回報 release-to-first-audio 及重連均 <1 s（手動估計、樣本數未記）；正式 p50/p95 latency 留待 P4。 |
 | P2 | Fast voice | 1–2 工程週 | Gemini Live baseline、使用者手動切換與 adapter contract 通過。第二 Live provider 可選，只作 abstraction validation。 |
 | P3 | OpenClaw slow lane | 1–2 工程週 | Home Bridge、受限 agent/tool access、task_id、明確接受／完成／失敗、去重與重連測試通過。 |
 | P4 | Software integration/acceptance | 約 1 工程週 | 完成 Relay/Home Bridge 整合、latency/routing/privacy/failure evaluation。AWS staging 預算與安全設定另行核准。 |

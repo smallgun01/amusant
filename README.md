@@ -23,4 +23,4 @@ Amusant respects [zbruceli/kai](https://github.com/zbruceli/kai) as the source f
 
 ## Current stage
 
-P0 Foundation is complete. The local P1 mock probe is running; the remaining smoke test is Kai-sim from a LAN computer with audio devices (OS to be confirmed). The probe is not a full Kai or production Amusant Relay. Hardware remains gated on software acceptance.
+P0 Foundation is complete. The P1 mock smoke passed: cross-LAN Kai-sim captured and played audio, and one reconnect succeeded. The user-reported manual release-to-first-audio and reconnect times were under 1 s; sample count and timing precision were not recorded. This mock does not test speech understanding or Live. Formal latency evaluation remains in P4; hardware remains gated on software acceptance.
