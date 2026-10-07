@@ -1,0 +1,66 @@
+# Project Amusant — Execution Plan
+
+> 更新：2026-10-07
+> GitHub：Private repository; remote is configured locally.
+> 本機目錄：projects/amusant
+
+## 文件權責
+
+- SPEC.md：唯一需求與驗收規格來源。
+- PLAN.md：執行順序、里程碑與估時，不重新定義需求。
+- STATUS.md：經證據確認的目前狀態。
+- SPEC-P0-DELTA.md：P0 歷史決策紀錄，非規格來源。
+
+## 專案邊界
+
+- Amusant 是獨立維護的單一 monorepo，尊重 zbruceli/kai 的架構、kai-sim 協定與後續硬體韌體上游。
+- 第一階段只做語音輸入與語音／文字回覆；沒有位置、感測器或實體控制。
+- 快語音 provider 由使用者手動選擇；Gemini Live 是首個 baseline。第二個真實 Live provider 是 optional validation，不是 MVP gate。
+- 慢任務第一階段使用 OpenClaw agent；其他後端延後。
+- 先通過軟體 gate，再進入硬體 UX gate；M5StickS3 是候選，不是專案本身。
+
+## P0 / H0 命名
+
+- **P0 — Foundation**：repo、上游、文件權責與範圍定義；已完成。
+- **H0 — Hardware UX Gate**：軟體驗收後，決定專用硬體是否值得繼續；取代原規格中會與 P0 衝突的硬體「Phase 0」名稱。
+
+## Upstream 與 repo
+
+- Kai baseline：v0.12.0，commit 1681fb3c11acd28525d8987bba4b9bf4bc2a288f；LICENSE 為 MIT，重用程式碼需保留授權與著作權聲明。
+- Amusant repo：private monorepo；初始文件與 P0 reconciliation 已提交至 main。Kai firmware 不在本 repo 中；本計畫不修改上游 Kai。
+- P1 音訊客戶端：同一 LAN 上的主機跑 Kai kai-sim；作業系統待確認。另一個私有網路端點跑 Amusant mock probe。
+
+## 相對排程
+
+估算為單一開發者主動工程時間，不含等待外部帳號、網路或硬體；目前約 4–7 工程週。日曆日期待每週投入時間確認後再排。
+
+| 次序 | 階段 | 粗估 | 交付與通過條件 |
+|---|---|---:|---|
+| P0 | Foundation | 已完成 | SPEC/PLAN/STATUS 權責、Amusant scope、Kai upstream baseline 與 private repo 已定；本次 spec reconciliation 完成後視為關閉。 |
+| P1 | kai-sim software smoke | 3–5 工作日 | LAN 主機列舉麥克風／喇叭並以 Kai kai-sim 連到 private host mock probe，完成 PTT PCM 收音、文字卡片及 tone/echo 播放。無需 M5、Live provider、OpenClaw 或 AWS。此 probe 是測試工具，不是完整 Kai relay／正式 Amusant Relay；4 個單元測試與 private host 本機合成 smoke 通過，真實 kai-sim client 尚待測。 |
+| P2 | Fast voice | 1–2 工程週 | Gemini Live baseline、使用者手動切換與 adapter contract 通過。第二 Live provider 可選，只作 abstraction validation。 |
+| P3 | OpenClaw slow lane | 1–2 工程週 | Home Bridge、受限 agent/tool access、task_id、明確接受／完成／失敗、去重與重連測試通過。 |
+| P4 | Software integration/acceptance | 約 1 工程週 | 完成 Relay/Home Bridge 整合、latency/routing/privacy/failure evaluation。AWS staging 預算與安全設定另行核准。 |
+| H0 | Hardware UX Gate | P4 後估算 | 比較專用裝置與最佳化手機流程；只有明顯降低摩擦才繼續。 |
+| H1 | Hardware integration | H0 通過後估算 | 使用 Kai-derived M5StickS3 firmware 驗證裝置音訊、PTT、網路與可靠性；不修改 Kai 上游，除非另行核准。 |
+
+## P1 連線方案
+
+- Kai-sim client 與 mock probe 使用同一個可信 LAN；測試時再確認主機位址與作業系統。
+- Mock 僅綁明確指定的私有 LAN 位址；不新增防火牆規則、不做 port-forward、不公開 Gateway。
+- P1 不使用跨網路 tunnel；若未來需要外網存取，另行評估核准的私有連線或雲端架構。
+
+## P1 exit criteria
+
+- LAN 主機上的 Kai simulator 使用 sounddevice 找到麥克風／喇叭；實際 Kai-sim client 的音訊與連線結果有可保存證據。
+- PTT start/end 與 Kai WebSocket wire protocol 對接成功。
+- private host mock probe 回傳文字卡片、字幕、tone/echo PCM；不含外部模型、OpenClaw action、AWS、hardware 或 provider credentials。以實際 kai-sim 跨主機執行結果作為 P1 runtime 證據；synthetic test 不代替此 gate。
+- Kai 協定 source-level 比對以 pinned commit 1681fb3c11acd28525d8987bba4b9bf4bc2a288f 為基準；不因協定子集測通就宣稱完整相容。
+- 測試不保存原始音訊；錯誤／斷線可觀察且不洩漏憑證。
+
+## 安全與治理 gates
+
+- OpenClaw Chat Completions bearer token 屬高權限；P3 前必須定出 least-privilege / isolated agent 與 server-side allowlist。
+- Background acceptance/result/retry/dedup/reconnect semantics 在 P3 前定義清楚。
+- 任何 AWS 費用、硬體購買、私有主機設定變更或 Kai 上游改動，另行核准後才執行。
+- 目前此排程是專案里程碑，非 cron/提醒。
