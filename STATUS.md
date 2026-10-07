@@ -45,4 +45,4 @@
 ## Privacy de-identification
 
 - Current Markdown generalizes user-specific examples, account identifiers, exact private host/IP details, and work/network context while preserving project requirements.
-- Existing Git history has not been rewritten; prior commit versions remain in repository history.
+- Published main history now starts from a de-identified root snapshot; earlier commits are no longer in its ancestry. GitHub caches and existing clones may still retain old versions.
