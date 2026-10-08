@@ -1,13 +1,13 @@
 # Project Amusant — Status
 
-> 最後更新：2026-10-08
+> 最後更新：2026-10-09
 > 規格權威：SPEC.md
 > 執行計畫：PLAN.md
 > Repo：Private repository; remote is configured locally.
 
 ## 目前狀態
 
-**P0 — Foundation：完成。P1 — Kai-sim mock 音訊 smoke：PASS。P2 — Fast Voice：進行中**（Gemini adapter、Kai PTT bridge harness 已實作；24 個 root 離線測試與 4 個 P1 relay tests PASS。Gemini Live text-to-speech smoke PASS：轉錄 `Ready.`、非取消 turn_complete、48,000 bytes 24 kHz PCM。真實 Kai-sim mic/PTT → Live → speaker 尚未測）。P1 的 release-to-first-audio 與重連由使用者手動估計均 <1 s，非正式統計；未整合 OpenClaw slow lane、AWS deployment 或硬體。
+**P0 — Foundation：完成。P1 — Kai-sim mock 音訊 smoke：PASS。P2 — Fast Voice：PASS（2026-10-09 runtime gate）**：25 個 root 離線測試、4 個 P1 relay tests PASS；Gemini Live TTS smoke PASS；真實 Kai-sim PTT→Live→speaker 完成一回合，input 152,576 bytes、turn_complete、output 92,642 bytes（約 1.93 秒 24 kHz PCM），使用者確認完整聽到語音。P2 不含 OpenClaw slow lane、AWS deployment 或硬體；下一階段 P3。
 
 ## 已確認決策
 
@@ -29,9 +29,14 @@
 - 實際驗證（2026-10-08，使用者核准上限 US$0.50）：從 AWS Secrets Manager 讀取指定 JSON 欄位至程序記憶體，未輸出或保存 key。Models list API 成功認證，首頁列出 62 個 models，包含 Kai baseline `gemini-3.8-live`；這證明 key 可呼叫 metadata endpoint，不代表 Live 權限。
 - 前兩次（top-up 前）Live handshakes 在 session 前失敗；一次觀察到 SDK `APIError`／WebSocket close code `1011`。Models list key authentication 通過，但無 request ID 對應後台 429。
 - 儲值後第一次 cap-32 text turn 只回 2 bytes，屬無效 audio output；隨後 cap-64 驗收回合 transcript `Ready.`、turn_complete 非取消、48,000 bytes 24 kHz PCM（約 1 秒），符合 text-to-speech smoke 門檻。帳單未獨立查證。
-- `relay/live_bridge.py` 將 Kai `/ws` Bearer auth、PTT start/end、16 kHz PCM input、Gemini provider 與 caption/24 kHz PCM/turn_complete 接起；300 ms tap filter、1 MB RAM utterance cap、private/loopback bind、不落盤。25 root tests PASS（含 fake-provider bridge/overflow tests）；另 4 個 P1 relay tests PASS。真實 Kai-sim mic/PTT runtime 仍 pending。
+- `relay/live_bridge.py` 將 Kai `/ws` Bearer auth、PTT start/end、16 kHz PCM input、Gemini provider 與 caption/24 kHz PCM/turn_complete 接起；300 ms tap filter、1 MB RAM utterance cap、private/loopback bind、不落盤。25 root tests PASS（含 fake-provider bridge/overflow tests）；另 4 個 P1 relay tests PASS。真實 Kai-sim mic/PTT runtime cap-128 turn 已通過一次；cap-64 早期回合截斷，詳見以下逐回合記錄。
 - 後續一次明確驗收（output cap 64，單一文字 prompt `Say exactly the single word READY, in a natural speaking voice, and nothing else.`）：Live session 建立成功；output transcript `Ready.`（SDK 標為非 final），turn_complete 非取消，收到 24 kHz PCM16LE 48,000 bytes（約 1 秒）。依預先訂門檻 transcript contains READY + turn complete + audio >=12,000 bytes，**text-to-speech smoke PASS**。沒有保存音訊或測真實麥克風輸入；實際費用未獨立查證。因 cap 32 與 64 的測試是在 top-up 前後不同時間，不能單獨判定成功是儲值或 token cap 所致。
-- 新增 `relay/live_bridge.py`：Kai `/ws` + Bearer token、16 kHz PCM16LE PTT input、300 ms tap filter、RAM-only buffer、Gemini Live adapter、回傳 caption/24 kHz PCM/turn_complete；只允許 loopback/private bind，server tests 使用 fake provider。實際 Kai-sim laptop 測試仍待進行。
+- 新增 `relay/live_bridge.py`：Kai `/ws` + Bearer token、16 kHz PCM16LE PTT input、300 ms tap filter、RAM-only buffer、Gemini Live adapter、回傳 caption/24 kHz PCM/turn_complete；只允許 loopback/private bind，server tests 使用 fake provider。真實 Kai-sim PTT→Live 已有 partial runtime result；完整播放驗收未通過，見 2026-10-09 記錄。
+- 2026-10-09 N100 本機預檢：repo 在 `4ad414a`；`uv 0.11.25`、`google-genai 2.29.0`、`websockets 16.1.1` 可用；8765/TCP 未監聽。未啟動 bridge、未讀取 API secret、未呼叫 Gemini。依使用者 01:08 更正，Kai-sim Windows 端依賴已於昨日安裝，當時測試已成功；不需重裝或重跑 setup。筆電最後回報於 00:09 關機；仍待開機後做真正 PTT → Gemini Live → speaker E2E。
+- 2026-10-09 真實 PTT 嘗試：Kai-sim 成功連上 private bridge；使用者回報語音問 `1+1` 後 client 顯示 `1 加 1 等於 2`，但未聽到語音。這是 PTT 路徑得到文字模型回覆的使用者回報；server 沒留下 `turn_complete` 或音訊 byte log，因 bridge 在回合完成前被停止，無法判定音訊未產生或被中斷。停止後確認 8765 關閉。SDK 警告 `GOOGLE_API_KEY` 與 `GEMINI_API_KEY` 同時存在；已查 SDK 2.29.0 source 並用 dummy values 離線測試：Amusant 明確傳入 `api_key` 時此參數優先，警告本身不證明實際用了 ambient key。API key 來源為本次 Secrets Manager 注入；Google account/billing 未獨立查證。單次 Live 嘗試已用，不重試；沒有保存音訊。
+- 2026-10-09 第二次明確授權的真實 Kai-sim PTT→Live 回合：process log 記錄 client 連線、`turn_complete`、input 146,432 bytes、output 23,520 bytes；依 mono 24 kHz PCM16LE 約 0.49 秒音訊。使用者回報字幕 `[done] 2加2等于4`，喇叭只播到 `2...` 後截斷。故真實 PTT/input→模型文字與短音訊有 runtime evidence，但完整可聽語音回覆未通過。橋接已停止且 8765 確認關閉；沒有保存音訊。執行時已 unset ambient `GOOGLE_API_KEY`，以 Secrets Manager key 作 explicit client api_key；之前環境警告不再出現。Gemini 帳單未獨立查證。此為新授權的單次請求，不能自動再試。
+- 2026-10-09 第三次明確授權的 cap-128 Live 回合：Kai-sim 以語音問 `3+3`；client 字幕 `[done] 3 + 3 等于 6`，使用者確認完整聽到語音。process log 記錄 client 連線、`turn_complete`、input 152,576 bytes、output 92,642 bytes（約 1.93 秒 24 kHz PCM16LE）。相較 cap-64 的 23,520 bytes／0.49 秒，**cap-128 這次完整語音 E2E PASS**；但因輸入語句和模型抽樣有差異，不宣稱已單獨證明 cap-64 是截斷唯一根因。無原始音訊／逐字稿落盤，Gemini 帳單未獨立核對。使用者於 02:17 確認 Kai-sim client 已退出並要求關閉 bridge；程序已停止，8765/TCP 已驗證無 listener。
+- 音訊截斷離線分析（無新 Live request）：Amusant bridge 對每個 SDK audio callback 分塊送出 PCM，之後才送 `turn_complete`；Pinned Kai v0.12.0 [`sim_device.py`](https://github.com/zbruceli/kai/blob/1681fb3c11acd28525d8987bba4b9bf4bc2a288f/relay/kai_relay/sim_device.py) 對每個 binary frame 呼叫 `Speaker.feed()`，`turn_complete` 只印 `[done]`、不清空播放 buffer。P1 實體 speaker tone/echo 曾通過；本次 bridge 確認只送出 23,520 bytes（約 0.49 秒），故證據較支持 Live/adapter 端提供的音訊 payload 本身短，而非 client 在 turn_complete 主動截斷；精確成因（模型輸出、64-token cap 或 stream handling）仍未確證。未經新授權不再呼叫 Live。
 - 官方 source review：Google Live 文件確認 server-to-server `google-genai` WSS、16 kHz little-endian PCM input、24 kHz PCM output、text/audio `send_realtime_input`、`receive()` audio parts，以及 PTT 可停用 VAD 並送 activity start/end；Kai `main` 與 pinned v0.12.0 使用相同 model/session/audio/PTT 模式，依賴 `google-genai>=2.0`。Amusant source-level flow/config 與官方/Kai 參照一致；這項 source review 本身不是 runtime evidence，實際文字轉語音 smoke 結果另列於上。已安裝 SDK 2.29.0 的 `AsyncLive.connect` 直接執行單次 `ws_connect`，無內建 retry loop。Google troubleshooting 將 429 RESOURCE_EXHAUSTED/503 視為可退避錯誤；402/403 類 client errors 才可能指向 prepaid credit/auth/config 問題。後台兩筆 429 與我們兩次嘗試時間吻合，但缺 request ID/timestamps 無法確證逐筆對應；第二次 client-side 觀察值是 WebSocket 1011。
 
 ## P1 — local mock probe

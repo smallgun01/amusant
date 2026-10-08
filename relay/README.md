@@ -38,11 +38,12 @@ The test server binds to a private IP or loopback only, requires Authorization b
 
 `live_bridge.py` is separate from the no-model P1 mock. It accepts the Kai-sim `/ws` protocol with a bearer token, buffers the current PTT utterance in RAM, and forwards mono PCM16LE 16 kHz audio to the selected `LiveProvider`. It returns output captions, chunked mono PCM16LE 24 kHz audio, and `turn_complete`. A Live session is opened only after at least 300 ms of PTT audio; short taps do not create a Live session. The server binds only to loopback or an explicit private LAN IP. Audio and transcripts are not persisted.
 
-Run from the Amusant repository root on the private host. Inject the API key into the process environment from the approved Secrets Manager flow; never paste it into this file or shell command history. `AMUSANT_DEVICE_TOKEN` must match the Kai-sim client's `KAI_DEVICE_TOKEN`.
+Run from the Amusant repository root on the private host. Inject the API key into the process environment from the approved Secrets Manager flow; never paste it into this file or shell command history. `AMUSANT_DEVICE_TOKEN` must match the Kai-sim client's `KAI_DEVICE_TOKEN`. The installed SDK warns if both `GOOGLE_API_KEY` and `GEMINI_API_KEY` are present; its explicit `api_key` argument takes precedence, but unset ambient `GOOGLE_API_KEY` in this dedicated bridge process to keep selection unambiguous.
 
 ~~~bash
 read -rp 'Private LAN IP (or 127.0.0.1): ' RELAY_LAN_IP
 read -rsp 'One-time device test token: ' AMUSANT_DEVICE_TOKEN; echo
+unset GOOGLE_API_KEY
 export AMUSANT_LIVE_PROVIDER=gemini
 export AMUSANT_DEVICE_TOKEN
 # GEMINI_API_KEY must be injected securely by the local secret-loading process
