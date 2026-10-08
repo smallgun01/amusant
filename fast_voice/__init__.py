@@ -10,6 +10,7 @@ from .contracts import (
     TranscriptEvent,
     TurnCompleteEvent,
 )
+from .factory import ProviderConfigurationError, build_live_provider
 from .gemini import GeminiLiveProvider
 from .selection import ProviderSelectionError, select_live_provider
 
@@ -18,11 +19,13 @@ __all__ = [
     "GeminiLiveProvider",
     "LiveProvider",
     "ProviderCapabilities",
+    "ProviderConfigurationError",
     "ProviderError",
     "ProviderSelectionError",
     "ResponseInterruptedEvent",
     "ToolCallEvent",
     "TranscriptEvent",
     "TurnCompleteEvent",
+    "build_live_provider",
     "select_live_provider",
 ]

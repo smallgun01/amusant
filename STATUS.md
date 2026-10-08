@@ -7,7 +7,7 @@
 
 ## 目前狀態
 
-**P0 — Foundation：完成。P1 — Kai-sim mock 音訊 smoke：PASS。P2 — Fast Voice：進行中**（Gemini adapter scaffold 與 provider contract 已完成第一輪離線測試；google-genai SDK 型別相容檢查通過，Live session/runtime 尚未驗證）。P1 的 release-to-first-audio 與重連由使用者手動估計均 <1 s，非正式統計；尚未接真實 Gemini Live、OpenClaw、AWS 或硬體。
+**P0 — Foundation：完成。P1 — Kai-sim mock 音訊 smoke：PASS。P2 — Fast Voice：進行中**（Gemini adapter、Kai PTT bridge harness 已實作；24 個 root 離線測試與 4 個 P1 relay tests PASS。Gemini Live text-to-speech smoke PASS：轉錄 `Ready.`、非取消 turn_complete、48,000 bytes 24 kHz PCM。真實 Kai-sim mic/PTT → Live → speaker 尚未測）。P1 的 release-to-first-audio 與重連由使用者手動估計均 <1 s，非正式統計；未整合 OpenClaw slow lane、AWS deployment 或硬體。
 
 ## 已確認決策
 
@@ -21,12 +21,18 @@
 ## P2 — Fast Voice（進行中）
 
 - 已新增 `fast_voice/` provider-neutral `LiveProvider` Protocol、provider capability metadata、provider error metadata 與 fail-closed 的明確 provider selection。介面依 SPEC.md §17；不自動選擇／切換，也不做 fallback。
-- 已新增 `GeminiLiveProvider` scaffold，使用注入的 client/types 物件呼叫 `connect`、`send_realtime_input`、`receive` 與 `send_tool_response`；沒有全域 SDK import，方便離線測試。
+- 已新增 `GeminiLiveProvider` scaffold，使用注入的 client/types 物件呼叫 `connect`、`send_realtime_input`、`receive` 與 `send_tool_response`；另有 `build_live_provider()` 啟動接線，要求明確 `AMUSANT_LIVE_PROVIDER=gemini`，由執行環境注入 `GEMINI_API_KEY`。沒有自動 provider fallback。
 - Contract 定義 mono PCM16LE、Kai baseline 16 kHz input／24 kHz output、input/output partial/final transcript、tool call、interruption、turn complete 與 sanitized error events；callback 順序與 cancel 確認語意亦有定義。
 - Gemini scaffold 將 PTT barge-in 與 standalone cancellation 分開；基於 Kai source 的 activity-start 行為標示 barge-in，獨立 `cancel_response()` 目前 fail-closed（unsupported），不假稱可取消。
 - Amusant 根目錄新增 `pyproject.toml` 與 `uv.lock`：宣告 `google-genai>=2.0`，鎖定 `google-genai==2.29.0`。SDK 只安裝在 N100 的 repo-local `.venv`；全域 Python 與既有 `relay/.venv` 未改。執行前備份：`~/.openclaw/backups/amusant-before-google-genai-2026-10-08.tar.gz`（SHA-256 已核對）。
-- `uv run --locked python -m unittest discover -s fast_voice/tests -v`：14/14 PASS；包含 13 個 fake-session tests 與 1 個使用真實 SDK types、但以 fake session 測試的無網路相容檢查。系統 Python 無 SDK 時會略過該 1 項。
-- SDK type constructor 對接通過；**實際 `client.aio.live.connect` session 與 Gemini Live runtime 尚未驗證**。未讀取 API credential、未呼叫外部模型 API、未產生 API 費用。P2 尚需真實 Live smoke 與 UI/config wiring，須另行確認 credential 與費用預算。Google 官方 Live 文件 fetch redirect 失敗；目前參照 Kai v0.12.0 pinned relay 與公開 Python SDK source。
+- Root `uv run --locked python -m unittest discover -s fast_voice/tests -v`：25/25 PASS；含 fake-session、SDK config、PTT bridge fake-provider integration tests。另在 `relay/` 環境執行 P1 suite：4/4 PASS。Fake-provider bridge tests 不是 Kai-sim 實體麥克風或 Live runtime 證據。
+- 實際驗證（2026-10-08，使用者核准上限 US$0.50）：從 AWS Secrets Manager 讀取指定 JSON 欄位至程序記憶體，未輸出或保存 key。Models list API 成功認證，首頁列出 62 個 models，包含 Kai baseline `gemini-3.8-live`；這證明 key 可呼叫 metadata endpoint，不代表 Live 權限。
+- 前兩次（top-up 前）Live handshakes 在 session 前失敗；一次觀察到 SDK `APIError`／WebSocket close code `1011`。Models list key authentication 通過，但無 request ID 對應後台 429。
+- 儲值後第一次 cap-32 text turn 只回 2 bytes，屬無效 audio output；隨後 cap-64 驗收回合 transcript `Ready.`、turn_complete 非取消、48,000 bytes 24 kHz PCM（約 1 秒），符合 text-to-speech smoke 門檻。帳單未獨立查證。
+- `relay/live_bridge.py` 將 Kai `/ws` Bearer auth、PTT start/end、16 kHz PCM input、Gemini provider 與 caption/24 kHz PCM/turn_complete 接起；300 ms tap filter、1 MB RAM utterance cap、private/loopback bind、不落盤。25 root tests PASS（含 fake-provider bridge/overflow tests）；另 4 個 P1 relay tests PASS。真實 Kai-sim mic/PTT runtime 仍 pending。
+- 後續一次明確驗收（output cap 64，單一文字 prompt `Say exactly the single word READY, in a natural speaking voice, and nothing else.`）：Live session 建立成功；output transcript `Ready.`（SDK 標為非 final），turn_complete 非取消，收到 24 kHz PCM16LE 48,000 bytes（約 1 秒）。依預先訂門檻 transcript contains READY + turn complete + audio >=12,000 bytes，**text-to-speech smoke PASS**。沒有保存音訊或測真實麥克風輸入；實際費用未獨立查證。因 cap 32 與 64 的測試是在 top-up 前後不同時間，不能單獨判定成功是儲值或 token cap 所致。
+- 新增 `relay/live_bridge.py`：Kai `/ws` + Bearer token、16 kHz PCM16LE PTT input、300 ms tap filter、RAM-only buffer、Gemini Live adapter、回傳 caption/24 kHz PCM/turn_complete；只允許 loopback/private bind，server tests 使用 fake provider。實際 Kai-sim laptop 測試仍待進行。
+- 官方 source review：Google Live 文件確認 server-to-server `google-genai` WSS、16 kHz little-endian PCM input、24 kHz PCM output、text/audio `send_realtime_input`、`receive()` audio parts，以及 PTT 可停用 VAD 並送 activity start/end；Kai `main` 與 pinned v0.12.0 使用相同 model/session/audio/PTT 模式，依賴 `google-genai>=2.0`。Amusant source-level flow/config 與官方/Kai 參照一致；這項 source review 本身不是 runtime evidence，實際文字轉語音 smoke 結果另列於上。已安裝 SDK 2.29.0 的 `AsyncLive.connect` 直接執行單次 `ws_connect`，無內建 retry loop。Google troubleshooting 將 429 RESOURCE_EXHAUSTED/503 視為可退避錯誤；402/403 類 client errors 才可能指向 prepaid credit/auth/config 問題。後台兩筆 429 與我們兩次嘗試時間吻合，但缺 request ID/timestamps 無法確證逐筆對應；第二次 client-side 觀察值是 WebSocket 1011。
 
 ## P1 — local mock probe
 

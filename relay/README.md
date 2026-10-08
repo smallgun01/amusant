@@ -33,3 +33,29 @@ uv run kai-sim --host $relayHost --port 8765
 Press Enter to start PTT and press Enter again to send. Expected: a card/caption, a short tone, and a local audio echo. This checks audio/protocol transport only; it is not a Live-provider latency test.
 
 The test server binds to a private IP or loopback only, requires Authorization bearer token, caps each incoming WebSocket frame and the buffered utterance, and logs byte counts/timing only. It never writes audio to disk.
+
+## P2 Live bridge harness (local development only)
+
+`live_bridge.py` is separate from the no-model P1 mock. It accepts the Kai-sim `/ws` protocol with a bearer token, buffers the current PTT utterance in RAM, and forwards mono PCM16LE 16 kHz audio to the selected `LiveProvider`. It returns output captions, chunked mono PCM16LE 24 kHz audio, and `turn_complete`. A Live session is opened only after at least 300 ms of PTT audio; short taps do not create a Live session. The server binds only to loopback or an explicit private LAN IP. Audio and transcripts are not persisted.
+
+Run from the Amusant repository root on the private host. Inject the API key into the process environment from the approved Secrets Manager flow; never paste it into this file or shell command history. `AMUSANT_DEVICE_TOKEN` must match the Kai-sim client's `KAI_DEVICE_TOKEN`.
+
+~~~bash
+read -rp 'Private LAN IP (or 127.0.0.1): ' RELAY_LAN_IP
+read -rsp 'One-time device test token: ' AMUSANT_DEVICE_TOKEN; echo
+export AMUSANT_LIVE_PROVIDER=gemini
+export AMUSANT_DEVICE_TOKEN
+# GEMINI_API_KEY must be injected securely by the local secret-loading process
+uv run --locked python -m relay.live_bridge --host "$RELAY_LAN_IP" --port 8765
+unset AMUSANT_DEVICE_TOKEN AMUSANT_LIVE_PROVIDER RELAY_LAN_IP
+~~~
+
+On the Kai-sim laptop (same trusted LAN), use that same one-time token:
+
+~~~powershell
+$relayHost = Read-Host "Enter the bridge host's private LAN IP"
+$env:KAI_DEVICE_TOKEN = Read-Host "Enter the same one-time device test token"
+uv run kai-sim --host $relayHost --port 8765
+~~~
+
+This is a local PTT-to-Live test harness, not production relay deployment; do not expose it publicly or add firewall/port-forward rules. Fake-provider tests do not call Gemini; a real Kai-sim turn does incur provider usage and must stay within the separately approved budget.
