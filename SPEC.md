@@ -82,11 +82,11 @@ For complex work, Amusant acknowledges promptly, delegates the work to OpenClaw,
 
 # 2. Product Hypotheses
 
-The project tests two separate hypotheses.
+The project tests two separate hypotheses, with a replaceable backend as the software hypothesis.
 
 ## Hypothesis A — Software/backend
 
-A realtime Live voice model combined with OpenClaw can provide fast conversational interaction plus persistent agent capability without forcing every request through a slow agent pipeline. This hypothesis can be tested with kai-sim before hardware work.
+A realtime Live voice model combined with a restricted, replaceable slow agent can provide immediate conversation and reliable background work without forcing every request through a slow agent pipeline. This hypothesis can be tested with kai-sim before hardware work.
 
 ## Hypothesis B — Dedicated hardware
 
@@ -97,8 +97,8 @@ A dedicated physical Amusant device may provide lower interaction friction than 
 - Project: Amusant
 - Cloud voice gateway: Amusant Relay
 - Realtime conversational layer: Amusant Live
-- Home-side connector: Amusant Home Bridge
-- Persistent backend, first integration: OpenClaw
+- Slow-task coordinator: Amusant Task Manager and Result Inbox
+- First backend: OpenAB ACP agent
 - Development frontend: Kai kai-sim
 - First hardware candidate: Amusant Device based on M5StickS3
 - Upstream architecture and hardware firmware: Kai, repository zbruceli/kai
@@ -165,7 +165,7 @@ Do not implement in the initial MVP:
 
 # 8. Core Architecture Principle — Voice First
 
-The primary input is streaming audio. Do not put a custom audio → STT → classifier → LLM → TTS chain on the realtime critical path when the selected Live provider supports native realtime audio. The fast layer handles direct answers and bounded quick tools; long work is delegated to OpenClaw.
+The primary input is streaming audio. Do not put a custom audio → STT → classifier → LLM → TTS chain on the realtime critical path when the selected Live provider supports native realtime audio. The fast layer handles direct answers and bounded quick tools; long work uses the backend-neutral durable task boundary.
 
 # 9. Fast / Slow Architecture
 
@@ -189,17 +189,9 @@ The selected Live provider owns the immediate conversational experience and may 
 
 The user manually selects the fast provider. Amusant must not automatically choose or switch providers. Gemini Live is the required initial baseline. A second real Live provider is optional validation of the provider abstraction, not an MVP pass/fail gate.
 
-# 11. OpenClaw Responsibilities
+# 11. Slow Backend Responsibilities
 
-OpenClaw owns tasks requiring depth or persistence:
-
-- Persistent memory and personal history.
-- Multi-source research and comparison.
-- Browser/computer work and complex planning.
-- Agent orchestration, retries, long-running jobs, and persistent state.
-- External actions, scheduled tasks, and monitoring, subject to existing approval/safety policy.
-
-OpenClaw is not required for ordinary realtime conversation.
+Amusant owns the durable admission/Task Registry/Result Inbox and user/device authorization. A single restricted OpenAB ACP agent performs bounded slow text work. It is not a durable personal memory service. N100 OpenClaw integration, cross-agent memory, monitoring and unbounded actions are outside P3. See [ADR-0001](docs/adr/0001-openab-acp-slow-path.md).
 
 # 12. Frontend Independence
 
@@ -242,29 +234,17 @@ Hotspot usability is part of H0/H1: persistent-hotspot behavior, idle timeout, r
 # 15. Target Software Architecture
 
 ~~~text
-                         USER
-                           │ audio
-                           ▼
-                 Voice frontend
-                 MVP: Kai kai-sim
-                           │ WSS / audio
-                           ▼
-                 AWS Application LB
-                    TLS / WebSocket
-                           │
-                           ▼
-                   Amusant Relay
-                     │         │
-                 FAST│         │SLOW
-                     ▼         ▼
-            Amusant Live    Home Bridge on private host
-            selected user      outbound WSS
-            provider               │ local/private
-                                   ▼
-                             OpenClaw Gateway
+Kai-sim or M5 → Amusant Relay ↔ Gemini Live (FAST)
+                       │       delegate_task (SLOW)
+                       ▼
+                Durable Task Registry
+                       ▼
+                Worker → OpenAB /acp
+                       ▼
+                Result Inbox → notification / requested speech
 ~~~
 
-The Relay is the cloud-facing audio/provider endpoint. The Home Bridge initiates outbound WSS from private host; no home inbound port is required. Local/mock P1 testing may omit AWS. Public OpenClaw Gateway exposure is prohibited.
+P3 uses local SQLite and worker. P4 may deploy Relay, Worker and OpenAB as separate ECS services after authorization; there is no default N100 Home Bridge. The existing Kai /ws Fast Voice code remains the baseline.
 
 # 16. Amusant Relay
 
@@ -323,116 +303,51 @@ The UI/config selects the provider manually, for example `AMUSANT_LIVE_PROVIDER=
 
 # 18. Slow Delegation Tool
 
-The fast provider receives a bounded function definition:
-
-~~~json
-{
-  "name": "delegate_to_openclaw",
-  "description": "Delegate work that should not block the realtime conversation to the user's persistent OpenClaw backend.",
-  "parameters": {
-    "type": "object",
-    "properties": {
-      "task": {"type": "string"},
-      "preferred_agent": {"type": "string"},
-      "reason": {"type": "string"}
-    },
-    "required": ["task"]
-  }
-}
-~~~
-
-The default agent is selected by server-side configuration. An explicit request for another configured agent may select it only through a server-side allowlist. General orchestration stays inside OpenClaw where practical.
+Gemini Live registers one backend-neutral `delegate_task` function, with a bounded string `task` and optional enum `task_kind` (`research`, `compare`, `summarize`). No model-selected backend URL, arbitrary agent, tools, command or file path is allowed. Relay validates request/user/turn, persists task + dispatch intent, and returns the **same call ID** with `{"status":"accepted","task_id":"..."}` only after durable admission, or honest rejection/unavailability. It must **not** await OpenAB execution; blocking can only cover brief verified admission.
 
 # 19. Routing Policy
 
-The Live system prompt should state:
-
-~~~text
-Answer directly for ordinary conversation, simple explanation/reasoning, and questions you can answer confidently from current context.
-Use a bounded quick tool only when it settles the request inline.
-Delegate to OpenClaw for current external research, multi-source comparison, persistent memory/history, other agents, browser/computer work, long-running actions, scheduled/background/monitoring work, or complex planning.
-When delegating: call delegate_to_openclaw; do not claim completion; acknowledge briefly only after actual acceptance; do not block the realtime conversation while the task runs.
-Never say you are researching/checking/working unless the delegate call was made.
-~~~
-
-Prompt text is not the security boundary. The Relay/Home Bridge must enforce allowed agents/tools and approval rules.
+Direct normal conversation and small bounded tools through Gemini Live. Delegate only allowed background text/research tasks. Don't claim background work was started without a successful function call and durable acceptance. This first P3 backend does not imply cross-session personal memory, autonomous schedules, browser/computer control or side-effecting actions; prompts are not a substitute for runtime authorization.
 
 # 20. Slow Task UX
 
-Example: the user asks for current used-laptop prices and a comparison.
-
 ~~~text
-PTT release → Live selects SLOW → delegate_to_openclaw → Relay/Bridge confirms accepted → Live says a short acknowledgement.
-Meanwhile OpenClaw researches → result returns through Home Bridge and Relay → client speaks/displays the result.
+PTT → Gemini Live delegate_task → Relay durable accepted + task_id
+→ short spoken acknowledgement → Worker calls OpenAB ACP
+→ status/result persisted → Inbox notification/card on reconnect
+→ user-requested spoken summary in NEW tool-disabled Live turn
 ~~~
 
-Example: for a request to compare current used-laptop prices, Live calls the delegation function, waits for actual acceptance, then gives a short acknowledgement such as “好，我幫你仔細比一下。” OpenClaw researches in the background and the result is delivered later. The fast conversation must not wait for the full job. Acceptance must mean the task was actually recorded/accepted; eventual delivery and failure semantics must be explicit.
+`speak` (brief), `card` and `details_md` (bounded) results are normalized from untrusted ACP output. Do not return completion via the already-answered admission function-call ID.
 
-# 21. Amusant Home Bridge
+# 21. OpenAB ACP Worker
 
-Run amusant-home-bridge on the private host. It establishes an outbound persistent WSS connection:
+Worker uses native authenticated OpenAB `GET /acp` WebSocket with JSON-RPC: `initialize` → `session/new` (fixed `cwd`, no model-selected MCP servers) → `session/prompt`; text is received in `session/update` and success requires the correlated terminal prompt response. A pinned image compiled with `acp` support, `OPENAB_ACP_ENABLED=true`, bearer `OPENAB_ACP_AUTH_KEY` and narrowly permitted `acp_client` sender must pass P3.0 before tool implementation. Session resume is not durable memory replay. Research baseline timeout 180s; P3 attempt max 120s. `session/cancel` does not guarantee backend execution stops.
 
-~~~text
-private host Home Bridge → WSS → Amusant Relay
-~~~
+# 22. Durable Task Registry and Inbox
 
-Do not expose private host port 18789 or the OpenClaw Gateway to the public Internet. OpenClaw remains localhost/private. Home Bridge owns local authentication, agent/tool allowlists, task execution and result return.
+P3 local SQLite stores owner/turn/task ID, dedupe key, task status (`queued`, `running`, `completed`, `failed`, `expired`), leases/attempts and transactional dispatch intent. Independent delivery status survives disconnect and is used for retry-safe notifications. Execution is at-least-once; exactly-once side effects are not promised. P4 proposes DynamoDB conditional claims + SQS with outbox reconciliation. Agent result is `{"task_id":"...","status":"completed","result":{"speak":"...","card":"...","details_md":"..."}}`.
 
-# 22. Home Bridge Protocol
+# 23. Isolation and Security
 
-Proposed endpoint: wss://amusant.example.com/home-bridge. Message classes include authentication, task_start, task_ack, task_result, failure, ping, and pong. Examples:
-
-~~~json
-[
-  {"type":"auth","home_id":"home-001","token":"<redacted>"},
-  {"type":"task_start","task_id":"uuid","client_id":"client-001","agent":"default","task":"Compare ...","created_at":"ISO8601"},
-  {"type":"task_ack","task_id":"uuid"},
-  {"type":"task_result","task_id":"uuid","status":"completed","result":"..."},
-  {"type":"task_result","task_id":"uuid","status":"failed","error":"..."}
-]
-~~~
-
-Reconnect backoff target: 1, 2, 4, 8, 15, 30 seconds maximum. Define replay protection, rotation/revocation, idempotency, task TTL, accepted-vs-durable semantics, and result retention before implementation.
-
-# 23. OpenClaw Adapter
-
-Initial proposal: local OpenAI-compatible endpoint http://127.0.0.1:18789/v1/chat/completions. Agent target example: openclaw/<configured-default-agent>; other agents are selected from a server-side allowlist. Stable session identity candidate: amusant:<client_id>, refined per conversation/device before implementation; use the supported stable user/session routing field and avoid sharing history unintentionally across devices/conversations.
-
-Security gate: the Chat Completions endpoint is disabled by default and a shared bearer token is broad Gateway/operator access, not a narrow per-agent credential. If used, keep the credential on private host only and do not send it to AWS/device. Before P3, prove a least-privilege boundary, an isolated/restricted agent or supported identity-aware proxy scopes, server-side allowlists, and confirmation for external actions. Verify session behavior and long-task cancellation/recovery. Native Gateway RPC may be evaluated later.
+Do not connect to the main N100 OpenClaw or expose ACP publicly. OpenAB must run restricted tools/filesystem/network, separate credentials, and no access to the Amusant task database/SQS or home assets. P4 Relay/Worker/OpenAB require different ECS tasks and IAM roles, not privileged sidecars. Agent output is untrusted and speech replay disables Live tools. No raw audio persistence; keep bounded task-data retention. See [ADR-0001](docs/adr/0001-openab-acp-slow-path.md).
 
 # 24. Credentials and Data
 
 - AWS uses ECS task roles/execution roles; do not embed static AWS credentials in source, .env examples, or images.
-- Live-provider credentials belong in AWS Secrets Manager if cloud deployment is approved, e.g. amusant/prod/gemini.
-- Home Bridge credentials belong in protected private-host configuration under a non-identifying home id, and must be revocable/rotatable.
-- OpenClaw Gateway credentials remain only on private host.
+- Live-provider credentials belong in AWS Secrets Manager if cloud deployment is approved.
+- ACP transport and agent provider credentials must be distinct from device/Relay credentials, revocable and injected securely.
+- No main N100 OpenClaw Gateway credentials are used in P3.
 - Simulator may start with one test credential. Future devices use unique device_id and revocable device secret/nonce/HMAC; never put Live provider credentials in firmware.
 - Do not log raw audio. Transcript/task/result retention and deletion policy must be defined; provider data handling must be checked.
 
 # 25. AWS Infrastructure
 
-Proposed: ECR, ECS Fargate, Application Load Balancer, ACM, CloudWatch Logs, Secrets Manager, IAM; Route53 is optional. Initial deployment region is configurable and selected during the approved cost/security review. Support WSS keepalive and suitable ALB idle timeout. No cloud resource creation or spend is authorized by this spec alone.
+P3 is local-only and must not incur unapproved AWS costs. P4 proposes ALB/ACM WSS to Relay ECS, independently permissioned Worker ECS and private authenticated/TLS OpenAB ECS, DynamoDB/SQS with outbox, IAM, Secrets Manager, CloudWatch, and configurable AWS region; deployment requires separate budget/security approval.
 
 # 26. Repository Structure
 
-One independent Amusant monorepo for the software MVP; defer splitting services until there is a concrete release/ownership need. Proposed layout:
-
-~~~text
-amusant/
-├── README.md
-├── SPEC.md
-├── PLAN.md
-├── STATUS.md
-├── relay/
-│   └── amusant_relay/
-├── home_bridge/
-│   └── amusant_home_bridge/
-├── infra/aws/
-├── tests/
-└── docs/
-~~~
-
-Kai firmware remains upstream and is not copied into this repository initially. If source is reused later, preserve MIT notices and pin the upstream commit. Prefer upstream PRs or small tracked patches for hardware changes.
+Keep Kai protocol/P1/P2 `relay/` and `fast_voice/` intact. Proposed P3 additions under `slow/` for durable admission, worker, OpenAB ACP adapter and result Inbox; these modules are **not yet implemented**. See [ADR-0001](docs/adr/0001-openab-acp-slow-path.md).
 
 # 27. Observability
 
@@ -477,35 +392,24 @@ Record expected_route, actual_route, tool_called, latency. Original v0.2 target 
 
 # 30. Failure Handling
 
-- Live unavailable: return a short error; do not silently send ordinary conversation through OpenClaw.
-- Home Bridge unavailable: return unavailable; explain the persistent backend is unavailable.
-- OpenClaw failure: return failure through the normal background-task result path.
-- Fargate restart: clients and Home Bridge reconnect; recovery follows the chosen task persistence semantics; do not depend on container-local state.
-- Auth, quota, malformed frames, oversized messages, provider timeout, cancellation, and partial output must fail safely and be observable without exposing credentials/audio.
+Reject unauthorized/malformed/stale/oversized slow tool calls; do not falsely acknowledge a failed admission. Failed task storage returns unavailable. Worker crash/leases and queued dispatch are recoverable; OpenAB unavailable/overload/timeouts produce bounded retry or honest failed/expired status. Provider cancellation must never be reported as confirmed stopped work. Live/device disconnect does not erase results; deliver them from Inbox on reconnect.
 
 # 31. Testing
 
-Unit tests: LiveProvider abstraction; provider selection; slow delegation; task registry/idempotency; Home Bridge authentication/reconnect; OpenClaw adapter; failure propagation.
-
-Integration:
-
-~~~text
-FAST → Live/mock provider → no OpenClaw task
-SLOW → delegate → accepted acknowledgement → OpenClaw task → async result
-~~~
-
-End-to-end: kai-sim → Amusant Relay → Gemini Live → audio response; and kai-sim → Relay → Home Bridge → OpenClaw → async text/voice result. P1 begins with a mock provider; it does not prove live-provider or production readiness.
+Keep the existing P1/P2 regression suite green. Add mock tests for FAST without slow calls, same Gemini function call ID, malformed/unauthorized admission, durable acceptance and idempotent duplicate calls, SQLite crash/restart/worker lease recovery, ACP success/error/timeout and permission restrictions, offline Inbox, and tool-disabled spoken delivery. Real API calls and AWS staging require separate approval.
 
 # 32. Implementation Phases
 
-P0 Foundation is the project/repository/requirements baseline and is complete only when the canonical SPEC and document roles are aligned.
+- P0/P1/P2: complete, unchanged.
+- **P3.0:** pinned OpenAB ACP feature/auth/model-credential smoke, restricted agent.
+- **P3.1 (#1):** `delegate_task` durable admission + same-call-ID Gemini response, fake backend.
+- **P3.2:** SQLite Task Registry + dispatch intent + Worker restart recovery.
+- **P3.3:** authenticated ACP execution, 120s attempt bound, failure handling and normalized outputs.
+- **P3.4:** Result Inbox, notifications, user-requested tool-disabled Live speech.
+- **P4:** approved ECS/DB/SQS deployment, security/latency/reliability/routing acceptance.
+- H0/H1: existing hardware UX gate and candidate integration remain unchanged.
 
-- P1 — Kai simulator software loop: kai-sim on a LAN client with microphone/speakers (OS to be confirmed), mock Amusant Relay on a private host, audio capture/playback and Kai protocol; no hardware required.
-- P2 — Fast voice: Gemini Live baseline, explicit manual provider selection, provider abstraction. A second real Live provider is optional validation, not an MVP gate.
-- P3 — OpenClaw slow lane: Home Bridge, least-privilege security, task lifecycle and async result path.
-- P4 — Software acceptance: Relay/Bridge integration, latency, routing, reliability, privacy and failure tests; AWS staging only after cost/security review and approval.
-- H0 — Hardware UX Gate: compare device vs optimized phone flow after software acceptance.
-- H1 — M5StickS3/Kai firmware integration and portability testing only if H0 passes.
+No P3 features have been implemented by this docs-only PR.
 
 # 33. M5StickS3 Hardware Candidate
 
