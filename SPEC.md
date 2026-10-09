@@ -29,7 +29,7 @@
 
 ## P3 Architecture Update — OpenAB ACP (proposed 2026-10-09)
 
-**This section supersedes the OpenClaw/N100 Home Bridge design for P3 in older sections of this document.** See the normative [ADR-0001](docs/adr/0001-openab-acp-slow-path.md) for decisions, sequence, security, failure modes and acceptance gates. Older references to `delegate_to_openclaw`, the Home Bridge, direct N100 integration and transient task storage below are **historical superseded proposals**, not P3 implementation instructions. P0/P1/P2 design and verified runtime gates remain intact.
+**This section and the updated requirements below define the proposed P3 design.** See [ADR-0001](docs/adr/0001-openab-acp-slow-path.md) for decisions, sequence, security, failure modes and acceptance gates. P0/P1/P2 design and verified runtime gates remain intact.
 
 **Product:** Grab-to-talk, bring-your-own-agent voice companion. Gemini Live remains the realtime voice layer and FAST/SLOW router; simple conversations never go through the slow backend. `kai-sim` remains the P3 software acceptance client; M5StickS3 follows the H0 hardware UX gate.
 
@@ -72,13 +72,13 @@ Device/kai-sim → Amusant Relay ↔ Gemini Live (FAST)
 
 # 1. Project Definition
 
-Amusant is a low-latency voice interface to a persistent OpenClaw agent system. It is not defined by a particular physical device. The project consists of a realtime voice frontend, a low-latency relay, fast/slow task routing, persistent OpenClaw integration, asynchronous background-task delivery, and replaceable voice frontends.
+Amusant is a low-latency, grab-to-talk and backend-neutral AI voice companion. The project consists of a realtime voice frontend, Relay, native fast/slow routing, durable slow-task delegation, asynchronous result delivery, and replaceable voice frontends and agent backends.
 
 The product experience should feel like:
 
 > Speak to Amusant with minimal friction and receive a useful spoken response almost immediately.
 
-For complex work, Amusant acknowledges promptly, delegates the work to OpenClaw, and returns the result asynchronously. In this phase, Amusant handles voice communication and spoken/text responses only; it does not add location sensing, environmental sensors, or physical-device control.
+For complex work, Amusant acknowledges only after durable task admission, delegates to a restricted ACP agent and delivers the outcome asynchronously. In this phase, Amusant handles voice communication and spoken/text responses only; it does not add location sensing, environmental sensors, or physical-device control.
 
 # 2. Product Hypotheses
 
@@ -130,24 +130,18 @@ Never make the realtime path slower merely to make the backend architecture more
 
 # 6. MVP Scope
 
-The software MVP must be testable without owning an M5StickS3. The target software architecture is:
-
 ~~~text
-PC / Kai kai-sim
-    │ microphone + speaker; Kai-compatible WebSocket protocol
-    ▼
-AWS Amusant Relay
-    ├── FAST: user-selected Amusant Live provider → realtime speech/text
-    └── SLOW: delegate task → Amusant Home Bridge
-                                  ↓
-                            OpenClaw @ private host
-                       (configured agents/tools
-                         such as configured, allowlisted agents)
-                                  ↓
-                         async result to client
+kai-sim / future M5 → Relay ↔ Gemini Live (FAST)
+                         │ delegate_task (SLOW)
+                         ▼
+                   Durable Registry
+                         ▼
+                   Worker → OpenAB ACP
+                         ▼
+                   Inbox → notification / requested speech
 ~~~
 
-P1 may use a local mock Relay/provider to isolate the simulator and wire protocol. The complete software MVP must be testable with kai-sim and without the physical device. AWS deployment is a later integration gate and requires separate cost/security approval.
+P3 is local-only with SQLite and restricted ACP. P4 evaluates separate ECS Relay/Worker/OpenAB tasks, DynamoDB and SQS after approval. No N100 main OpenClaw connection. Existing P0–P2 acceptance remains intact.
 
 # 7. Explicit Non-Goals
 
@@ -181,7 +175,7 @@ Example: “現在幾點？” A bounded, predictable low-latency tool may run i
 
 ## Lane 2 — Slow Delegation
 
-Example: “查詢目前的二手筆電行情，並依指定用途比較。” Research, persistent memory/history, browser/computer work, complex comparisons/planning, other agents, external actions, scheduled work, and long-running jobs go to OpenClaw. Live acknowledges promptly while the task runs asynchronously.
+Example: “查詢目前的二手筆電行情，並依指定用途比較。” Supported bounded current research and comparison tasks go to the restricted P3 ACP backend. Persistent memory/history, arbitrary browser/computer operations, multi-agent actions, scheduled monitoring and unbounded work remain deferred. Live acknowledges only after durable admission.
 
 # 10. Fast Provider Is the Initial Router
 
@@ -264,9 +258,9 @@ Deploy the target Relay as a Docker container on ECS Fargate after local protoco
 
 ## Slow tasks
 
-- Receive delegate_to_openclaw, create a task_id, and return accepted/unavailable status.
-- Forward the task to an authenticated Home Bridge.
-- Track task state and deliver final results through the client inbox mechanism.
+- Receive validated backend-neutral `delegate_task` calls and durably commit task + dispatch intent before replying with the same Gemini tool call ID.
+- Dispatch independently via Worker and authenticated OpenAB ACP; never wait for agent execution in the Live callback.
+- Track durable state and deliver results through Inbox across process/client reconnects.
 
 The Relay should remain largely stateless. If slow-task acceptance/results must survive a Fargate restart, define durable storage, idempotency, expiry, and delivery semantics; never rely on container-local memory while promising guaranteed delivery.
 
@@ -362,17 +356,17 @@ live_tool_call
 first_output_audio
 delegate_created
 home_bridge_received
-openclaw_started
-openclaw_finished
+slow_worker_started
+slow_worker_finished
 result_received_by_relay
 result_delivered
 ~~~
 
-Metrics: PTT release → first audio; PTT release → delegation acknowledgement; Relay↔Live RTT; Relay↔Home Bridge RTT; OpenClaw duration; slow-task end-to-end delivery. Do not log raw audio or full transcripts by default; debug content logging requires explicit configuration.
+Metrics: PTT release → first audio; PTT release → delegation acknowledgement; Relay↔Live RTT; Relay↔Worker dispatch delay; OpenAB ACP execution duration; slow-task end-to-end delivery. Do not log raw audio or full transcripts by default; debug content logging requires explicit configuration.
 
 # 28. Software Latency Targets
 
-Fast path, PTT release → first audible response: target p50 ≤1.2 sec, p95 ≤2.0 sec; stretch p50 <1.0 sec. Slow path, PTT release → spoken acknowledgement: same target; actual OpenClaw work may take seconds or minutes and does not count as realtime latency. Targets remain unmeasured. Thirty samples are smoke-level, not robust p95 evidence.
+Fast path, PTT release → first audible response: target p50 ≤1.2 sec, p95 ≤2.0 sec; stretch p50 <1.0 sec. Slow path, PTT release → spoken acknowledgement: same target; actual bounded ACP work may take seconds or minutes and does not count as realtime latency. Targets remain unmeasured. Thirty samples are smoke-level, not robust p95 evidence.
 
 # 29. Routing Evaluation
 
@@ -431,4 +425,4 @@ H0 compares the same request on an optimized phone voice flow and on the device.
 
 # 36. Primary Product Rule
 
-Project Amusant succeeds only if it improves the user's actual interaction with their AI system. Do not optimize for a gadget for its own sake. Amusant Live owns immediacy; OpenClaw owns depth and persistence; fast providers are manually selected; the frontend is replaceable; Kai is respected upstream; the dedicated device must earn its place through UX.
+Project Amusant succeeds only if it improves the user's actual interaction with their AI system. Do not optimize for a gadget for its own sake. Amusant Live owns immediacy; Amusant owns durable delegation/delivery; an interchangeable restricted backend owns bounded execution; fast providers are manually selected; the frontend is replaceable; Kai is respected upstream; the dedicated device must earn its place through UX.
