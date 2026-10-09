@@ -16,7 +16,7 @@
 - Amusant 是獨立維護的單一 monorepo，尊重 zbruceli/kai 的架構、kai-sim 協定與後續硬體韌體上游。
 - 第一階段只做語音輸入與語音／文字回覆；沒有位置、感測器或實體控制。
 - 快語音 provider 由使用者手動選擇；Gemini Live 是首個 baseline。第二個真實 Live provider 是 optional validation，不是 MVP gate。
-- 慢任務第一階段使用 OpenClaw agent；其他後端延後。
+- **新 P3 提案**：OpenAB native ACP WebSocket + 一個受限 agent；詳見 [ADR-0001](docs/adr/0001-openab-acp-slow-path.md)。舊 OpenClaw Home Bridge 路線暫停，只有隔離的 OpenClaw adapter 可於未來評估。
 - 先通過軟體 gate，再進入硬體 UX gate；M5StickS3 是候選，不是專案本身。
 
 ## P0 / H0 命名
@@ -39,8 +39,8 @@
 | P0 | Foundation | 已完成 | SPEC/PLAN/STATUS 權責、Amusant scope、Kai upstream baseline 與 private repo 已定；本次 spec reconciliation 完成後視為關閉。 |
 | P1 | kai-sim software smoke | 3–5 工作日 | LAN 主機列舉麥克風／喇叭並以 Kai kai-sim 連到 private host mock probe，完成 PTT PCM 收音、文字卡片及 tone/echo 播放。無需 M5、Live provider、OpenClaw 或 AWS。此 probe 是測試工具，不是完整 Kai relay／正式 Amusant Relay；4 個單元測試、真實跨 LAN 音訊閉環與一次重連 smoke PASS。使用者回報 release-to-first-audio 及重連均 <1 s（手動估計、樣本數未記）；正式 p50/p95 latency 留待 P4。 |
 | P2 | Fast voice | 1–2 工程週 | Gemini Live baseline、手動 provider selection、adapter contract 通過；local Kai `/ws`/PTT→Live bridge、fake-provider tests、TTS smoke 均 PASS。**2026-10-09 P2 runtime exit PASS**：same-LAN Kai-sim 收到真實 PTT PCM、Live turn 完成、輸出 PCM，使用者確認喇叭完整播放。此 gate 不含 AWS deployment、OpenClaw slow lane 或硬體。第二 Live provider 可選，只作 abstraction validation。 |
-| P3 | OpenClaw slow lane | 1–2 工程週 | Home Bridge、受限 agent/tool access、task_id、明確接受／完成／失敗、去重與重連測試通過。 |
-| P4 | Software integration/acceptance | 約 1 工程週 | 完成 Relay/Home Bridge 整合、latency/routing/privacy/failure evaluation。AWS staging 預算與安全設定另行核准。 |
+| P3 | OpenAB ACP slow path（local PoC） | 待 P3.0 後重新估時 | P3.0 ACP authenticated smoke → P3.1 `delegate_task` admission (#1) → P3.2 SQLite task/outbox + worker restart → P3.3 OpenAB ACP execution → P3.4 Result Inbox/voice delivery；保留 P1/P2 tests。 |
+| P4 | Software integration/acceptance + AWS staging | 待重估 | Relay/Worker/OpenAB 分離 ECS services/tasks/IAM、DynamoDB + SQS/outbox、latency/routing/privacy/restart/failure evaluation；AWS staging 預算與安全設定另行核准。 |
 | H0 | Hardware UX Gate | P4 後估算 | 比較專用裝置與最佳化手機流程；只有明顯降低摩擦才繼續。 |
 | H1 | Hardware integration | H0 通過後估算 | 使用 Kai-derived M5StickS3 firmware 驗證裝置音訊、PTT、網路與可靠性；不修改 Kai 上游，除非另行核准。 |
 
@@ -60,7 +60,7 @@
 
 ## 安全與治理 gates
 
-- OpenClaw Chat Completions bearer token 屬高權限；P3 前必須定出 least-privilege / isolated agent 與 server-side allowlist。
-- Background acceptance/result/retry/dedup/reconnect semantics 在 P3 前定義清楚。
+- P3 不接 N100 OpenClaw。OpenAB `/acp` 必須具備已編入的 `acp` feature、bearer 認證、單一受限 agent、最小工具權限、獨立模型憑證；ACP cancel 不保證真正停止執行，P3 單次上限 120 秒。
+- 持久化 accepted / failed / timeout / idempotency / reconnect 與 Inbox 由 Amusant 負責；以 ADR-0001 的 SQLite/Worker（P3）與 DynamoDB/SQS（P4）為依據。
 - 任何 AWS 費用、硬體購買、私有主機設定變更或 Kai 上游改動，另行核准後才執行。
 - 目前此排程是專案里程碑，非 cron/提醒。
