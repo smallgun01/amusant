@@ -3,11 +3,21 @@
 Audio buffers exist only in RAM for the current utterance; never persist PCM or credentials.
 """
 from __future__ import annotations
-import argparse, asyncio, hmac, json, logging, os
+
+import argparse
+import asyncio
+import hmac
+import json
+import logging
+import os
 from collections.abc import Callable
+from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
+
 from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
+
 from fast_voice import AudioFrame, LiveProvider, ProviderError, build_live_provider
 from relay.mock_relay import INPUT_RATE, MAX_FRAME_BYTES, OUTPUT_CHUNK_BYTES, OUTPUT_RATE, validate_bind_host
 
@@ -17,12 +27,48 @@ MIN_UTTERANCE_BYTES = INPUT_RATE * 2 * 300 // 1000
 LOG = logging.getLogger("amusant.p2.live_bridge")
 ProviderFactory = Callable[[], LiveProvider]
 
+
+class TurnState(str, Enum):
+    CAPTURING = "capturing"
+    WAITING = "waiting"
+    PLAYING = "playing"
+    CLOSED = "closed"
+    REJECTED = "rejected"
+    SUPERSEDED = "superseded"
+    FAILED = "failed"
+
+
+_TERMINAL_STATES = {
+    TurnState.CLOSED,
+    TurnState.REJECTED,
+    TurnState.SUPERSEDED,
+    TurnState.FAILED,
+}
+
+
+@dataclass
+class Turn:
+    turn_id: int
+    ptt_open: bool = True
+    state: TurnState = TurnState.CAPTURING
+    activity_started: bool = False
+    response_pending: bool = False
+    response_interrupted: bool = False
+    invalidated: bool = False
+    completion_sent: bool = False
+    input_bytes: int = 0
+    output_bytes: int = 0
+    provider_epoch: int | None = None
+    pending_audio: bytearray = field(default_factory=bytearray)
+
+
 def _safe_device(value: Any) -> str:
     cleaned = "".join(ch for ch in str(value or "kai-sim") if ch.isalnum() or ch in "-_ ")[:32]
     return cleaned or "kai-sim"
 
+
 def make_handler(expected_token: str, provider_factory: ProviderFactory):
-    """Build a Kai-compatible /ws handler with one Live session per client."""
+    """Build a Kai-compatible /ws handler with explicit local turn ownership."""
     async def handler(ws: ServerConnection) -> None:
         path = ws.request.path.split("?", 1)[0]
         if path != "/ws":
@@ -32,84 +78,260 @@ def make_handler(expected_token: str, provider_factory: ProviderFactory):
         if not hmac.compare_digest(supplied, f"Bearer {expected_token}"):
             await ws.close(code=1008, reason="unauthorized client")
             return
+
         send_lock = asyncio.Lock()
-        async def send_control(payload: dict[str, Any]) -> None:
-            async with send_lock:
-                await ws.send(json.dumps(payload))
-        try:
-            provider = provider_factory()
-        except Exception as exc:
-            LOG.warning("provider setup failed error_type=%s", type(exc).__name__)
-            await send_control({"type": "card", "title": "Live unavailable", "lines": ["Provider setup failed."]})
-            await send_control({"type": "state", "state": "idle"})
-            return
+        provider: LiveProvider | None = None
+        provider_connected = False
+        provider_epoch = 0
+        active_turn: Turn | None = None
+        response_turn: Turn | None = None
+        next_turn_id = 0
         device = "kai-sim"
-        ptt_open = False
-        activity_started = False
-        overflow = False
-        pending_audio = bytearray()
-        turn_input_bytes = 0
-        turn_output_bytes = 0
-        async def send_audio(frame: AudioFrame) -> None:
-            nonlocal turn_output_bytes
-            if frame.sample_rate_hz != OUTPUT_RATE or len(frame.data) % 2:
-                raise ProviderError("gemini", "invalid_audio_frame", "Live output PCM format mismatch")
-            for start in range(0, len(frame.data), OUTPUT_CHUNK_BYTES):
-                chunk = frame.data[start : start + OUTPUT_CHUNK_BYTES]
-                async with send_lock:
-                    await ws.send(chunk)
-                turn_output_bytes += len(chunk)
-        async def on_transcript(event) -> None:
-            if event.direction == "output" and event.text:
-                await send_control({"type": "caption", "delta": event.text})
-        async def on_interrupted(_event) -> None:
-            await send_control({"type": "interrupted"})
-        async def on_turn_complete(_event) -> None:
-            await send_control({"type": "turn_complete"})
-            LOG.info("Live turn complete device=%s input_bytes=%d output_bytes=%d; audio not persisted", device, turn_input_bytes, turn_output_bytes)
-        async def on_error(error: ProviderError) -> None:
-            await send_control({"type": "card", "title": "Live unavailable", "lines": [f"Provider error ({error.code}).", "No audio was saved."], "icon": "mic"})
-            await send_control({"type": "state", "state": "idle"})
-        provider.on_audio(send_audio)
-        provider.on_transcript(on_transcript)
-        provider.on_interrupted(on_interrupted)
-        provider.on_turn_complete(on_turn_complete)
-        provider.on_error(on_error)
-        async def fail_safe(code: str) -> None:
+
+        async def send_json(payload: dict[str, Any]) -> bool:
+            async with send_lock:
+                try:
+                    await ws.send(json.dumps(payload))
+                    return True
+                except ConnectionClosed:
+                    return False
+
+        # Gemini callbacks are serialized; turn_complete is the normal response barrier.
+        # If a new PTT arrives before that barrier, the old provider epoch is fenced and retired.
+        def owns_response(turn: Turn, epoch: int) -> bool:
+            return (
+                provider is not None
+                and provider_epoch == epoch
+                and turn.provider_epoch == epoch
+                and active_turn is turn
+                and response_turn is turn
+                and not turn.invalidated
+                and not turn.completion_sent
+                and turn.state not in _TERMINAL_STATES
+            )
+
+        async def send_owned_control(turn: Turn, epoch: int, payload: dict[str, Any]) -> bool:
+            async with send_lock:
+                if not owns_response(turn, epoch):
+                    return False
+                try:
+                    await ws.send(json.dumps(payload))
+                    return True
+                except ConnectionClosed:
+                    return False
+
+        async def finish_from_provider(turn: Turn, epoch: int) -> bool:
+            nonlocal response_turn
+            async with send_lock:
+                if not owns_response(turn, epoch):
+                    return False
+                turn.state = TurnState.CLOSED
+                turn.response_pending = False
+                turn.invalidated = True
+                turn.completion_sent = True
+                response_turn = None
+                try:
+                    await ws.send(json.dumps({"type": "turn_complete"}))
+                except ConnectionClosed:
+                    return False
+            LOG.info(
+                "Live turn complete turn_id=%d device=%s input_bytes=%d output_bytes=%d; audio not persisted",
+                turn.turn_id, device, turn.input_bytes, turn.output_bytes,
+            )
+            return True
+
+        async def finish_locally(
+            turn: Turn,
+            state: TurnState,
+            controls: list[dict[str, Any]],
+        ) -> bool:
+            nonlocal response_turn
+            async with send_lock:
+                if active_turn is not turn or turn.invalidated:
+                    return False
+                turn.invalidated = True
+                turn.state = state
+                turn.response_pending = False
+                if response_turn is turn:
+                    response_turn = None
+                for payload in controls:
+                    try:
+                        await ws.send(json.dumps(payload))
+                    except ConnectionClosed:
+                        return False
+            return True
+
+        async def retire_provider(expected_epoch: int | None = None) -> None:
+            nonlocal provider, provider_connected, provider_epoch, response_turn
+            old = provider
+            old_epoch = provider_epoch
+            if old is None or (expected_epoch is not None and expected_epoch != old_epoch):
+                return
+            provider = None
+            provider_connected = False
+            provider_epoch += 1  # Fence callbacks before awaiting session teardown.
+            if response_turn is not None and response_turn.provider_epoch == old_epoch:
+                response_turn = None
             try:
-                await send_control({"type": "card", "title": "Live unavailable", "lines": [f"Provider error ({code}).", "No audio was saved."], "icon": "mic"})
-                await send_control({"type": "state", "state": "idle"})
-            except ConnectionClosed:
-                pass
+                await old.close()
+            except Exception as exc:
+                LOG.warning("provider teardown failed error_type=%s", type(exc).__name__)
+
+        async def fail_turn(turn: Turn, code: str) -> None:
+            if await finish_locally(
+                turn,
+                TurnState.FAILED,
+                [
+                    {"type": "card", "title": "Live unavailable", "lines": [f"Provider error ({code}).", "No audio was saved."], "icon": "mic"},
+                    {"type": "state", "state": "idle"},
+                ],
+            ):
+                LOG.warning("Live turn failed turn_id=%d device=%s error_code=%s", turn.turn_id, device, code)
+
+        def bind_callbacks(instance: LiveProvider, epoch: int) -> None:
+            async def on_audio(frame: AudioFrame) -> None:
+                turn = response_turn
+                if turn is None or not owns_response(turn, epoch) or turn.response_interrupted:
+                    return
+                if frame.sample_rate_hz != OUTPUT_RATE or len(frame.data) % 2:
+                    await fail_turn(turn, "invalid_audio_frame")
+                    return
+                turn.state = TurnState.PLAYING
+                for start in range(0, len(frame.data), OUTPUT_CHUNK_BYTES):
+                    chunk = frame.data[start : start + OUTPUT_CHUNK_BYTES]
+                    async with send_lock:
+                        if not owns_response(turn, epoch):
+                            return
+                        try:
+                            await ws.send(chunk)
+                        except ConnectionClosed:
+                            return
+                        turn.output_bytes += len(chunk)
+
+            async def on_transcript(event: Any) -> None:
+                turn = response_turn
+                if turn is None or turn.response_interrupted or event.direction != "output" or not event.text:
+                    return
+                await send_owned_control(turn, epoch, {"type": "caption", "delta": event.text})
+
+            async def on_interrupted(_event: Any) -> None:
+                turn = response_turn
+                if turn is None:
+                    return
+                async with send_lock:
+                    if not owns_response(turn, epoch):
+                        return
+                    turn.response_interrupted = True
+                    try:
+                        await ws.send(json.dumps({"type": "interrupted"}))
+                    except ConnectionClosed:
+                        return
+
+            async def on_turn_complete(_event: Any) -> None:
+                turn = response_turn
+                if turn is not None:
+                    await finish_from_provider(turn, epoch)
+
+            async def on_error(error: ProviderError) -> None:
+                turn = response_turn
+                if turn is not None:
+                    await fail_turn(turn, error.code)
+
+            instance.on_audio(on_audio)
+            instance.on_transcript(on_transcript)
+            instance.on_interrupted(on_interrupted)
+            instance.on_turn_complete(on_turn_complete)
+            instance.on_error(on_error)
+
+        async def get_provider_for_turn(turn: Turn) -> tuple[LiveProvider, int]:
+            nonlocal provider, provider_connected, provider_epoch, response_turn
+            if provider is None:
+                provider = provider_factory()
+                provider_epoch += 1
+                bind_callbacks(provider, provider_epoch)
+            epoch = provider_epoch
+            turn.provider_epoch = epoch
+            response_turn = turn
+            if not provider_connected:
+                await provider.connect()
+                provider_connected = True
+            return provider, epoch
+
+        async def reject_turn(turn: Turn, title: str, reason: str) -> None:
+            turn.pending_audio.clear()
+            rejected = await finish_locally(
+                turn,
+                TurnState.REJECTED,
+                [
+                    {"type": "card", "title": title, "lines": [reason, "Output suppressed; no audio was saved."], "icon": "mic"},
+                    {"type": "state", "state": "idle"},
+                ],
+            )
+            if rejected:
+                LOG.warning("rejected PTT turn turn_id=%d device=%s reason=%s", turn.turn_id, device, reason)
+                # Teardown fences local callbacks; it does not claim upstream generation was cancelled.
+                await retire_provider(turn.provider_epoch)
+
+        async def supersede_turn(turn: Turn) -> None:
+            superseded = await finish_locally(
+                turn,
+                TurnState.SUPERSEDED,
+                [{"type": "state", "state": "idle"}],
+            )
+            if superseded:
+                # Do not emit provider-confirmed interrupted/turn_complete for a local teardown.
+                await retire_provider(turn.provider_epoch)
+
+        async def activate_and_send(turn: Turn, audio: bytes) -> None:
+            instance, epoch = await get_provider_for_turn(turn)
+            if not owns_response(turn, epoch):
+                return
+            await instance.start_turn()
+            if not owns_response(turn, epoch):
+                return
+            turn.activity_started = True
+            await instance.send_audio(AudioFrame(audio, INPUT_RATE))
+
         try:
             async for message in ws:
+                turn = active_turn
                 if isinstance(message, bytes):
-                    if not ptt_open or overflow:
+                    if turn is None or not turn.ptt_open or turn.invalidated:
                         continue
                     if len(message) % 2:
-                        overflow = True
-                        pending_audio.clear()
-                        LOG.warning("rejected odd PCM frame device=%s", device)
+                        await reject_turn(turn, "Invalid audio", "PCM frame must contain complete 16-bit samples.")
                         continue
-                    if turn_input_bytes + len(message) > MAX_UTTERANCE_BYTES:
-                        overflow = True
-                        pending_audio.clear()
-                        LOG.warning("PTT size limit exceeded device=%s", device)
+                    if turn.input_bytes + len(message) > MAX_UTTERANCE_BYTES:
+                        await reject_turn(turn, "Audio too long", "Utterance exceeded the local limit.")
                         continue
-                    turn_input_bytes += len(message)
-                    if not activity_started:
-                        pending_audio.extend(message)
-                        if len(pending_audio) < MIN_UTTERANCE_BYTES:
+                    turn.input_bytes += len(message)
+                    if not turn.activity_started:
+                        turn.pending_audio.extend(message)
+                        if len(turn.pending_audio) < MIN_UTTERANCE_BYTES:
                             continue
-                        await provider.connect()
-                        await provider.start_turn()
-                        activity_started = True
-                        buffered = bytes(pending_audio)
-                        pending_audio.clear()
-                        await provider.send_audio(AudioFrame(buffered, INPUT_RATE))
-                    else:
+                        buffered = bytes(turn.pending_audio)
+                        turn.pending_audio.clear()
+                        try:
+                            await activate_and_send(turn, buffered)
+                        except ProviderError as error:
+                            await fail_turn(turn, error.code)
+                            await retire_provider(turn.provider_epoch)
+                        continue
+                    try:
+                        if (
+                            provider is None
+                            or turn.provider_epoch is None
+                            or turn.provider_epoch != provider_epoch
+                            or not owns_response(turn, turn.provider_epoch)
+                        ):
+                            await fail_turn(turn, "session_unavailable")
+                            continue
                         await provider.send_audio(AudioFrame(message, INPUT_RATE))
+                    except ProviderError as error:
+                        await fail_turn(turn, error.code)
+                        await retire_provider(turn.provider_epoch)
                     continue
+
                 try:
                     control = json.loads(message)
                 except (TypeError, json.JSONDecodeError):
@@ -121,46 +343,60 @@ def make_handler(expected_token: str, provider_factory: ProviderFactory):
                 if kind == "hello":
                     device = _safe_device(control.get("device"))
                 elif kind == "ptt_start":
-                    if ptt_open:
+                    previous = active_turn
+                    if previous is not None and previous.ptt_open:
                         continue
-                    ptt_open = True
-                    activity_started = False
-                    overflow = False
-                    turn_input_bytes = 0
-                    turn_output_bytes = 0
-                    pending_audio.clear()
+                    if previous is not None and previous.response_pending and not previous.invalidated:
+                        await supersede_turn(previous)
+                    elif previous is not None and previous.state == TurnState.FAILED:
+                        await retire_provider(previous.provider_epoch)
+                    next_turn_id += 1
+                    active_turn = Turn(turn_id=next_turn_id)
                 elif kind == "ptt_end":
-                    if not ptt_open:
+                    if turn is None or not turn.ptt_open:
                         continue
-                    ptt_open = False
-                    pending_audio.clear()
-                    if overflow:
-                        await send_control({"type": "card", "title": "Audio too long", "lines": ["Utterance exceeded the local limit.", "No audio was saved."], "icon": "mic"})
-                        if activity_started:
-                            activity_started = False
+                    turn.ptt_open = False
+                    turn.pending_audio.clear()
+                    if turn.invalidated:
+                        continue
+                    if turn.activity_started:
+                        if provider is None or turn.provider_epoch is None or turn.provider_epoch != provider_epoch:
+                            await fail_turn(turn, "session_unavailable")
+                            continue
+                        turn.response_pending = True
+                        turn.state = TurnState.WAITING
+                        if not await send_owned_control(turn, turn.provider_epoch, {"type": "state", "state": "thinking"}):
+                            continue
+                        if not owns_response(turn, turn.provider_epoch):
+                            continue
+                        try:
                             await provider.end_turn()
-                        else:
-                            await send_control({"type": "turn_complete"})
-                    elif activity_started:
-                        activity_started = False
-                        await send_control({"type": "state", "state": "thinking"})
-                        await provider.end_turn()
+                        except ProviderError as error:
+                            await fail_turn(turn, error.code)
+                            await retire_provider(turn.provider_epoch)
                     else:
-                        await send_control({"type": "state", "state": "idle"})
+                        turn.invalidated = True
+                        turn.state = TurnState.CLOSED
+                        await send_json({"type": "state", "state": "idle"})
         except ConnectionClosed:
             pass
         except ProviderError as error:
-            await fail_safe(error.code)
+            if active_turn is not None:
+                await fail_turn(active_turn, error.code)
+            else:
+                await send_json({"type": "card", "title": "Live unavailable", "lines": [f"Provider error ({error.code}).", "No audio was saved."], "icon": "mic"})
+                await send_json({"type": "state", "state": "idle"})
         except Exception as exc:
             LOG.warning("client session ended device=%s error_type=%s", device, type(exc).__name__)
-            await fail_safe("runtime_error")
+            if active_turn is not None:
+                await fail_turn(active_turn, "runtime_error")
+            else:
+                await send_json({"type": "card", "title": "Live unavailable", "lines": ["Provider error (runtime_error).", "No audio was saved."], "icon": "mic"})
+                await send_json({"type": "state", "state": "idle"})
         finally:
-            pending_audio.clear()
-            try:
-                await provider.close()
-            except Exception as exc:
-                LOG.warning("provider cleanup failed device=%s error_type=%s", device, type(exc).__name__)
+            await retire_provider()
     return handler
+
 
 async def run(host: str, port: int, token: str) -> None:
     validate_bind_host(host)
@@ -171,6 +407,7 @@ async def run(host: str, port: int, token: str) -> None:
     LOG.info("starting private Live bridge host=%s port=%d", host, port)
     async with serve(make_handler(token, lambda: build_live_provider(os.environ)), host, port, max_size=MAX_FRAME_BYTES, ping_interval=20, ping_timeout=20) as server:
         await server.serve_forever()
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -185,6 +422,7 @@ def main() -> None:
         LOG.info("Live bridge stopped")
     except (OSError, ValueError) as exc:
         parser.error(f"cannot start Live bridge: {type(exc).__name__}")
+
 
 if __name__ == "__main__":
     main()
