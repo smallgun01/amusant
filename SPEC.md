@@ -1,11 +1,11 @@
 # Project Amusant
 
-## Voice Companion Architecture & MVP Specification v0.2
+## Voice Companion Architecture & MVP Specification v0.3 — P3 Proposal
 
 - **Status:** Planning / software-first; not yet implementation-ready
 - **Project:** Amusant
 - **Upstream foundation:** zbruceli/kai
-- **Initial slow-task backend:** OpenClaw agent
+- **Initial slow-task backend:** OpenAB ACP (proposed; P3.0 smoke required)
 - **Software development client:** Kai kai-sim
 - **First hardware candidate:** M5StickS3 using Kai-derived firmware
 
@@ -24,6 +24,49 @@
 - P1–P4 — Software validation and acceptance, using kai-sim before hardware.
 - H0 — Hardware UX Gate: decide whether dedicated hardware earns its place, after software acceptance.
 - H1 — Hardware integration/validation, only if H0 passes.
+
+---
+
+## P3 Architecture Update — OpenAB ACP (proposed 2026-10-09)
+
+**This section supersedes the OpenClaw/N100 Home Bridge design for P3 in older sections of this document.** See the normative [ADR-0001](docs/adr/0001-openab-acp-slow-path.md) for decisions, sequence, security, failure modes and acceptance gates. Older references to `delegate_to_openclaw`, the Home Bridge, direct N100 integration and transient task storage below are **historical superseded proposals**, not P3 implementation instructions. P0/P1/P2 design and verified runtime gates remain intact.
+
+**Product:** Grab-to-talk, bring-your-own-agent voice companion. Gemini Live remains the realtime voice layer and FAST/SLOW router; simple conversations never go through the slow backend. `kai-sim` remains the P3 software acceptance client; M5StickS3 follows the H0 hardware UX gate.
+
+**P3 default Slow Backend:** OpenAB native authenticated ACP-over-WebSocket (`GET /acp`) with **one isolated, capability-restricted ACP agent**. No N100 Home Bridge, no connection to the main OpenClaw Gateway and no inheritance of its memories/credentials. An independently isolated OpenClaw backend may be considered later; Gemini-facing tool naming remains backend-neutral.
+
+**P3 sequence and ownership:**
+
+~~~text
+Device/kai-sim → Amusant Relay ↔ Gemini Live (FAST)
+                                    │ function call: delegate_task (SLOW)
+                                    ▼
+                        Relay validates / authorizes
+                                    │
+                        SQLite durable task + dispatch intent
+                                    │
+                        FunctionResponse (same call_id):
+                        accepted + task_id, or honest error
+                                    │
+                        short Gemini spoken acknowledgement
+                                    │ (separate async worker)
+                        Worker → OpenAB /acp → restricted agent
+                                    │
+                        Result Inbox (status, card, speak, details_md)
+                                    │
+                        reconnect notification / user-requested
+                        new tool-disabled Live speech turn
+~~~
+
+`delegate_task` accepts a **bounded task string**, optionally a bounded task-kind hint (`research`, `compare`, `summarize`). Do not expose backend URL, agent name, arbitrary tools/commands or secrets as model-controlled parameters. Admission means task + dispatch intent durably committed, **not finished**. Gemini receives the same function call ID only once; completed results are independent inbox events, not a second function response. Use admission-only short blocking tool behavior only if the selected Gemini model supports it; never block Live until OpenAB finishes.
+
+**P3.0 gate before #1 implementation:** prove OpenAB binary/image actually includes its `acp` feature; run authenticated `initialize`, `session/new`, `session/prompt` with an explicitly chosen restricted agent, model credentials and `OPENAB_ACP_ENABLED=true`. OpenAB uses `OPENAB_ACP_AUTH_KEY` transport bearer and allowed synthetic `acp_client` identity. A successful initial smoke is a go/no-go; no speculative adapter implementation if unsupported. Confirm upstream 180-second ACP prompt idle timeout and incomplete underlying cancellation; P3 limits attempts to **120 seconds** and cannot promise stopping side effects on timeout.
+
+**Reliable tasks:** P3 uses local SQLite + dispatch intent/outbox + leases + bounded worker retries and `queued → running → completed | failed | expired` statuses. Task execution is **at least once**; enforce idempotency and enable no side-effecting tasks in P3. Result Inbox keeps separate delivery state, surviving Live/device disconnects and process restarts. Long-term memory, multi-agent routing, monitoring, broad shell/browser tools and permanent OpenAB subscription OAuth are not assumed.
+
+**P4 (separate security/budget approval):** deploy Relay, Worker, OpenAB as **separate ECS tasks/services with distinct IAM roles**, OpenAB reachable privately over authenticated/TLS ACP only, DynamoDB as task source of truth plus SQS/outbox reconciliation. No privileged Relay/Agent sidecar sharing one IAM role, no public ACP, no N100 or personal OpenClaw secrets. Do not claim P4 deployed as a result of this proposal.
+
+**Execution:** P3.0 ACP smoke → P3.1 `delegate_task` durable admission (#1) → P3.2 registry/worker recovery → P3.3 restricted ACP execution → P3.4 Inbox + speech. Keep P1/P2 tests green; no paid Live call or AWS deployment without separate approval.
 
 ---
 
