@@ -7,14 +7,14 @@
 
 ## 目前狀態
 
-**P0 — Foundation：完成。P1 — Kai-sim mock 音訊 smoke：PASS。P2 — Fast Voice：PASS（2026-10-09 runtime gate）**：25 個 root 離線測試、4 個 P1 relay tests PASS；Gemini Live TTS smoke PASS；真實 Kai-sim PTT→Live→speaker 完成一回合，input 152,576 bytes、turn_complete、output 92,642 bytes（約 1.93 秒 24 kHz PCM），使用者確認完整聽到語音。P2 不含 OpenClaw slow lane、AWS deployment 或硬體；下一階段 P3。
+**P0 — Foundation：完成。P1 — Kai-sim mock 音訊 smoke：PASS。P2 — Fast Voice：PASS（2026-10-09 runtime gate）**：25 個 root 離線測試、4 個 P1 relay tests PASS；Gemini Live TTS smoke PASS；真實 Kai-sim PTT→Live→speaker 完成一回合，input 152,576 bytes、turn_complete、output 92,642 bytes（約 1.93 秒 24 kHz PCM），使用者確認完整聽到語音。P2 不含 Slow Path、AWS deployment 或硬體；下一階段 P3（OpenAB architecture proposed, unimplemented）。
 
 ## 已確認決策
 
 - Amusant 為獨立維護的 Kai-compatible monorepo；Kai 保持架構與韌體上游。
 - 產品範圍只含語音溝通、語音／文字回覆；不含位置、感測器或實體控制。
 - 快語音 provider 手動選擇；Gemini Live 為首個 baseline；第二真實 provider 為 optional validation，不是 MVP gate。
-- OpenClaw agent 為初期慢任務 backend。
+- **P3 architecture proposal (not implemented):** OpenAB ACP as first restricted slow backend, conditional on P3.0 authenticated smoke. [ADR-0001](docs/adr/0001-openab-acp-slow-path.md) describes decision and gates; original P0 OpenClaw decision is historical. No N100 main Gateway access.
 - P0 = Foundation；H0 = Hardware UX Gate。先完成軟體 gate，再進 H0/H1。
 - Kai 上游核查基準：v0.12.0，commit 1681fb3c11acd28525d8987bba4b9bf4bc2a288f；MIT License。
 
