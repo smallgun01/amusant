@@ -60,3 +60,13 @@ uv run kai-sim --host $relayHost --port 8765
 ~~~
 
 This is a local PTT-to-Live test harness, not production relay deployment; do not expose it publicly or add firewall/port-forward rules. Fake-provider tests do not call Gemini; a real Kai-sim turn does incur provider usage and must stay within the separately approved budget.
+
+## Slow Path adapter test command (offline only)
+
+From the Amusant repository root, run:
+
+~~~bash
+PYTHONPATH=relay uv run --locked python -m unittest discover -s relay/tests -v
+~~~
+
+This suite includes the P1 mock relay plus the P3.1 SQLite admission tests; it uses temporary local databases and fake tool calls and does not call Gemini or AWS. The backend-neutral `delegate_task(task, task_kind)` declaration is opt-in; the backend and authenticated client/conversation identity are supplied by server code, never by model arguments.

@@ -10,7 +10,7 @@ import hmac
 import json
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -19,13 +19,16 @@ from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 
 from fast_voice import AudioFrame, LiveProvider, ProviderError, build_live_provider
+from fast_voice.contracts import JSONValue, ToolCallEvent
 from relay.mock_relay import INPUT_RATE, MAX_FRAME_BYTES, OUTPUT_CHUNK_BYTES, OUTPUT_RATE, validate_bind_host
 
 DEVICE_TOKEN_ENV = "AMUSANT_DEVICE_TOKEN"
 MAX_UTTERANCE_BYTES = 1_000_000
+MAX_TOOL_RESULT_BYTES = 8 * 1024
 MIN_UTTERANCE_BYTES = INPUT_RATE * 2 * 300 // 1000
 LOG = logging.getLogger("amusant.p2.live_bridge")
 ProviderFactory = Callable[[], LiveProvider]
+SlowPathToolHandler = Callable[[ToolCallEvent, int], Awaitable[Mapping[str, JSONValue]]]
 
 
 class TurnState(str, Enum):
@@ -67,7 +70,11 @@ def _safe_device(value: Any) -> str:
     return cleaned or "kai-sim"
 
 
-def make_handler(expected_token: str, provider_factory: ProviderFactory):
+def make_handler(
+    expected_token: str,
+    provider_factory: ProviderFactory,
+    slow_path_tool_handler: SlowPathToolHandler | None = None,
+):
     """Build a Kai-compatible /ws handler with explicit local turn ownership."""
     async def handler(ws: ServerConnection) -> None:
         path = ws.request.path.split("?", 1)[0]
@@ -214,6 +221,31 @@ def make_handler(expected_token: str, provider_factory: ProviderFactory):
                     return
                 await send_owned_control(turn, epoch, {"type": "caption", "delta": event.text})
 
+            async def on_tool_call(event: ToolCallEvent) -> None:
+                turn = response_turn
+                if turn is None or not owns_response(turn, epoch) or turn.response_interrupted:
+                    return
+                if slow_path_tool_handler is None:
+                    result: Mapping[str, JSONValue] = {"status": "unavailable", "code": "slow_path_not_configured"}
+                else:
+                    try:
+                        result = await slow_path_tool_handler(event, turn.turn_id)
+                        if not isinstance(result, Mapping):
+                            result = {"status": "unknown", "code": "invalid_tool_result"}
+                        else:
+                            encoded_result = json.dumps(dict(result), separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+                            if len(encoded_result.encode("utf-8")) > MAX_TOOL_RESULT_BYTES:
+                                result = {"status": "unknown", "code": "invalid_tool_result"}
+                    except Exception:
+                        # The dispatcher may have committed before a transport error; never claim failure.
+                        result = {"status": "unknown", "code": "acceptance_unconfirmed"}
+                if not owns_response(turn, epoch):
+                    return
+                try:
+                    await instance.send_tool_result(event.call_id, result)
+                except ProviderError as error:
+                    await fail_turn(turn, error.code)
+
             async def on_interrupted(_event: Any) -> None:
                 turn = response_turn
                 if turn is None:
@@ -239,6 +271,7 @@ def make_handler(expected_token: str, provider_factory: ProviderFactory):
 
             instance.on_audio(on_audio)
             instance.on_transcript(on_transcript)
+            instance.on_tool_call(on_tool_call)
             instance.on_interrupted(on_interrupted)
             instance.on_turn_complete(on_turn_complete)
             instance.on_error(on_error)

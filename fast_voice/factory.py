@@ -26,6 +26,7 @@ def build_live_provider(
     *,
     client_factory: Any | None = None,
     sdk_types: Any | None = None,
+    tool_declarations: list[Any] | None = None,
 ) -> LiveProvider:
     """Build Gemini only when explicitly selected; do not read files or call network.
 
@@ -73,6 +74,8 @@ def build_live_provider(
         }
         if max_output_tokens is not None:
             config_options["max_output_tokens"] = max_output_tokens
+        if tool_declarations is not None:
+            config_options["tools"] = tool_declarations
         config = sdk_types.LiveConnectConfig(**config_options)
     except Exception:
         # SDK constructor errors may include request/config internals; redact them.
