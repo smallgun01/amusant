@@ -61,6 +61,6 @@
 ## 安全與治理 gates
 
 - P3 不接 N100 OpenClaw。OpenAB `/acp` 必須具備已編入的 `acp` feature、bearer 認證、單一受限 agent、最小工具權限、獨立模型憑證；ACP cancel 不保證真正停止執行，P3 單次上限 120 秒。
-- P3 local durability uses SQLite task + dispatch intent and an application-scoped Async Dispatcher inside Relay; no standalone Worker ECS. AWS ECS-task replacement requires an approved external durable store (DynamoDB is a candidate); SQS is not an MVP requirement. The two-ECS amendment is pending documentation review; AWS changes/costs remain separately gated.
+- P3 local durability uses SQLite task + dispatch intent and an application-scoped Async Dispatcher inside Relay; no standalone Worker ECS. AWS ECS-task replacement requires an approved external durable store (DynamoDB is a candidate); SQS is not an MVP requirement. The two-ECS amendment is accepted as the architecture baseline, not deployed; AWS changes/costs remain separately gated.
 - 任何 AWS 費用、硬體購買、私有主機設定變更或 Kai 上游改動，另行核准後才執行。
 - 目前此排程是專案里程碑，非 cron/提醒。

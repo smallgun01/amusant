@@ -2,8 +2,8 @@
 
 ## Voice Companion Architecture & MVP Specification v0.4 — Two-ECS Baseline
 
-- **Status:** Proposed updated specification — pending review; **not merged or deployed**
-- **Updated:** 2026-10-10
+- **Status:** Accepted requirements specification (PR #9); not deployed
+- **Updated:** 2026-10-11
 - **Product model:** One-to-one personal, grab-to-talk voice companion
 - **Deployment baseline:** Exactly **two ECS Services**: Amusant Relay + OpenAB Agent Runtime
 - **Real-time baseline:** Gemini Live, manually selected provider
@@ -12,7 +12,7 @@
 - **Upstream reference:** [Kai](https://github.com/zbruceli/kai), pinned study baseline `1681fb3c11acd28525d8987bba4b9bf4bc2a288f`
 - **Architecture decision:** [ADR-0001 — Two-Service Relay + OpenAB ACP](docs/adr/0001-openab-acp-slow-path.md)
 
-> This document is a proposed **full replacement** of the previous `SPEC.md` (v0.3), retaining the validated P0/P1/P2 foundations and P3.0/P3.1 progress while correcting the deployment boundary. It is not authorization to modify AWS or perform paid tests. The requirements are intentionally free of personal agent aliases, account identifiers, local machine names, private endpoints and credentials.
+> This document is the accepted **full replacement** of the previous `SPEC.md` (v0.3), retaining validated P0/P1/P2 foundations and P3.0/P3.1 evidence while correcting the deployment boundary. This is documentation-only: it does not authorize AWS changes or paid tests. The requirements intentionally omit personal agent aliases, account identifiers, local machine names, private endpoints and credentials.
 
 ## 0. Document authority and implementation truth
 
@@ -417,7 +417,7 @@ This section describes **repository-recorded status**, not tests rerun for this 
 | **P3.0** OpenAB viability | One-off authenticated ACP/model response and separate client-to-Agent smoke recorded as pass, under limited test risk acceptance | Safe production agent sandbox, durable Relay and Inbox |
 | **P3.1** durable admission | Existing `relay/slow_path.py` and `relay/task_store.py` implement opt-in tool routing and SQLite atomic task + outbox admission; repository reports offline Fast Voice 39/39 and Relay 12/12 | Production startup wiring, real Gemini tool-call behavior |
 | **P3.2–P3.4** Dispatcher/ACP/Inbox | Planned; not part of merged admission code | Actual end-to-end durable task execution and status lookup |
-| **P4** AWS integration | Two-ECS architecture target in this amendment | Approved/deployed complete two-Service runtime and persistent storage |
+| **P4** AWS integration | Accepted two-ECS architecture target (PR #9) | Approved/deployed complete two-Service runtime and persistent storage |
 
 The existing P3.1 SQLite table constrains tasks to `status='queued'`; it does **not yet** implement running/completed/failed lifecycle, claims/recovery or Inbox. Extend/migrate it explicitly in P3.2. Do not interpret an `outbox` record as proof that an ACP call has executed.
 
@@ -471,12 +471,6 @@ Potential future work may include additional Live providers, a policy-based rout
 
 ## 18. Repository implications of this spec revision
 
-This spec revision is **documentation only**. To align existing repo documentation after approval:
-
-1. Adopt this `SPEC.md` as canonical requirements.
-2. Amend [ADR-0001](docs/adr/0001-openab-acp-slow-path.md) to the two-Service topology and Kai-aligned in-process Dispatcher.
-3. Update `PLAN.md` where its P3/P4 rows still require a separate Worker ECS or SQS, without rewriting verified P0–P3.1 history.
-4. Update `STATUS.md` only to reflect actual evidence and remove stale summary claims; do not mark P3.2–P4 completed by changing documentation.
-5. Preserve existing `fast_voice/`, `relay/slow_path.py`, `relay/task_store.py` and offline tests; actual implementation changes belong to separately reviewed PRs.
+This requirements revision was accepted for adoption through PR #9 as a documentation-only change. `SPEC.md`, ADR-0001, `PLAN.md`, `STATUS.md`, and `README.md` are aligned to the two-Service baseline. This amendment does not implement or deploy P3.2–P4; application-code changes, AWS resources, security changes, and paid integration calls remain subject to their separate gates.
 
 **Architecture acceptance rule:** No new ECS Service may be added merely because a logical Worker, session manager or queue is depicted. The default Amusant backend consists of **two** ECS Services, with a **thin Relay + lightweight Task Ledger/Inbox**, and an independently isolated OpenAB Agent Runtime.

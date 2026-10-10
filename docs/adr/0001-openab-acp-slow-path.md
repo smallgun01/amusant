@@ -1,13 +1,13 @@
 # ADR-0001 — Two-Service Relay + OpenAB ACP Architecture
 
-- **Status:** Proposed amendment, pending review (supersedes the earlier three-ECS deployment topology when approved)
-- **Updated:** 2026-10-10
+- **Status:** Accepted architecture amendment (PR #9; supersedes the earlier three-ECS topology; not a deployment approval)
+- **Updated:** 2026-10-11
 - **Scope:** P3 slow-task implementation and P4 AWS integration
 - **Requirements authority:** [SPEC.md](../../SPEC.md)
 - **Upstream inspiration:** [Kai architecture](https://github.com/zbruceli/kai/blob/1681fb3c11acd28525d8987bba4b9bf4bc2a288f/docs/ARCHITECTURE.md)
 - **OpenAB ACP research baseline:** [openabdev/openab `6431a1b6`](https://github.com/openabdev/openab/tree/6431a1b6991673429f344acb78a58d94658d30fb)
 
-> **Document boundary:** This is a proposed documentation revision, not evidence of deployment or production readiness. It retains the accepted ACP delegation direction and historical feasibility evidence while correcting the ECS topology. No credentials, private infrastructure identifiers, or personal agent aliases are part of the specification.
+> **Document boundary:** This accepted documentation amendment is not evidence of deployment or production readiness. It retains the accepted ACP delegation direction and historical feasibility evidence while correcting the ECS topology. No credentials, private infrastructure identifiers, or personal agent aliases are part of the specification.
 
 ## 1. Context: what Amusant is
 
@@ -282,17 +282,6 @@ Deferred:
 
 ## 13. Documentation-only acceptance criteria
 
-A future documentation PR adopting this amendment must:
-
-1. Make **two ECS Services** unambiguous everywhere: Relay and OpenAB.
-2. Show the Async Dispatcher inside ECS A in every diagram.
-3. Keep Gemini Live as the realtime voice/tool router and preserve P1/P2 tests.
-4. Preserve durable task admission and Result Inbox without bloating Relay with agent reasoning/memory.
-5. Separate voice session, task history, and agent context ownership.
-6. Preserve restart failure/uncertainty semantics and explicit limited retries.
-7. Remove incompatible three-Service language from `SPEC.md`, `PLAN.md` and active architecture docs; update `STATUS.md` only for factual corrections.
-8. Preserve verified P3.0/P3.1 evidence and clearly mark pending work.
-9. Exclude personal names, private environment aliases, account IDs, endpoint addresses, and real secrets.
-10. Make **no application-code changes, AWS changes, or paid integration calls** without specific subsequent approval.
+PR #9 adopts this amendment as a **documentation-only architecture decision**. The review confirmed the following: exactly two ECS Services (Relay + OpenAB); the Async Dispatcher stays inside Relay; Gemini Live remains the realtime router; Task Ledger/Inbox and restart uncertainty remain Relay-owned; voice-session, task-history, and agent-context ownership stay distinct; P3.0/P3.1 evidence is preserved and pending implementation is not marked complete. The SPEC/ADR contain no credentials, personal agent aliases, private endpoints, or account identifiers. No application code, AWS resources, permissions, or paid model calls were changed.
 
 **Principle:** The Relay is a thin voice gateway with a lightweight task ledger and result inbox. OpenAB owns agent reasoning and context. Logical asynchronous work does not justify a third deployment service.

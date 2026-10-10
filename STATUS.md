@@ -7,14 +7,14 @@
 
 ## 目前狀態
 
-**P0 — Foundation：完成。P1 — Kai-sim mock 音訊 smoke：PASS。P2 — Fast Voice：PASS（2026-10-09 runtime gate）。P3.0 — authenticated OpenAB ACP/model + one-off Worker feasibility smoke：PASS under explicitly accepted, task-bounded risk; not production acceptance. P3.1 — durable `delegate_task` admission：merged in PR #8 (`e354b92626813267d2b448a6ff340f8bd297f1b6`); Fast Voice 39/39、Relay 12/12 offline tests PASS. P3.2–P3.4 尚未完成。新的兩 ECS 文件修訂仍是待審提案，未採納／部署；P4 AWS 與付費測試仍須另行核准。
+**P0 — Foundation：完成。P1 — Kai-sim mock 音訊 smoke：PASS。P2 — Fast Voice：PASS（2026-10-09 runtime gate）。P3.0 — authenticated OpenAB ACP/model + one-off Worker feasibility smoke：PASS under explicitly accepted, task-bounded risk; not production acceptance. P3.1 — durable `delegate_task` admission：merged in PR #8 (`e354b92626813267d2b448a6ff340f8bd297f1b6`); Fast Voice 39/39、Relay 12/12 offline tests PASS. P3.2–P3.4 尚未完成。兩 ECS 文件修訂已由 Arthur 核准並納入 PR #9；這是架構採納，不代表已部署。P4 AWS 與付費測試仍須另行核准。
 
 ## 已確認決策
 
 - Amusant 為獨立維護的 Kai-compatible monorepo；Kai 保持架構與韌體上游。
 - 產品範圍只含語音溝通、語音／文字回覆；不含位置、感測器或實體控制。
 - 快語音 provider 手動選擇；Gemini Live 為首個 baseline；第二真實 provider 為 optional validation，不是 MVP gate。
-- **Architecture history:** PR #5 accepted the earlier ADR-0001 topology; this documentation amendment proposes exactly two ECS Services (Relay with in-process Async Dispatcher + OpenAB Agent Runtime), superseding the former three-service deployment topology only if approved. Until the amendment is reviewed/merged, it remains a proposal; no AWS deployment or spending is authorized by these documents.
+- **Architecture history:** PR #5 accepted the earlier ADR-0001 topology; PR #9 adopts exactly two ECS Services (Relay with in-process Async Dispatcher + OpenAB Agent Runtime), superseding the former three-service topology. The change is documentation-only, not deployment; no AWS operation or spending is authorized by these documents.
 - **P3.0 feasibility and risk acceptance:** authenticated ACP/model and a one-off Worker-to-Agent smoke passed under Arthur's explicitly accepted task-boundary risk for that test only. This is not proof of production sandbox restrictions or P4 readiness; Jellii remains scale 0. No N100 main Gateway access.
 - **P3.1 local admission slice:** PR #8 merged (`e354b92626813267d2b448a6ff340f8bd297f1b6`): optional Gemini `delegate_task(task, task_kind)` schema, server-supplied identity/backend, and SQLite atomic task + dispatch-intent admission with call-ID dedupe. Fast Voice 39/39, Relay 12/12 offline suites. No live Gemini/AWS operation. Actual Relay startup/tool declaration wiring, in-process dispatcher/recovery, ACP execution, and Result Inbox remain unfinished.
 - P0 = Foundation；H0 = Hardware UX Gate。先完成軟體 gate，再進 H0/H1。
