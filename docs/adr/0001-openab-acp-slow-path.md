@@ -1,7 +1,7 @@
 # ADR-0001 — OpenAB ACP Slow Path for Amusant
 
-- **Status:** Proposed for review (architecture-only PR; no runtime implementation yet)
-- **Date:** 2026-10-09
+- **Status:** Accepted (PR #5; architecture decision only, not a production implementation)
+- **Date:** 2026-10-10
 - **Scope:** P3 local Slow Path, P4 cloud-deployment design
 - **Related:** [SPEC.md](../../SPEC.md), [PLAN.md](../../PLAN.md), [Issue #1](https://github.com/smallgun01/amusant/issues/1)
 - **Research baseline:** OpenAB [commit 6431a1b6](https://github.com/openabdev/openab/tree/6431a1b6991673429f344acb78a58d94658d30fb), Kai pinned by SPEC

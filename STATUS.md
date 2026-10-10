@@ -1,6 +1,6 @@
 # Project Amusant — Status
 
-> 最後更新：2026-10-09
+> 最後更新：2026-10-10
 > 規格權威：SPEC.md
 > 執行計畫：PLAN.md
 > Repo：Private repository; remote is configured locally.
@@ -14,7 +14,7 @@
 - Amusant 為獨立維護的 Kai-compatible monorepo；Kai 保持架構與韌體上游。
 - 產品範圍只含語音溝通、語音／文字回覆；不含位置、感測器或實體控制。
 - 快語音 provider 手動選擇；Gemini Live 為首個 baseline；第二真實 provider 為 optional validation，不是 MVP gate。
-- **P3 architecture proposal (not implemented):** OpenAB ACP as first restricted slow backend, conditional on P3.0 authenticated smoke. [ADR-0001](docs/adr/0001-openab-acp-slow-path.md) describes decision and gates; original P0 OpenClaw decision is historical. No N100 main Gateway access.
+- **P3 architecture proposal (PR #5):** OpenAB ACP is the proposed first restricted slow backend; see [ADR-0001](docs/adr/0001-openab-acp-slow-path.md). On 2026-10-10, an authenticated session/prompt/end_turn smoke passed against pinned Jellii taskdef :9 with GPT-6 Luna. A separate one-off Fargate Worker prototype used a fake Relay/Result Inbox and real Jellii ACP, returned task_result/result_ack, and exited 0; Jellii remains 0/0/0. This proves the ACP/model/Worker smoke only—not durable task admission, production Relay/Inbox delivery, or the effective restricted-agent capability boundary. No N100 main Gateway access.
 - P0 = Foundation；H0 = Hardware UX Gate。先完成軟體 gate，再進 H0/H1。
 - Kai 上游核查基準：v0.12.0，commit 1681fb3c11acd28525d8987bba4b9bf4bc2a288f；MIT License。
 

@@ -242,7 +242,7 @@ P3 uses local SQLite and worker. P4 may deploy Relay, Worker and OpenAB as separ
 
 # 16. Amusant Relay
 
-Deploy the target Relay as a Docker container on ECS Fargate after local protocol validation. Responsibilities:
+For P4 only, deploy the target Relay as a Docker container on ECS Fargate after P3 local protocol validation and separate security/budget approval. P3 remains local-only; this section describes the future cloud endpoint. Responsibilities:
 
 ## Client transport
 
