@@ -145,9 +145,13 @@ Cloud delivery and reliability must be tested under Relay restarts, Worker resta
 - Disallow outgoing side-effecting tools (messages, purchases, destructive modifications, arbitrary shell, scheduled autonomous commands) until separately authorized and tested.
 - Protect ACP session isolation, rate limits, maximum tokens/spend and prompt-injection-contaminated summaries.
 
+## P3.0 one-off Jellii task-boundary risk acceptance (2026-10-10)
+
+For the bounded P3.0 viability smoke only, Arthur explicitly accepts the dedicated Jellii Fargate task as the trust boundary, including native `read/write/edit/bash` tools, task-local OpenAI OAuth state, and unrestricted outbound egress. This is a documented risk acceptance, not a claim that the agent cannot access those assets. Verified surrounding controls: no ECS task role, no ECS Exec, no mounts, and ACP ingress limited to the peer security group. The authenticated ACP/model and one-off Worker→Jellii smokes passed under this boundary. This acceptance is limited to the P3.0 viability test; it does not waive P4's separate security/budget gate or authorize production deployment. Production Relay/Result Inbox remains unimplemented.
+
 ## Acceptance gates
 
-1. **P3.0 upstream viability:** authenticated `/acp` smoke using pinned build, one restricted agent, verified model credential, timeout/cancellation behavior documented. If this fails, stop and revisit choice instead of building a replacement broker.
+1. **P3.0 upstream viability:** **PASS for the one-off Jellii task under the explicit task-boundary risk acceptance above**; authenticated ACP/session/prompt smoke used a pinned build and verified model response, with timeout/cancellation limitations documented. This does not constitute P4 production-security acceptance. If this gate fails, stop and revisit choice instead of building a replacement broker.
 2. **P3.1 Gemini admission (#1):** mocked function-call routes to validated/deduplicated durable task; same call ID receives accepted/unavailable/rejected; FAST never delegates.
 3. **P3.2 task durability:** worker crash/restart, queued recovery, duplicate prompts and two client reconnects do not lose accepted work or incorrectly claim exactly-once execution.
 4. **P3.3 ACP execution:** successful text task, timeout/failure/rate limit, unauthorized tool refusal, safe `speak/card/details_md` normalization.
