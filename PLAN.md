@@ -1,6 +1,6 @@
 # Project Amusant — Execution Plan
 
-> 更新：2026-10-09
+> 更新：2026-10-11
 > GitHub：Private repository; remote is configured locally.
 > 本機目錄：projects/amusant
 
@@ -39,8 +39,8 @@
 | P0 | Foundation | 已完成 | SPEC/PLAN/STATUS 權責、Amusant scope、Kai upstream baseline 與 private repo 已定；本次 spec reconciliation 完成後視為關閉。 |
 | P1 | kai-sim software smoke | 3–5 工作日 | LAN 主機列舉麥克風／喇叭並以 Kai kai-sim 連到 private host mock probe，完成 PTT PCM 收音、文字卡片及 tone/echo 播放。無需 M5、Live provider、OpenClaw 或 AWS。此 probe 是測試工具，不是完整 Kai relay／正式 Amusant Relay；4 個單元測試、真實跨 LAN 音訊閉環與一次重連 smoke PASS。使用者回報 release-to-first-audio 及重連均 <1 s（手動估計、樣本數未記）；正式 p50/p95 latency 留待 P4。 |
 | P2 | Fast voice | 1–2 工程週 | Gemini Live baseline、手動 provider selection、adapter contract 通過；local Kai `/ws`/PTT→Live bridge、fake-provider tests、TTS smoke 均 PASS。**2026-10-09 P2 runtime exit PASS**：same-LAN Kai-sim 收到真實 PTT PCM、Live turn 完成、輸出 PCM，使用者確認喇叭完整播放。此 gate 不含 AWS deployment、OpenClaw slow lane 或硬體。第二 Live provider 可選，只作 abstraction validation。 |
-| P3 | OpenAB ACP slow path（local PoC） | 待重新估時 | P3.0 authenticated ACP/model + one-off Worker smoke PASS under Arthur's explicit task-boundary risk acceptance (one-off Jellii task; no production Relay/Inbox). **P3.1 local offline prototype:** backend-neutral `delegate_task(task, task_kind)`, server-selected OpenAB backend, SQLite task+outbox atomic admission, client/conversation/turn/call_id dedupe; Fast Voice 39/39 + Relay 12/12 PASS. This PR implements only local durable admission + dispatch intent; next: runtime Relay composition, worker claims/recovery, ACP execution and Result Inbox (P3.2–3.4). P4 AWS deployment still requires separate security/budget approval. |
-| P4 | Software integration/acceptance + AWS staging | 待重估 | Relay/Worker/OpenAB 分離 ECS services/tasks/IAM、DynamoDB + SQS/outbox、latency/routing/privacy/restart/failure evaluation；AWS staging 預算與安全設定另行核准。 |
+| P3 | OpenAB ACP slow path（local） | 待重新估時 | P3.0 one-off authenticated ACP/model and Worker-to-Agent feasibility smoke PASS under the explicitly accepted, task-bounded test boundary; not production security/readiness. P3.1 `delegate_task` durable SQLite task+outbox admission merged in PR #8 (`e354b926`). Offline Fast Voice 39/39 + Relay 12/12. Next: finish Relay startup/tool wiring, then P3.2 in-process Async Dispatcher, lifecycle/recovery; P3.3 authenticated ACP execution; P3.4 Result Inbox. No new model calls/AWS changes authorized. |
+| P4 | Two-ECS software integration / AWS staging | 待重估 | Proposed target: exactly two ECS Services—Amusant Relay (with in-process Async Dispatcher) + OpenAB Agent Runtime. Validate device ingress, private authenticated/TLS ACP, separate task/IAM boundaries, restart behavior, latency/routing/privacy/failure and cost. ECS-replacement durability requires an approved external Task Store (DynamoDB is a candidate, not provisioned/approved); no standalone Worker ECS or mandatory SQS. Separate security/budget approval required. |
 | H0 | Hardware UX Gate | P4 後估算 | 比較專用裝置與最佳化手機流程；只有明顯降低摩擦才繼續。 |
 | H1 | Hardware integration | H0 通過後估算 | 使用 Kai-derived M5StickS3 firmware 驗證裝置音訊、PTT、網路與可靠性；不修改 Kai 上游，除非另行核准。 |
 
@@ -61,6 +61,6 @@
 ## 安全與治理 gates
 
 - P3 不接 N100 OpenClaw。OpenAB `/acp` 必須具備已編入的 `acp` feature、bearer 認證、單一受限 agent、最小工具權限、獨立模型憑證；ACP cancel 不保證真正停止執行，P3 單次上限 120 秒。
-- 持久化 accepted / failed / timeout / idempotency / reconnect 與 Inbox 由 Amusant 負責；以 ADR-0001 的 SQLite/Worker（P3）與 DynamoDB/SQS（P4）為依據。
+- P3 local durability uses SQLite task + dispatch intent and an application-scoped Async Dispatcher inside Relay; no standalone Worker ECS. AWS ECS-task replacement requires an approved external durable store (DynamoDB is a candidate); SQS is not an MVP requirement. The two-ECS amendment is pending documentation review; AWS changes/costs remain separately gated.
 - 任何 AWS 費用、硬體購買、私有主機設定變更或 Kai 上游改動，另行核准後才執行。
 - 目前此排程是專案里程碑，非 cron/提醒。

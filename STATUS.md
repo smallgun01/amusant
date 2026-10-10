@@ -1,25 +1,26 @@
 # Project Amusant — Status
 
-> 最後更新：2026-10-10
+> 最後更新：2026-10-11
 > 規格權威：SPEC.md
 > 執行計畫：PLAN.md
 > Repo：Private repository; remote is configured locally.
 
 ## 目前狀態
 
-**P0 — Foundation：完成。P1 — Kai-sim mock 音訊 smoke：PASS。P2 — Fast Voice：PASS（2026-10-09 runtime gate）**：25 個 root 離線測試、4 個 P1 relay tests PASS；Gemini Live TTS smoke PASS；真實 Kai-sim PTT→Live→speaker 完成一回合，input 152,576 bytes、turn_complete、output 92,642 bytes（約 1.93 秒 24 kHz PCM），使用者確認完整聽到語音。P2 不含 Slow Path、AWS deployment 或硬體；下一階段 P3（OpenAB architecture proposed, unimplemented）。
+**P0 — Foundation：完成。P1 — Kai-sim mock 音訊 smoke：PASS。P2 — Fast Voice：PASS（2026-10-09 runtime gate）。P3.0 — authenticated OpenAB ACP/model + one-off Worker feasibility smoke：PASS under explicitly accepted, task-bounded risk; not production acceptance. P3.1 — durable `delegate_task` admission：merged in PR #8 (`e354b92626813267d2b448a6ff340f8bd297f1b6`); Fast Voice 39/39、Relay 12/12 offline tests PASS. P3.2–P3.4 尚未完成。新的兩 ECS 文件修訂仍是待審提案，未採納／部署；P4 AWS 與付費測試仍須另行核准。
 
 ## 已確認決策
 
 - Amusant 為獨立維護的 Kai-compatible monorepo；Kai 保持架構與韌體上游。
 - 產品範圍只含語音溝通、語音／文字回覆；不含位置、感測器或實體控制。
 - 快語音 provider 手動選擇；Gemini Live 為首個 baseline；第二真實 provider 為 optional validation，不是 MVP gate。
-- **P3 architecture proposal (PR #5):** OpenAB ACP is the proposed first slow backend; see [ADR-0001](docs/adr/0001-openab-acp-slow-path.md). On 2026-10-10, authenticated ACP `initialize → session/new → session/prompt → end_turn` passed against pinned Jellii taskdef :9 with GPT-6 Luna. A separate one-off Fargate Worker prototype used a fake Relay/Result Inbox and real Jellii ACP, returned task_result/result_ack, and exited 0. Arthur explicitly accepted the dedicated Jellii Fargate task as the P3.0 trust boundary, including its built-in read/write/edit/bash tools, task-local OAuth state, and unrestricted egress. This is a scoped risk acceptance—not technical proof those assets are inaccessible, production Relay/Inbox acceptance, or P4 deployment approval. Task role is null, ECS Exec is disabled, no mounts; ACP ingress is peer-SG-only. Jellii remains 0/0/0. No N100 main Gateway access.
-- **P3.1 local admission slice:** optional Gemini `delegate_task(task, task_kind)` schema; server-supplied client/conversation/turn identity and server-selected OpenAB backend; SQLite commits task plus dispatch intent atomically and deduplicates client/conversation/turn/call_id. Offline suites: Fast Voice 39/39, Relay 12/12. No live Gemini request or AWS change; production Relay startup, worker claims/execution, and Result Inbox remain P3.2–P3.4 work.
+- **Architecture history:** PR #5 accepted the earlier ADR-0001 topology; this documentation amendment proposes exactly two ECS Services (Relay with in-process Async Dispatcher + OpenAB Agent Runtime), superseding the former three-service deployment topology only if approved. Until the amendment is reviewed/merged, it remains a proposal; no AWS deployment or spending is authorized by these documents.
+- **P3.0 feasibility and risk acceptance:** authenticated ACP/model and a one-off Worker-to-Agent smoke passed under Arthur's explicitly accepted task-boundary risk for that test only. This is not proof of production sandbox restrictions or P4 readiness; Jellii remains scale 0. No N100 main Gateway access.
+- **P3.1 local admission slice:** PR #8 merged (`e354b92626813267d2b448a6ff340f8bd297f1b6`): optional Gemini `delegate_task(task, task_kind)` schema, server-supplied identity/backend, and SQLite atomic task + dispatch-intent admission with call-ID dedupe. Fast Voice 39/39, Relay 12/12 offline suites. No live Gemini/AWS operation. Actual Relay startup/tool declaration wiring, in-process dispatcher/recovery, ACP execution, and Result Inbox remain unfinished.
 - P0 = Foundation；H0 = Hardware UX Gate。先完成軟體 gate，再進 H0/H1。
 - Kai 上游核查基準：v0.12.0，commit 1681fb3c11acd28525d8987bba4b9bf4bc2a288f；MIT License。
 
-## P2 — Fast Voice（進行中）
+## P2 — Fast Voice（完成）
 
 - 已新增 `fast_voice/` provider-neutral `LiveProvider` Protocol、provider capability metadata、provider error metadata 與 fail-closed 的明確 provider selection。介面依 SPEC.md §17；不自動選擇／切換，也不做 fallback。
 - 已新增 `GeminiLiveProvider` scaffold，使用注入的 client/types 物件呼叫 `connect`、`send_realtime_input`、`receive` 與 `send_tool_response`；另有 `build_live_provider()` 啟動接線，要求明確 `AMUSANT_LIVE_PROVIDER=gemini`，由執行環境注入 `GEMINI_API_KEY`。沒有自動 provider fallback。

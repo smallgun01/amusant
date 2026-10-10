@@ -1,276 +1,133 @@
 # Project Amusant
 
-## Voice Companion Architecture & MVP Specification v0.3 — P3 Proposal
+## Voice Companion Architecture & MVP Specification v0.4 — Two-ECS Baseline
+
+- **Status:** Proposed updated specification — pending review; **not merged or deployed**
+- **Updated:** 2026-10-10
+- **Product model:** One-to-one personal, grab-to-talk voice companion
+- **Deployment baseline:** Exactly **two ECS Services**: Amusant Relay + OpenAB Agent Runtime
+- **Real-time baseline:** Gemini Live, manually selected provider
+- **Slow-task transport:** OpenAB native authenticated ACP WebSocket
+- **Software acceptance frontend:** Kai `kai-sim`; future hardware candidate: M5StickS3
+- **Upstream reference:** [Kai](https://github.com/zbruceli/kai), pinned study baseline `1681fb3c11acd28525d8987bba4b9bf4bc2a288f`
+- **Architecture decision:** [ADR-0001 — Two-Service Relay + OpenAB ACP](docs/adr/0001-openab-acp-slow-path.md)
+
+> This document is a proposed **full replacement** of the previous `SPEC.md` (v0.3), retaining the validated P0/P1/P2 foundations and P3.0/P3.1 progress while correcting the deployment boundary. It is not authorization to modify AWS or perform paid tests. The requirements are intentionally free of personal agent aliases, account identifiers, local machine names, private endpoints and credentials.
+
+## 0. Document authority and implementation truth
+
+- **`SPEC.md`** defines product requirements, architecture constraints, non-goals, and acceptance criteria. It is the canonical requirements source.
+- **`docs/adr/0001-openab-acp-slow-path.md`** explains architecture rationale and the OpenAB ACP protocol; it may not silently expand deployment beyond this spec.
+- **`PLAN.md`** contains execution sequence, estimates, and approval gates; it must be aligned to this spec when amended.
+- **`STATUS.md`** documents evidence of completed work, not hypothetical implementation.
+- **`SPEC-P0-DELTA.md`** remains a historical decision record.
+
+Terminology must distinguish **required**, **recommended**, **implemented**, and **verified**. An architecture diagram or passing mock test is not a deployed feature. A previous test authorization does not authorize new cloud spending, real model calls, or security changes.
+
+## 1. Product definition and fixed boundary
+
+Amusant is a low-friction **one-to-one personal voice companion**, designed to offer a grab-to-talk experience comparable to a dedicated voice companion device rather than a general AI chat app. The product/UX reference is Muse Charm as a category and interaction benchmark only; this does not claim feature parity, compatibility, or a product dependency. Its first interaction should require:
+
+```text
+press PTT → speak → release → hear response
+```
+
+Normal operation is **one owner, one dedicated Relay, one configured OpenAB agent runtime**. The simulator and candidate hardware may be used interchangeably during development, but **multi-user tenancy, multi-Relay scaling, shared queues and fleet administration are outside the MVP**.
+
+Amusant does not aim to implement a second agent platform. It is a thin voice gateway that adds reliable handoff for bounded slow work. The actual agent reasoning, tool execution and agent-side context belong to the backend.
+
+The project tests two separable hypotheses:
+
+1. **Software:** Native live speech and a replaceable restricted agent backend provide immediate conversation plus asynchronous completion of selected complex tasks.
+2. **Hardware:** A dedicated PTT object offers meaningfully less friction than an optimized phone voice workflow. Hardware must pass H0 before substantial device-specific investment.
+
+## 2. Normative architecture — two ECS Services
+
+```text
+                  Kai-sim / M5StickS3 (PTT)
+                            |
+                authenticated device link
+                            |
+    +---------------------------------------------------+
+    | ECS A: AMUSANT RELAY                              |
+    |                                                   |
+    |  Device Gateway ↔ Gemini Live Adapter ---------+--+----> Gemini Live
+    |                    FAST (voice)                 |  |      (Google service)
+    |                    SLOW: delegate_task()        |  |
+    |                              |                  |  |
+    |                         Task Ledger             |  |
+    |                              |                  |  |
+    |                    Internal Async Dispatcher    |  |
+    |                              |                  |  |
+    |                        ACP Client --------------+--+--------+
+    |                              |                  |           |
+    |                         Result Inbox            |           |
+    +------------------------------|-------------------+           |
+                                   |                               |
+                          durable read/write               private ACP WSS
+                                   |                               |
+                         +------------------+            +--------v-----------------+
+                         | Small Task Store |            | ECS B: OPENAB RUNTIME   |
+                         | Task + Inbox     |            | AI agent + allowed tools|
+                         +------------------+            | Agent session/context   |
+                                                         +--------------------------+
+```
+
+**Requirements:**
+
+- **ECS A — Amusant Relay:** device authentication, PTT/audio stream, Live provider integration, Gemini function-call handling, task admission, lightweight task records, **in-process Async Dispatcher/ACP client**, and Result Inbox.
+- **ECS B — OpenAB Agent Runtime:** authenticated native ACP endpoint and the configured restricted agent with independent tools and credentials.
+- **Exactly two ECS Service types.** No independent Worker ECS, no additional worker API tier, no multi-Relay orchestration.
+- One active Relay task in normal operation; independent horizontal scaling is not an acceptance gate. Avoid overlapping active Relay instances during deployment if required, accepting a brief reconnect/downtime window.
+- A managed task database, if approved, is **not** another ECS Service. Gemini Live is an external model provider, not another ECS.
+- A logical Worker/Dispatcher is not equivalent to a deployed Worker Service. Never add an ECS merely to execute asynchronous ACP network calls.
+
+**Kai precedent:** Kai's Relay implements voice, `AgentHub`, task watching and SQLite Inbox in a single Python service; Hermes is the separate agent runtime. Amusant preserves the **two-component responsibility split**, substituting OpenAB ACP for Hermes HTTP. The two components are placed in separate ECS Services in AWS, whereas Kai originally runs its Relay and agent on the same host.
+
+## 3. Product architecture principles
+
+1. **Voice first:** Never put custom STT → classifier → LLM → TTS in the real-time path when native streaming Live is available.
+2. **Keep Relay thin:** Relay holds only the minimum task receipts and deliverable results. No model reasoning, vector memory, agent scratchpads, multi-agent routing, or broad tool execution in ECS A.
+3. **Fast stays fast:** Normal answers should not await task-store scans, ACP agent responses, or cloud queue round-trips.
+4. **Agent backend remains replaceable:** `delegate_task` does not expose agent/backend selection; the server chooses it.
+5. **Honest task acknowledgement:** Say *accepted* only after durable admission. Acknowledgement does not mean the work is finished.
+6. **One-to-one MVP:** Do not expand scope to multi-tenancy or scaled worker fleets in anticipation of hypothetical demand.
+7. **No silent permission growth:** No uncontrolled agent commands, side-effecting actions, or access to unrelated personal services without a new authorization gate.
+
+Engineering priority order: interaction friction, perceived voice latency, reliable completion/delivery, security, maintainability, then optional provider sophistication. Reliability must be proportionate to the one-to-one product.
+
+## 4. Fast / Slow routing
+
+Gemini Live is the initial native audio model and the FAST/SLOW router via model function calling.
+
+| Lane | Example | Behavior |
+|---|---|---|
+| **Direct (FAST)** | “What is a crankcase?” | Gemini Live answers directly; no slow-task persistence |
+| **Fast tool** | “What is the current time?” | A specifically authorized bounded local/API tool may run inline |
+| **Slow delegation** | “Research and compare current prices for three laptops.” | Gemini calls `delegate_task`, Relay durably admits, OpenAB runs asynchronously, result enters Inbox |
 
-- **Status:** Planning / software-first; not yet implementation-ready
-- **Project:** Amusant
-- **Upstream foundation:** zbruceli/kai
-- **Initial slow-task backend:** OpenAB ACP (proposed; P3.0 smoke required)
-- **Software development client:** Kai kai-sim
-- **First hardware candidate:** M5StickS3 using Kai-derived firmware
+The selected Live provider is **manual**, with Gemini Live as the required initial baseline. Automatic provider switching and multi-provider production support are deferred. A second Live provider may later validate the abstraction but is not an MVP pass/fail gate.
 
-> This is the complete requirements source of truth, canonicalized from the supplied v0.2 specification and decisions confirmed on 2026-10-07. P0 naming and provider-gate decisions below supersede conflicting labels or gates in the original attachment.
+The selected Live model must not claim that a Slow Task has been delegated unless the Relay actually returns a successful admission result. Unavailable, denied or uncertain admission must be reported honestly.
 
-## Repository document authority
+## 5. Device and realtime voice UX
 
-- SPEC.md is the requirements source of truth: scope, constraints, architecture requirements, and acceptance criteria.
-- PLAN.md is the execution plan: ordering, estimates, and gates; it must not silently redefine requirements.
-- STATUS.md records current verified state and evidence; it does not override SPEC.md.
-- SPEC-P0-DELTA.md is a historical decision record, not a competing requirements source.
+### Baseline input/output
 
-## Milestone naming
+- Software client: pinned Kai-compatible `kai-sim`; future PTT hardware: M5StickS3 using Kai-derived firmware after H0.
+- Transport: Kai-compatible audio/PTT/control envelopes; local prototype uses PCM16LE input at **16 kHz**, output at **24 kHz** with explicit sample-rate metadata. Opus support may be preserved/added as required by the hardware.
+- Device only handles buttons, microphone, speaker, display/card, and network; provider credentials and agent logic stay server-side.
+- Input activity follows PTT start/release boundaries. Short/invalid taps and stale turns must not generate unauthorized model/tool calls.
+- Barge-in and explicit cancellation are distinct events. Do not assert an agent or voice cancellation was successful until the relevant provider reports what actually stopped.
+- No app-unlock or phone interaction per normal PTT turn is the hardware UX goal.
 
-- P0 — Foundation: project identity, repository/document structure, upstream boundary, and canonical requirements. Closed after this reconciliation.
-- P1–P4 — Software validation and acceptance, using kai-sim before hardware.
-- H0 — Hardware UX Gate: decide whether dedicated hardware earns its place, after software acceptance.
-- H1 — Hardware integration/validation, only if H0 passes.
+### Live provider interface
 
----
+The provider adapter must expose explicit capabilities and event callbacks, including audio, transcripts, tool calls, interruption, completion and sanitized errors. Illustrative contract:
 
-## P3 Architecture Update — OpenAB ACP (proposed 2026-10-09)
-
-**This section and the updated requirements below define the proposed P3 design.** See [ADR-0001](docs/adr/0001-openab-acp-slow-path.md) for decisions, sequence, security, failure modes and acceptance gates. P0/P1/P2 design and verified runtime gates remain intact.
-
-**Product:** Grab-to-talk, bring-your-own-agent voice companion. Gemini Live remains the realtime voice layer and FAST/SLOW router; simple conversations never go through the slow backend. `kai-sim` remains the P3 software acceptance client; M5StickS3 follows the H0 hardware UX gate.
-
-**P3 default Slow Backend:** OpenAB native authenticated ACP-over-WebSocket (`GET /acp`) with **one isolated, capability-restricted ACP agent**. No N100 Home Bridge, no connection to the main OpenClaw Gateway and no inheritance of its memories/credentials. An independently isolated OpenClaw backend may be considered later; Gemini-facing tool naming remains backend-neutral.
-
-**P3 sequence and ownership:**
-
-~~~text
-Device/kai-sim → Amusant Relay ↔ Gemini Live (FAST)
-                                    │ function call: delegate_task (SLOW)
-                                    ▼
-                        Relay validates / authorizes
-                                    │
-                        SQLite durable task + dispatch intent
-                                    │
-                        FunctionResponse (same call_id):
-                        accepted + task_id, or honest error
-                                    │
-                        short Gemini spoken acknowledgement
-                                    │ (separate async worker)
-                        Worker → OpenAB /acp → restricted agent
-                                    │
-                        Result Inbox (status, card, speak, details_md)
-                                    │
-                        reconnect notification / user-requested
-                        new tool-disabled Live speech turn
-~~~
-
-`delegate_task` accepts a **bounded task string**, optionally a bounded task-kind hint (`research`, `compare`, `summarize`). Do not expose backend URL, agent name, arbitrary tools/commands or secrets as model-controlled parameters. Admission means task + dispatch intent durably committed, **not finished**. Gemini receives the same function call ID only once; completed results are independent inbox events, not a second function response. Use admission-only short blocking tool behavior only if the selected Gemini model supports it; never block Live until OpenAB finishes.
-
-**P3.0 gate before #1 implementation:** prove OpenAB binary/image actually includes its `acp` feature; run authenticated `initialize`, `session/new`, `session/prompt` with an explicitly chosen restricted agent, model credentials and `OPENAB_ACP_ENABLED=true`. OpenAB uses `OPENAB_ACP_AUTH_KEY` transport bearer and allowed synthetic `acp_client` identity. A successful initial smoke is a go/no-go; no speculative adapter implementation if unsupported. Confirm upstream 180-second ACP prompt idle timeout and incomplete underlying cancellation; P3 limits attempts to **120 seconds** and cannot promise stopping side effects on timeout.
-
-**Reliable tasks:** P3 uses local SQLite + dispatch intent/outbox + leases + bounded worker retries and `queued → running → completed | failed | expired` statuses. Task execution is **at least once**; enforce idempotency and enable no side-effecting tasks in P3. Result Inbox keeps separate delivery state, surviving Live/device disconnects and process restarts. Long-term memory, multi-agent routing, monitoring, broad shell/browser tools and permanent OpenAB subscription OAuth are not assumed.
-
-**P4 (separate security/budget approval):** deploy Relay, Worker, OpenAB as **separate ECS tasks/services with distinct IAM roles**, OpenAB reachable privately over authenticated/TLS ACP only, DynamoDB as task source of truth plus SQS/outbox reconciliation. No privileged Relay/Agent sidecar sharing one IAM role, no public ACP, no N100 or personal OpenClaw secrets. Do not claim P4 deployed as a result of this proposal.
-
-**Execution:** P3.0 ACP smoke → P3.1 `delegate_task` durable admission (#1) → P3.2 registry/worker recovery → P3.3 restricted ACP execution → P3.4 Inbox + speech. Keep P1/P2 tests green; no paid Live call or AWS deployment without separate approval.
-
----
-
-# 1. Project Definition
-
-Amusant is a low-latency, grab-to-talk and backend-neutral AI voice companion. The project consists of a realtime voice frontend, Relay, native fast/slow routing, durable slow-task delegation, asynchronous result delivery, and replaceable voice frontends and agent backends.
-
-The product experience should feel like:
-
-> Speak to Amusant with minimal friction and receive a useful spoken response almost immediately.
-
-For complex work, Amusant acknowledges only after durable task admission, delegates to a restricted ACP agent and delivers the outcome asynchronously. In this phase, Amusant handles voice communication and spoken/text responses only; it does not add location sensing, environmental sensors, or physical-device control.
-
-# 2. Product Hypotheses
-
-The project tests two separate hypotheses, with a replaceable backend as the software hypothesis.
-
-## Hypothesis A — Software/backend
-
-A realtime Live voice model combined with a restricted, replaceable slow agent can provide immediate conversation and reliable background work without forcing every request through a slow agent pipeline. This hypothesis can be tested with kai-sim before hardware work.
-
-## Hypothesis B — Dedicated hardware
-
-A dedicated physical Amusant device may provide lower interaction friction than using a phone directly. This is not assumed to be true. Failure of the hardware hypothesis may pause or replace the hardware track without invalidating the software/backend.
-
-# 3. Naming Convention
-
-- Project: Amusant
-- Cloud voice gateway: Amusant Relay
-- Realtime conversational layer: Amusant Live
-- Slow-task coordinator: Amusant Task Manager and Result Inbox
-- First backend: OpenAB ACP agent
-- Development frontend: Kai kai-sim
-- First hardware candidate: Amusant Device based on M5StickS3
-- Upstream architecture and hardware firmware: Kai, repository zbruceli/kai
-
-Keep Amusant-owned service names separate from Kai internals. Do not rename upstream Kai internals merely for branding when that would make upstream synchronization harder.
-
-# 4. Primary UX Goal
-
-The critical product metric is interaction friction, not raw model intelligence. The intended fast interaction is:
-
-~~~text
-press → speak → release → hear response
-~~~
-
-For a dedicated device to justify its existence, normal use should target one physical PTT action, zero required screen attention, and zero phone interaction per request. H0 targets audio capture within 0.5 seconds of PTT down and first audible response at p50 ≤1.2 seconds / p95 ≤2.0 seconds after PTT release. These are goals, not claims about current performance.
-
-# 5. Engineering Priorities
-
-Optimize in this order:
-
-1. Perceived voice latency
-2. Interaction friction
-3. Reliability
-4. Security
-5. Maintainability
-6. Model/provider sophistication
-
-Never make the realtime path slower merely to make the backend architecture more elegant.
-
-# 6. MVP Scope
-
-~~~text
-kai-sim / future M5 → Relay ↔ Gemini Live (FAST)
-                         │ delegate_task (SLOW)
-                         ▼
-                   Durable Registry
-                         ▼
-                   Worker → OpenAB ACP
-                         ▼
-                   Inbox → notification / requested speech
-~~~
-
-P3 is local-only with SQLite and restricted ACP. P4 evaluates separate ECS Relay/Worker/OpenAB tasks, DynamoDB and SQS after approval. No N100 main OpenClaw connection. Existing P0–P2 acceptance remains intact.
-
-# 7. Explicit Non-Goals
-
-Do not implement in the initial MVP:
-
-- Android or iOS companion applications.
-- BLE audio bridge, LE Audio, cellular modem, or eSIM integration.
-- Major Kai firmware rewrite or direct M5StickS3-to-Live-provider integration.
-- Persistent cloud conversation storage, audio recording/archive, custom STT, or custom TTS.
-- Public exposure of the OpenClaw Gateway or an unprotected relay port.
-- Automatic fast-provider selection/failover.
-- Multi-provider production support as a prerequisite to software MVP acceptance.
-- Consumer hardware certification.
-- Location, sensors, or physical-world actuation.
-
-# 8. Core Architecture Principle — Voice First
-
-The primary input is streaming audio. Do not put a custom audio → STT → classifier → LLM → TTS chain on the realtime critical path when the selected Live provider supports native realtime audio. The fast layer handles direct answers and bounded quick tools; long work uses the backend-neutral durable task boundary.
-
-# 9. Fast / Slow Architecture
-
-Amusant uses three logical lanes.
-
-## Lane 0 — Direct
-
-Example: “某車款的引擎有幾缸？” The selected Live provider answers directly from available knowledge; no external tool is needed.
-
-## Lane 1 — Fast Tool
-
-Example: “現在幾點？” A bounded, predictable low-latency tool may run inline and return its result to Live. The MVP must name and authorize any quick tool before implementation; do not silently grant arbitrary tool access.
-
-## Lane 2 — Slow Delegation
-
-Example: “查詢目前的二手筆電行情，並依指定用途比較。” Supported bounded current research and comparison tasks go to the restricted P3 ACP backend. Persistent memory/history, arbitrary browser/computer operations, multi-agent actions, scheduled monitoring and unbounded work remain deferred. Live acknowledges only after durable admission.
-
-# 10. Fast Provider Is the Initial Router
-
-The selected Live provider owns the immediate conversational experience and may choose DIRECT, FAST TOOL, or SLOW DELEGATION through its native function/tool calling. Do not insert another model into the realtime critical path unless observed routing failures justify it. Jev may later be evaluated as a shadow classifier or policy guardrail; it is deferred.
-
-The user manually selects the fast provider. Amusant must not automatically choose or switch providers. Gemini Live is the required initial baseline. A second real Live provider is optional validation of the provider abstraction, not an MVP pass/fail gate.
-
-# 11. Slow Backend Responsibilities
-
-Amusant owns the durable admission/Task Registry/Result Inbox and user/device authorization. A single restricted OpenAB ACP agent performs bounded slow text work. It is not a durable personal memory service. N100 OpenClaw integration, cross-agent memory, monitoring and unbounded actions are outside P3. See [ADR-0001](docs/adr/0001-openab-acp-slow-path.md).
-
-# 12. Frontend Independence
-
-Amusant must not depend on one frontend. Possible frontends include kai-sim, M5StickS3, desktop, browser, future phone client, or future hardware. The software backend remains valid if the M5StickS3 hypothesis fails. Kai remains the upstream source for the original simulator/protocol and later hardware firmware.
-
-# 13. H0 — Hardware UX Gate
-
-H0 asks whether dedicated hardware provides enough UX advantage over an optimized phone voice workflow. H0 runs only after software acceptance and before significant M5-specific development. Hardware success is not assumed.
-
-## Baseline
-
-Measure the same voice request using an optimized phone flow: wake/unlock if required, invoke voice, speak, and receive a response.
-
-## Hardware target
-
-~~~text
-Touch device → hold PTT → speak → release
-~~~
-
-Targets:
-
-- User actions before speaking: 1 physical action.
-- Eyes required: 0.
-- Phone interaction per request: 0.
-- PTT down to audio capture: <0.5 seconds.
-- PTT release to first audible response: p50 ≤1.2 seconds, p95 ≤2.0 seconds.
-
-H0 must show meaningfully lower interaction friction than the same command on a phone. If it does not, hardware may be paused/replaced while the backend continues.
-
-# 14. Mobile Network Rule
-
-The MVP does not require a custom phone application. The hardware candidate may use:
-
-~~~text
-Amusant Device → phone hotspot → 4G/5G → AWS Amusant Relay
-~~~
-
-Hotspot usability is part of H0/H1: persistent-hotspot behavior, idle timeout, reconnect time, battery impact, known-network reconnect, and Android/iOS differences. Normal interaction should not require manually operating the phone before every request. A hotspot does not itself provide a private route to the home Gateway. Never expose the OpenClaw Gateway or an unprotected relay port publicly.
-
-# 15. Target Software Architecture
-
-~~~text
-Kai-sim or M5 → Amusant Relay ↔ Gemini Live (FAST)
-                       │       delegate_task (SLOW)
-                       ▼
-                Durable Task Registry
-                       ▼
-                Worker → OpenAB /acp
-                       ▼
-                Result Inbox → notification / requested speech
-~~~
-
-P3 uses local SQLite and worker. P4 may deploy Relay, Worker and OpenAB as separate ECS services after authorization; there is no default N100 Home Bridge. The existing Kai /ws Fast Voice code remains the baseline.
-
-# 16. Amusant Relay
-
-For P4 only, deploy the target Relay as a Docker container on ECS Fargate after P3 local protocol validation and separate security/budget approval. P3 remains local-only; this section describes the future cloud endpoint. Responsibilities:
-
-## Client transport
-
-- Accept Kai-compatible WSS clients and authenticate clients.
-- Receive streaming audio, PTT/activity boundaries, and maintain turn/session state.
-- Stream returned audio and deliver text/card/notification data.
-
-## Live provider
-
-- Establish/manage realtime provider sessions.
-- Stream input audio and PTT/activity boundaries.
-- Receive model audio, text/transcript, and tool calls; return tool results.
-
-## Slow tasks
-
-- Receive validated backend-neutral `delegate_task` calls and durably commit task + dispatch intent before replying with the same Gemini tool call ID.
-- Dispatch independently via Worker and authenticated OpenAB ACP; never wait for agent execution in the Live callback.
-- Track durable state and deliver results through Inbox across process/client reconnects.
-
-The Relay should remain largely stateless. If slow-task acceptance/results must survive a Fargate restart, define durable storage, idempotency, expiry, and delivery semantics; never rely on container-local memory while promising guaranteed delivery.
-
-# 17. Amusant Live Provider Interface
-
-Provider-specific logic must be abstracted. Gemini Live is the initial required provider because Kai already uses it. OpenAI GPT Live and xAI Grok Voice are optional candidates for later/provider-abstraction validation, subject to current capability checks. A second provider is not mandatory for MVP acceptance.
-
-~~~python
+```python
 class LiveProvider:
-    capabilities: ProviderCapabilities  # per-provider; never infer identical support
+    capabilities: ProviderCapabilities
     async def connect(self): ...
     async def close(self): ...
     async def send_audio(self, frame: AudioFrame): ...
@@ -285,144 +142,341 @@ class LiveProvider:
     def on_interrupted(self, callback): ...
     def on_turn_complete(self, callback): ...
     def on_error(self, callback): ...
-~~~
+```
 
-The initial Kai-compatible audio envelope is mono PCM16LE with explicit sample rate: 16 kHz client input and 24 kHz client output. Provider adapters normalize their own audio encoding/rate to this boundary; an `AudioFrame` carries bytes and sample-rate metadata. If a format/rate is not implemented, the adapter must fail closed rather than mislabel the audio. This baseline is grounded in the pinned Kai v0.12.0 relay source.
+The adapter must normalize actual audio formats and fail closed if an unsupported rate/encoding is requested. Provider callbacks remain ordered and stale provider/turn events are ignored. No automatic fallback to another provider when selection/configuration fails.
 
-Callbacks are dispatched serially in provider receive order. Transcript events identify input/output and partial/final state. Tool-call events carry the provider call ID, function name, and JSON arguments. `on_interrupted` reports provider-confirmed interruption separately from `on_turn_complete`. Background receive errors are emitted as sanitized provider errors; credentials, raw audio, and full prompts must not enter logs/events.
+### Voice targets (goals, not measured production claims)
 
-PTT `start_turn`/`end_turn` represent activity start/release; starting a new turn may barge in when the provider supports it. Barge-in and standalone `cancel_response` are distinct capabilities. Do not report a cancellation or completed turn before the provider confirms it.
+- PTT down → audio capture: **< 0.5 s**.
+- PTT release → first audible FAST response: **p50 ≤ 1.2 s; p95 ≤ 2.0 s** (stretch p50 < 1.0 s).
+- PTT release → short SLOW acceptance speech: same response-latency target, conditional on live model/tool behavior.
+- Slow agent execution time is **not** counted inside realtime first-audio latency.
 
-The UI/config selects the provider manually, for example `AMUSANT_LIVE_PROVIDER=gemini`; missing or unknown selection fails closed, with no automatic provider choice or fallback. Providers must be compared for streaming audio, speech output, tool calling, barge-in/cancellation, session lifecycle, language support, errors, cost, and latency. An adapter does not imply identical capabilities.
+Sample sizes must be reported. Earlier successful one-turn audio smoke tests do not establish production p50/p95 latency.
 
-# 18. Slow Delegation Tool
+## 6. `delegate_task` tool contract
 
-Gemini Live registers one backend-neutral `delegate_task` function, with a bounded string `task` and optional enum `task_kind` (`research`, `compare`, `summarize`). No model-selected backend URL, arbitrary agent, tools, command or file path is allowed. Relay validates request/user/turn, persists task + dispatch intent, and returns the **same call ID** with `{"status":"accepted","task_id":"..."}` only after durable admission, or honest rejection/unavailability. It must **not** await OpenAB execution; blocking can only cover brief verified admission.
+### Gemini-facing schema
 
-# 19. Routing Policy
+```text
+delegate_task(
+  task: string,                        # bounded, non-empty; <= 4096 chars
+  task_kind?: research|compare|summarize
+)
+```
 
-Direct normal conversation and small bounded tools through Gemini Live. Delegate only allowed background text/research tasks. Don't claim background work was started without a successful function call and durable acceptance. This first P3 backend does not imply cross-session personal memory, autonomous schedules, browser/computer control or side-effecting actions; prompts are not a substitute for runtime authorization.
+No model-controlled `backend_url`, arbitrary `agent_id`, filename, shell command, credential, tool list, IAM role, or execution endpoint is allowed. The backend and allowed capabilities are server-side policy.
 
-# 20. Slow Task UX
+### Admission
 
-~~~text
-PTT → Gemini Live delegate_task → Relay durable accepted + task_id
-→ short spoken acknowledgement → Worker calls OpenAB ACP
-→ status/result persisted → Inbox notification/card on reconnect
-→ user-requested spoken summary in NEW tool-disabled Live turn
-~~~
+1. Verify an authenticated device/owner context and valid current PTT/turn state.
+2. Validate the model tool name, size, schema, task kind and pending-capacity policy.
+3. Generate server-side `task_id` and identity/deduplication fields.
+4. **Durably commit task + dispatch intent together.**
+5. Respond once to the exact original provider call ID:
 
-`speak` (brief), `card` and `details_md` (bounded) results are normalized from untrusted ACP output. Do not return completion via the already-answered admission function-call ID.
+```json
+{"status": "accepted", "task_id": "t_illustrative"}
+```
 
-# 21. OpenAB ACP Worker
+For invalid/conflicting/unavailable/ambiguous admission return sanitized `rejected`, `unavailable`, or `unknown`. `unknown` is required when a persistence operation may have committed but acknowledgement cannot be confirmed. Retries of the same trusted call key must deduplicate rather than create a second task.
 
-Worker uses native authenticated OpenAB `GET /acp` WebSocket with JSON-RPC: `initialize` → `session/new` (fixed `cwd`, no model-selected MCP servers) → `session/prompt`; text is received in `session/update` and success requires the correlated terminal prompt response. A pinned image compiled with `acp` support, `OPENAB_ACP_ENABLED=true`, bearer `OPENAB_ACP_AUTH_KEY` and narrowly permitted `acp_client` sender must pass P3.0 before tool implementation. Session resume is not durable memory replay. Research baseline timeout 180s; P3 attempt max 120s. `session/cancel` does not guarantee backend execution stops.
+Deduplication key: trusted `(client_id, conversation_id, turn_id, call_id)`; conversation/turn scopes must not be accidentally reused after reconnects.
 
-# 22. Durable Task Registry and Inbox
+**Tool behavior:** Verify the selected Gemini model/SDK ordering and blocking semantics with offline tests and a separately approved real tool-call test. Use short admission-only blocking behavior if needed and supported; **never wait for the ACP agent** while answering the original function call. Completion is an Inbox event, not a second FunctionResponse.
 
-P3 local SQLite stores owner/turn/task ID, dedupe key, task status (`queued`, `running`, `completed`, `failed`, `expired`), leases/attempts and transactional dispatch intent. Independent delivery status survives disconnect and is used for retry-safe notifications. Execution is at-least-once; exactly-once side effects are not promised. P4 proposes DynamoDB conditional claims + SQS with outbox reconciliation. Agent result is `{"task_id":"...","status":"completed","result":{"speak":"...","card":"...","details_md":"..."}}`.
+## 7. Slow-task coordination lives inside Relay
 
-# 23. Isolation and Security
+**Single application, two logical responsibilities:**
 
-Do not connect to the main N100 OpenClaw or expose ACP publicly. OpenAB must run restricted tools/filesystem/network, separate credentials, and no access to the Amusant task database/SQS or home assets. P4 Relay/Worker/OpenAB require different ECS tasks and IAM roles, not privileged sidecars. Agent output is untrusted and speech replay disables Live tools. No raw audio persistence; keep bounded task-data retention. See [ADR-0001](docs/adr/0001-openab-acp-slow-path.md).
+- **Voice loop:** handle audio/device events, maintain Live session, deliver timely speech.
+- **Internal Async Dispatcher:** read admitted queued tasks, send bounded text through ACP, await terminal result in the background, save completion/failure, and notify Inbox listeners.
 
-# 24. Credentials and Data
+The dispatcher is application-scoped, **not** tied to a device WebSocket or Live session. Disconnects must not erase previously accepted jobs. It must use asynchronous I/O or offload blocking storage operations so that an agent timeout cannot block the voice path.
 
-- AWS uses ECS task roles/execution roles; do not embed static AWS credentials in source, .env examples, or images.
-- Live-provider credentials belong in AWS Secrets Manager if cloud deployment is approved.
-- ACP transport and agent provider credentials must be distinct from device/Relay credentials, revocable and injected securely.
-- No main N100 OpenClaw Gateway credentials are used in P3.
-- Simulator may start with one test credential. Future devices use unique device_id and revocable device secret/nonce/HMAC; never put Live provider credentials in firmware.
-- Do not log raw audio. Transcript/task/result retention and deletion policy must be defined; provider data handling must be checked.
+Initial default: allow **one concurrent ACP slow task** per personal Relay, with configurable pending-task count and rate limits. Do not add a third ECS, cross-Relay job claiming, work-stealing or a mandatory queue service to implement this simple behavior.
 
-# 25. AWS Infrastructure
+### Operational stages
 
-P3 is local-only and must not incur unapproved AWS costs. P4 proposes ALB/ACM WSS to Relay ECS, independently permissioned Worker ECS and private authenticated/TLS OpenAB ECS, DynamoDB/SQS with outbox, IAM, Secrets Manager, CloudWatch, and configurable AWS region; deployment requires separate budget/security approval.
+```text
+queued (durably admitted)
+  → running (ACP may have been dispatched)
+      → completed / failed / expired / uncertain
+```
 
-# 26. Repository Structure
+`retrying` may be added for bounded eligible retries. The dispatcher must distinguish **definitely not sent** from **may have been sent**. A terminated connection does not prove backend execution stopped.
 
-Keep Kai protocol/P1/P2 `relay/` and `fast_voice/` intact. Proposed P3 additions under `slow/` for durable admission, worker, OpenAB ACP adapter and result Inbox; these modules are **not yet implemented**. See [ADR-0001](docs/adr/0001-openab-acp-slow-path.md).
+### Recovery requirements
 
-# 27. Observability
+- If a task was admitted but not dispatched, restarting ECS A must recover and dispatch the queued record.
+- If the Relay exits after an ACP prompt may have been sent, the outcome is **uncertain** unless confirmed. Do not claim success or claim cancellation.
+- Only approved **read-only/idempotent research tasks** may be retried automatically, with bounded attempts and backoff; repeated execution may incur cost and is not guaranteed exactly-once.
+- Explicitly fail or expire tasks outside policy. No side-effecting autonomous actions in P3.
+- A new Relay process must find still-pending task records and Inbox items independently of the original Live session.
+- A single active Relay is in scope. Cross-replica conditional claims and distributed consensus are **not** MVP acceptance requirements; any future deployment permitting simultaneous active Relays requires a separate design review.
 
-Every conversation turn receives turn_id; every delegated task receives task_id. Required timestamps:
+### Realistic limitation
 
-~~~text
-ptt_down
-first_audio_received_by_relay
-live_session_ready
-input_turn_end
-live_tool_call
-first_output_audio
-delegate_created
-home_bridge_received
-slow_worker_started
-slow_worker_finished
-result_received_by_relay
-result_delivered
-~~~
+OpenAB ACP **does not provide Hermes-style durable `run_id` querying**. Its `session/resume` preserves conversation context under retention constraints and does not replay lost output or guarantee retrieval of an interrupted in-flight prompt. Amusant must not promise seamless continuation of arbitrary long agent runs after a Relay crash. That capability would require a separately designed backend-owned durable job API, not another Worker ECS by default.
 
-Metrics: PTT release → first audio; PTT release → delegation acknowledgement; Relay↔Live RTT; Relay↔Worker dispatch delay; OpenAB ACP execution duration; slow-task end-to-end delivery. Do not log raw audio or full transcripts by default; debug content logging requires explicit configuration.
+## 8. Thin Task Ledger + Result Inbox
 
-# 28. Software Latency Targets
+**Definition:** A minimal work-order register owned by Relay, stored outside volatile process memory for the deployed AWS configuration. It is **not** a conversation archive or agent memory system.
 
-Fast path, PTT release → first audible response: target p50 ≤1.2 sec, p95 ≤2.0 sec; stretch p50 <1.0 sec. Slow path, PTT release → spoken acknowledgement: same target; actual bounded ACP work may take seconds or minutes and does not count as realtime latency. Targets remain unmeasured. Thirty samples are smoke-level, not robust p95 evidence.
+### Minimal task record
 
-# 29. Routing Evaluation
+| Data | Needed? | Purpose |
+|---|---|---|
+| `task_id` | Required | Stable identifier for asking about previous work |
+| Trusted client / conversation / turn / call identifiers | Required | Authorization, deduplication, stale-turn protection |
+| `task_text`, `task_kind` | Required | What was requested; possible bounded safe replay |
+| `backend_id` (server-selected) | Required | Know which approved agent runtime was used |
+| `status` and dispatch stage | Required | `queued`, `running`, `completed`, `failed`, `expired`, `uncertain` |
+| `created_at`, `updated_at`, `expires_at` | Required | Timeline, retry bounds and retention |
+| `attempts`, optional `next_attempt_at` | Required when retry is supported | Bounded retries and recovery |
+| `speak`, small `card`, bounded `details_md` | Required on completion | What a future Live session needs to tell the user |
+| `delivery_state` | Required on completion | Pending/notified/read/spoken, separate from execution |
+| ACP `sessionId` | Optional | Context diagnostic/continuation **only**, never the durable task-result key |
 
-Evaluate at least 100 utterances, including conversation, factual questions, simple reasoning, current information, research, comparison, personal memory, named-agent requests, browser work, scheduled tasks, long-running work, ambiguous requests, Chinese, English, mixed language, and technical names. Examples:
+Do **not** save raw audio PCM, full Gemini transcripts by default, model reasoning traces, chain-of-thought, all search pages, agent tool logs, broad browser/shell state, arbitrary attachments, or credentials in the Relay ledger.
 
-~~~text
-“某車款的引擎有幾缸？” → FAST
-“曲軸箱是幹嘛的？” → FAST
-“比較兩款筆電的效能差異。” → FAST or offer
-“查詢目前的二手筆電行情，並依指定用途比較。” → SLOW
-“請其他已授權的 agent 協助規劃今日訓練。” → SLOW
-“回顧先前保存的模型實驗結果。” → SLOW
-“嗨，你在嗎？” → FAST
-~~~
+### Example: work admitted on Monday, user asks on Tuesday
 
-Record expected_route, actual_route, tool_called, latency. Original v0.2 target is ≥90% routing accuracy; report confusion matrix and especially false-fast decisions. This is an evaluation target, not proof of quality. Provider count does not gate MVP acceptance.
+```json
+{
+  "task_id": "t_laptop_comparison",
+  "task_kind": "compare",
+  "task_text": "Compare three current laptops for local AI workloads",
+  "status": "completed",
+  "created_at": "2026-10-12T09:00:00Z",
+  "completed_at": "2026-10-12T09:01:18Z",
+  "result": {
+    "speak": "Option B offers the best balance of memory and price.",
+    "card": {"title": "Comparison ready", "lines": ["Option B recommended"]},
+    "details_md": "Short, bounded final comparison ..."
+  },
+  "delivery_state": "pending"
+}
+```
 
-# 30. Failure Handling
+The new Gemini Live session has no obligation to remember Monday's conversation. The Relay exposes an authorized local lookup (`check_task_status` or `check_inbox`, exact tool names to be fixed during P3.4); it retrieves the completed task and gives the bounded result to Gemini for a new **tool-disabled** spoken turn.
 
-Reject unauthorized/malformed/stale/oversized slow tool calls; do not falsely acknowledge a failed admission. Failed task storage returns unavailable. Worker crash/leases and queued dispatch are recoverable; OpenAB unavailable/overload/timeouts produce bounded retry or honest failed/expired status. Provider cancellation must never be reported as confirmed stopped work. Live/device disconnect does not erase results; deliver them from Inbox on reconnect.
+This is **Task History**, not general chat memory. Agent memory and scratchpad remain backend responsibilities. OpenAB need not be asked to reconstruct an already-delivered final result.
 
-# 31. Testing
+### Volume, retention and result limits
 
-Keep the existing P1/P2 regression suite green. Add mock tests for FAST without slow calls, same Gemini function call ID, malformed/unauthorized admission, durable acceptance and idempotent duplicate calls, SQLite crash/restart/worker lease recovery, ACP success/error/timeout and permission restrictions, offline Inbox, and tool-disabled spoken delivery. Real API calls and AWS staging require separate approval.
+- Only Slow Tasks generate Task Ledger records. Ordinary FAST dialogue does not.
+- Bound task size (`task` <= 4096 characters), result size, number of pending records, and concurrent agent calls.
+- Normalize `speak` to a short spoken response (at most two brief sentences); keep `card` small and truncate or reject oversized `details_md` according to an explicit limit.
+- **Proposed policy:** retain completed/failed task receipts and bounded results for **30 days by default**, configurable after product/privacy review. Pending task expiry is handled by the application, not by relying on eventual database TTL deletion.
+- For larger documents, use a separately approved document/artifact storage design later rather than turning the ledger into a file repository.
 
-# 32. Implementation Phases
+### Storage implementation
 
-- P0/P1/P2: complete, unchanged.
-- **P3.0:** pinned OpenAB ACP feature/auth/model-credential smoke, restricted agent.
-- **P3.1 (#1):** `delegate_task` durable admission + same-call-ID Gemini response, fake backend.
-- **P3.2:** SQLite Task Registry + dispatch intent + Worker restart recovery.
-- **P3.3:** authenticated ACP execution, 120s attempt bound, failure handling and normalized outputs.
-- **P3.4:** Result Inbox, notifications, user-requested tool-disabled Live speech.
-- **P4:** approved ECS/DB/SQS deployment, security/latency/reliability/routing acceptance.
-- H0/H1: existing hardware UX gate and candidate integration remain unchanged.
+- **Local/offline P3:** Existing SQLite atomic admission/outbox implementation is preserved. P3.2–P3.4 will add state transitions, recovery and result records. SQLite can remain the automated-test backend.
+- **Target AWS:** Use **external durable storage** to survive ECS task replacement. **DynamoDB is the recommended candidate** for a small single-owner ledger and Inbox, but is **not yet a mandatory or approved provisioned service**. A final choice must be approved before deployment.
+- **SQS is not required** for the initial one-Relay, low-volume Dispatcher. Wake the in-process Dispatcher on admission and recover eligible queued tasks on startup / bounded periodic scan.
+- Storing data in an external service does not make the Relay heavyweight: it performs a handful of small records per task, not model inference or agent execution.
 
-No P3 features have been implemented by this docs-only PR.
+## 9. Session persistence: explicit ownership
 
-# 33. M5StickS3 Hardware Candidate
+| State or 'memory' | Owner | Required behavior |
+|---|---|---|
+| **Gemini Live voice session** | Live + Relay | Ephemeral, may end/reconnect; preserve active-turn integrity |
+| **Amusant Task History and Result Inbox** | Relay's durable store | Survives reconnection and ECS A replacement; queryable by a new voice session |
+| **OpenAB ACP / downstream agent session** | ECS B | Context continuity if backend supports it; **not** durable job tracking |
+| **User profile / general conversational long-term memory** | Out of scope | Do not silently build it in Relay or assume OpenAB already fulfills it |
 
-Kai-derived hardware provides microphone, speaker, PTT buttons, LCD, Wi-Fi, Opus/WebSocket, and sleep/wake. The device remains an I/O terminal; AI/provider logic and credentials stay server-side. Use the original integrated board first; no custom PCB/soldering in the initial hardware track.
+Acceptance scenario: user delegates a task, leaves, and asks its status in a new session the next day. Amusant must use Task Ledger lookup and report `queued`, `running`, `completed`, `failed`, `expired`, or `uncertain` based on actual persisted state. It must not invent a completed answer.
 
-# 34. H0 Hardware UX Gate and Continuation Criteria
+## 10. OpenAB ACP adapter and limits
 
-H0 compares the same request on an optimized phone voice flow and on the device. Measure required actions, eyes-on-screen time, phone interaction, PTT-to-capture time, PTT-release-to-first-audio, reconnect time, hotspot dependency, battery, audio quality, and subjective friction. Targets are one physical action, zero eyes/phone interaction, capture <0.5 seconds after PTT down, and first audible response p50 ≤1.2 seconds / p95 ≤2.0 seconds. Continue only if the device has a meaningful friction advantage, reliable reconnect, and acceptable battery/audio. If H0 fails, pause/replace hardware while keeping the software project.
+Pinned upstream ACP baseline: [OpenAB `6431a1b6`](https://github.com/openabdev/openab/tree/6431a1b6991673429f344acb78a58d94658d30fb).
 
-# 35. Deferred Roadmap
+- Endpoint: native authenticated **`GET /acp` WebSocket**, JSON-RPC 2.0.
+- Sequence: `initialize` (protocol v1) → `session/new` (server-controlled `cwd`, `mcpServers: []`) → `session/prompt` (bounded text content).
+- Receive correlated `session/update` output; success requires a terminal response to that prompt with `stopReason: end_turn`.
+- Handle errors, cancellation, overload, disconnection and timeout explicitly; a transient tool stream is not itself proof of completion.
+- Runtime must be built with the ACP feature, explicitly enable it, authenticate transport, and authorize the synthetic ACP client identity.
+- OpenAB's researched base timeout is **180 s of prompt inactivity**; Amusant's initial maximum task attempt is **120 s**. Real multi-hour autonomous jobs are **not supported** by this initial bounded execution contract.
+- ACP `session/cancel` does **not** guarantee underlying agent execution stops. Retried read-only jobs may run twice; no exactly-once or side-effect-free guarantee follows merely from a Task Ledger.
+- Normalize and sanitize untrusted outputs to `speak`, `card`, `details_md`; never let backend text determine user authorization, tools, or internal task status.
 
-- v0.3: optional OpenAI GPT Live provider evaluation.
-- v0.4: optional xAI Grok Voice provider evaluation.
-- v0.5: compare provider latency and voice quality.
-- v0.6: Jev shadow-routing experiment; v0.7: routing guardrail only if real data justifies it.
-- v0.8: native OpenClaw Gateway RPC evaluation; v0.9: multi-device identity/registry.
-- v1.x: hardware production tuning. BLE companion and cellular hardware remain future options only if H0/H1 evidence justifies them.
-- Do not implement deferred features opportunistically.
+The first backend is one configured, restricted ACP agent. Do not expose arbitrary backend selection through Gemini function arguments.
 
-# 36. Primary Product Rule
+## 11. Network, AWS, credentials, and isolation
 
-Project Amusant succeeds only if it improves the user's actual interaction with their AI system. Do not optimize for a gadget for its own sake. Amusant Live owns immediacy; Amusant owns durable delegation/delivery; an interchangeable restricted backend owns bounded execution; fast providers are manually selected; the frontend is replaceable; Kai is respected upstream; the dedicated device must earn its place through UX.
+### Target deployment
+
+- ECS A Relay: one active application task, device-facing authenticated endpoint, outbound Gemini Live, outbound authenticated ACP, access to the approved task store.
+- ECS B OpenAB: separate ECS task and IAM/security boundary with a private authenticated ACP endpoint. No direct internet-facing ACP listener.
+- Secure secrets via a supported secret manager at deployment; never commit or log actual tokens.
+- Agent runtime should have only explicitly approved tools, filesystem access, egress, and model credentials. Privileged personal gateway access, unrelated local systems and broad host mounts are out of scope.
+- No third Worker ECS, independent Worker IAM role, mandatory SQS or multi-tenant infrastructure.
+
+### Device ingress constraint
+
+Upstream Kai uses TLS-PSK for the device connection. A standard AWS ALB TLS listener must **not** be assumed to transparently support Kai's TLS-PSK handshake. Choose and verify an actually compatible TLS/WSS termination/routing design (or a separately reviewed device transport change) **before** exposing the Relay to a public network. Local `ws://` test harnesses must never become public production endpoints by accident.
+
+### ACP trust boundary
+
+The OpenAB ACP transport uses its own bearer credential and authorized synthetic sender; these are independent of device and Gemini credentials. Restrict ingress by network policy and enforce **TLS/WSS between ECS tasks** or a documented equivalent protected transport. Separate task roles and secrets for ECS A and ECS B. No reliance on prompt instructions alone to limit tools.
+
+### Privacy and permission policy
+
+- Do not persist audio or full transcripts by default.
+- Do not log task content/result text in normal telemetry; log task IDs, status, timings, bounded error codes.
+- Protect the small Task Ledger/Inbox as personal task data; define deletion/retention before production use.
+- Disable side-effecting Agent actions and broad privileged tools until separately reviewed and approved. The historical P3.0 feasibility test does **not** prove production tool restrictions.
+- No public ACP, exposed home gateway, unattended messaging, purchasing, file modification, device control, schedules or browser automation as an implicit MVP feature.
+- Real model use, AWS deployment changes and infrastructure spending require explicit approval.
+
+## 12. Failure handling and observability
+
+### Required failure behavior
+
+| Scenario | Required response |
+|---|---|
+| Invalid, oversized, unauthorized or stale function call | Reject with sanitized reason; no persistence and no false acknowledgement |
+| Storage unavailable | Return `unavailable` or `unknown` when commit result is ambiguous |
+| Duplicate same tool call | Return original accepted task ID, never create a second task |
+| Accepted but not dispatched; Relay restarts | Recover queued record on application startup |
+| ACP dispatched; Relay loses connection mid-task | Mark `uncertain` unless terminal result is confirmed; do not assume cancellation |
+| OpenAB error/timeout | Respect bounded retry policy; record failed/expired/uncertain honestly |
+| Device or Live disconnect after acceptance | Task result remains in durable Inbox for later query |
+| Agent text tries to invoke more tools | Treat text as untrusted; tool-disabled result speech, no command execution |
+
+### Event names and measurements
+
+Suggested instrumentation: `ptt_down`, `first_audio_received`, `input_turn_end`, `live_tool_call`, `task_accepted`, `dispatch_started`, `acp_prompt_sent`, `acp_terminal`, `task_finalized`, `inbox_created`, `result_read_or_spoken`, `first_output_audio`, and sanitized errors. Correlate by `turn_id` and `task_id` without logging raw content.
+
+Measure end-to-end first-audio latency and delegation acknowledgment separately from slow execution duration. Track accepted→dispatched delay, ACP duration, completion/failure/uncertain counts, queued backlog, Inbox latency and restart recovery behavior. Avoid presenting smoke observations as statistically validated service-level performance.
+
+## 13. Validation and acceptance criteria
+
+### FAST/P2 regression
+
+- Existing Kai-sim PTT/audio bridge and provider-adapter tests stay green.
+- Short invalid PTT, stale turns, interruption and reconnect do not trigger incorrect tool routing or corrupt another turn.
+- Direct FAST questions do not create Task Ledger records or open ACP connections.
+
+### Slow admission/P3.1
+
+- Valid tool call → exactly one durable `queued` task plus dispatch intent → same-call-ID `accepted` result.
+- Duplicate call with same content → same task ID; conflicting payload → rejection.
+- Invalid/unauthorized/oversized/canceled-turn tool calls rejected.
+- Ambiguous commit is reported `unknown`, never invented as `accepted`.
+- Real Relay startup must wire the optional tool declaration and admission handler; offline component tests alone are insufficient.
+- Verify model-specific admission/acknowledgement ordering before claiming real Gemini behavior.
+
+### Internal Dispatcher/P3.2
+
+- One Relay with an in-process Async Dispatcher; no separately deployed Worker required.
+- Crash *before* ACP send: recovery dispatches queued work.
+- Crash *during* an ACP prompt: state does not falsely become `completed`; deterministic uncertain/limited-retry behavior.
+- Background ACP work does not delay normal voice turns.
+- Bounded pending tasks, concurrency and retries.
+
+### ACP execution/P3.3
+
+- Authenticated ACP handshake/session/prompt works with the configured restricted runtime.
+- Correlated success and terminal result; validated `speak/card/details_md` normalization.
+- Explicit errors for overload, disconnection, timeout, unauthorized capabilities, agent failure and ambiguous completion.
+- No raw audio forwarded to OpenAB and no side-effecting agent capabilities in the initial scope.
+
+### Inbox and session/P3.4
+
+- Completed result persists when Live/device disconnects.
+- A **new Live session** can answer “What happened to my previous task?” by querying the Relay ledger.
+- Task status and Inbox delivery state are independent; user-requested speech happens in a **new tool-disabled** turn.
+- Final results are not delivered as duplicate Gemini FunctionResponses.
+- Result retention, data size and deletion policies are enforced.
+
+### P4 AWS acceptance
+
+- Exactly two ECS Services, each with one intended active task, and a compatible device ingress design.
+- External Task Ledger/Inbox persistence survives ECS A replacement.
+- Agent ECS is isolated by network/security credentials and tool/runtime policy.
+- Tested reconnect, restart, failure, latency, usage cost, secret handling, and log redaction.
+- No new resources or paid calls performed without separately documented approval.
+
+### Routing evaluation
+
+Evaluate **at least 100** representative utterances across direct chat, quick facts, low-latency tools, research, comparisons, stale tasks, error states, Chinese/English and mixed language. Include requests that are *out of scope* (unbounded autonomous work, personal memory, unauthorized tools) and verify honest refusal or deferral. Record expected/actual lane, tool calls and latency. Aim at ≥90% routing accuracy and report false-fast/false-slow errors; this is a target, not current evidence.
+
+## 14. Current evidence and implementation boundary (as of draft)
+
+This section describes **repository-recorded status**, not tests rerun for this documentation revision:
+
+| Work | Status / evidence | Not yet proven |
+|---|---|---|
+| **P0** project foundation | Recorded complete | — |
+| **P1** kai-sim mock/audio transport | Recorded pass | Full production transport/security |
+| **P2** Gemini Live baseline | One real kai-sim PTT → Live → audible audio turn recorded as pass; offline tests | Cloud ingress and production latency distribution |
+| **P3.0** OpenAB viability | One-off authenticated ACP/model response and separate client-to-Agent smoke recorded as pass, under limited test risk acceptance | Safe production agent sandbox, durable Relay and Inbox |
+| **P3.1** durable admission | Existing `relay/slow_path.py` and `relay/task_store.py` implement opt-in tool routing and SQLite atomic task + outbox admission; repository reports offline Fast Voice 39/39 and Relay 12/12 | Production startup wiring, real Gemini tool-call behavior |
+| **P3.2–P3.4** Dispatcher/ACP/Inbox | Planned; not part of merged admission code | Actual end-to-end durable task execution and status lookup |
+| **P4** AWS integration | Two-ECS architecture target in this amendment | Approved/deployed complete two-Service runtime and persistent storage |
+
+The existing P3.1 SQLite table constrains tasks to `status='queued'`; it does **not yet** implement running/completed/failed lifecycle, claims/recovery or Inbox. Extend/migrate it explicitly in P3.2. Do not interpret an `outbox` record as proof that an ACP call has executed.
+
+## 15. Delivery plan and approval boundaries
+
+- **P0:** Foundation — completed.
+- **P1:** Kai-sim protocol/audio mock smoke — completed under its recorded gate.
+- **P2:** Native Gemini Live FAST voice — completed under its recorded software/runtime gate.
+- **P3.0:** OpenAB ACP/model feasibility — one-off smoke completed, **not** production security acceptance.
+- **P3.1:** Durable `delegate_task` admission — SQLite foundation merged; finish real Relay startup wiring and verified model tool behavior.
+- **P3.2:** Relay-internal Async Dispatcher, queued recovery, execution state, and minimal persistence abstraction.
+- **P3.3:** Authenticated ACP execution with bounded read-only tasks and honest timeout/uncertainty handling.
+- **P3.4:** Durable Result Inbox, authorized previous-task lookup, reconnect status and user-requested spoken result.
+- **P4:** Approved two-ECS AWS deployment/security/cost/reliability evaluation, including approved external durable Task Store.
+- **H0:** Hardware UX gate versus optimized phone workflow.
+- **H1:** M5StickS3 integration only after H0 success.
+
+P3 development may use local mocks, temporary databases and approved isolated connectivity smokes. These do not imply authorization for ongoing AWS ECS deployment, database provisioning, networking modifications or paid model tests. `PLAN.md` must reflect this revised topology **when a documentation PR is approved**.
+
+## 16. Hardware and network continuation rules
+
+### H0 hardware UX comparison
+
+Compare the identical tasks on an optimized smartphone voice path and the candidate dedicated device. Record: actions before speaking, eyes-on-screen, phone interaction, PTT-to-capture time, first-audio time, reconnect behavior, battery, audio quality and subjective friction. Candidate targets are one physical action, zero eyes and zero phone interaction per normal request, audio capture within 0.5 s, and first audible audio p50 ≤1.2 s / p95 ≤2.0 s after release.
+
+If the dedicated device does not meaningfully improve friction, defer or replace the hardware track without invalidating software/agent work.
+
+### Mobile data access
+
+The device may use a phone hotspot / mobile network. No dedicated companion app is required. Validate persistent hotspot availability, idle timeouts, reconnection and phone battery across supported platforms. A hotspot does not create an implicit private connection to personal or home services.
+
+### Hardware scope
+
+The initial candidate uses the integrated M5StickS3 board and Kai-derived firmware for I/O, display, Wi-Fi, PTT, Opus and power state. No custom PCB/soldering or production certification is part of the initial software MVP.
+
+## 17. Explicit non-goals and deferred roadmap
+
+**Not in MVP:**
+
+- Multi-user SaaS, multi-Relay scaling, horizontal worker fleets or background service topology beyond two ECS.
+- Separate Worker ECS, mandatory SQS, general-purpose orchestration framework or distributed task broker.
+- General long-term personal/agent memory in Relay, full chat transcript archive, vector search, or history-based personalization.
+- Multi-agent switching and unrestricted access to external personal gateways.
+- Unbounded long-duration autonomous tasks, proactive monitoring, scheduled work and exactly-once action execution.
+- Arbitrary shell/browser/file operations, purchases, outbound messaging and device control without explicit new permission review.
+- Automatic fast-provider switching, required second provider, custom STT/TTS chain.
+- Native mobile app, BLE audio bridge, cellular modem/eSIM, significant firmware rewrite, custom hardware manufacturing.
+- Location sensors, environmental sensing, actuation, or third-party services not explicitly designed and authorized.
+
+Potential future work may include additional Live providers, a policy-based routing guardrail *only after measured need*, improved ACP task continuation via a backend durable-job API, explicit user-approved tools and reminders, and hardware refinement if H0/H1 validate the UX benefit. These remain separate proposals and must not be implemented opportunistically.
+
+## 18. Repository implications of this spec revision
+
+This spec revision is **documentation only**. To align existing repo documentation after approval:
+
+1. Adopt this `SPEC.md` as canonical requirements.
+2. Amend [ADR-0001](docs/adr/0001-openab-acp-slow-path.md) to the two-Service topology and Kai-aligned in-process Dispatcher.
+3. Update `PLAN.md` where its P3/P4 rows still require a separate Worker ECS or SQS, without rewriting verified P0–P3.1 history.
+4. Update `STATUS.md` only to reflect actual evidence and remove stale summary claims; do not mark P3.2–P4 completed by changing documentation.
+5. Preserve existing `fast_voice/`, `relay/slow_path.py`, `relay/task_store.py` and offline tests; actual implementation changes belong to separately reviewed PRs.
+
+**Architecture acceptance rule:** No new ECS Service may be added merely because a logical Worker, session manager or queue is depicted. The default Amusant backend consists of **two** ECS Services, with a **thin Relay + lightweight Task Ledger/Inbox**, and an independently isolated OpenAB Agent Runtime.
