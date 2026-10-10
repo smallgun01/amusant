@@ -9,6 +9,7 @@ from fast_voice.factory import (
 )
 from fast_voice.gemini import GeminiLiveProvider
 from fast_voice.selection import ProviderSelectionError
+from relay.slow_path import build_delegate_task_tool
 
 try:
     from google.genai import types as google_types
@@ -82,6 +83,20 @@ class FactoryTests(unittest.TestCase):
         self.assertEqual(provider._config.response_modalities, ["AUDIO"])
         self.assertTrue(provider._config.realtime_input_config.automatic_activity_detection.disabled)
         self.assertEqual(provider._config.max_output_tokens, 32)
+
+    @unittest.skipIf(google_types is None, "google-genai is installed only in the project uv environment")
+    def test_delegate_tool_schema_is_explicitly_attached_to_live_config(self):
+        tool = build_delegate_task_tool(google_types)
+        provider = build_live_provider(
+            {"AMUSANT_LIVE_PROVIDER": "gemini", "GEMINI_API_KEY": "test-only-key"},
+            client_factory=lambda **_: SimpleNamespace(aio=SimpleNamespace()),
+            sdk_types=google_types,
+            tool_declarations=[tool],
+        )
+        self.assertEqual(provider._config.tools[0].function_declarations[0].name, "delegate_task")
+        schema = provider._config.tools[0].function_declarations[0].parameters
+        self.assertEqual(schema.required, ["task"])
+        self.assertEqual(schema.properties["task_kind"].enum, ["research", "compare", "summarize"])
 
     def test_sdk_setup_exception_is_redacted(self):
         def broken_client(**_):

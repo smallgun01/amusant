@@ -1,15 +1,19 @@
 import asyncio
 import json
 import secrets
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosedError
 
-from fast_voice.contracts import AudioFrame, ProviderCapabilities, TranscriptEvent, TurnCompleteEvent
+from fast_voice.contracts import AudioFrame, ProviderCapabilities, ToolCallEvent, TranscriptEvent, TurnCompleteEvent
 from relay.live_bridge import MIN_UTTERANCE_BYTES, make_handler
+from relay.slow_path import SlowPathToolRouter
+from relay.task_store import SQLiteTaskStore
 
 TOKEN = secrets.token_urlsafe(24)
 
@@ -30,6 +34,7 @@ class FakeProvider:
         self.connect_calls = 0
         self.end_turn_calls = 0
         self.audio_input = bytearray()
+        self.tool_results = []
 
     def on_audio(self, callback): self.callbacks["audio"] = callback
     def on_transcript(self, callback): self.callbacks["transcript"] = callback
@@ -71,7 +76,7 @@ class FakeProvider:
         await callbacks["transcript"](TranscriptEvent(transcript, "output", True))
         await callbacks["complete"](TurnCompleteEvent(cancelled=False))
 
-    async def send_tool_result(self, call_id, result): pass
+    async def send_tool_result(self, call_id, result): self.tool_results.append((call_id, dict(result)))
     async def cancel_response(self): raise NotImplementedError
     async def inject_text(self, text): pass
 
@@ -123,6 +128,144 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
             server.close()
             await server.wait_closed()
         self.assertTrue(fake.closed)
+
+    async def test_live_tool_call_commits_durable_admission_before_same_call_id_receipt(self):
+        fake = FakeProvider(auto_complete=False)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SQLiteTaskStore(database_path=Path(temp_dir) / "tasks.sqlite3", max_pending_tasks=8)
+            router = SlowPathToolRouter(
+                store=store,
+                client_id="authenticated-device-1",
+                conversation_id="kai-session-1",
+                backend_id="openab",
+                default_task_kind="research",
+                max_task_ttl_seconds=600,
+                acceptance_timeout_seconds=2,
+                new_task_id=lambda: "4db5aabc-284a-4a01-8a6d-5cddcc7934f1",
+            )
+            server = await serve(
+                make_handler(TOKEN, lambda: fake, slow_path_tool_handler=router),
+                "127.0.0.1", 0, max_size=64 * 1024,
+            )
+            port = server.sockets[0].getsockname()[1]
+            ws = await connect(f"ws://127.0.0.1:{port}/ws", additional_headers={"Authorization": f"Bearer {TOKEN}"})
+            try:
+                await self._send_turn(ws)
+                await self._controls_until(ws, lambda item, _items: item.get("type") == "state" and item.get("state") == "thinking")
+                event = ToolCallEvent("call-slow-1", "delegate_task", {"task": "Compare current options", "task_kind": "compare"})
+                await fake.callbacks["tool"](event)
+                await fake.callbacks["complete"](TurnCompleteEvent(cancelled=False))
+                controls, _ = await self._controls_until(ws, lambda item, _items: item.get("type") == "turn_complete")
+            finally:
+                await ws.close()
+                server.close()
+                await server.wait_closed()
+            self.assertEqual(fake.tool_results, [("call-slow-1", {"status": "accepted", "task_id": "4db5aabc-284a-4a01-8a6d-5cddcc7934f1", "duplicate": False})])
+            row = store.get_by_call(client_id="authenticated-device-1", conversation_id="kai-session-1", turn_id=1, call_id="call-slow-1")
+            self.assertEqual(row["task_kind"], "compare")
+            self.assertEqual(row["backend"], "openab")
+            self.assertEqual(row["dispatch_state"], "pending")
+            self.assertEqual(sum(item.get("type") == "turn_complete" for item in controls), 1)
+
+    async def test_fast_turn_does_not_create_a_slow_task(self):
+        fake = FakeProvider()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SQLiteTaskStore(database_path=Path(temp_dir) / "fast.sqlite3", max_pending_tasks=8)
+            router = SlowPathToolRouter(
+                store=store,
+                client_id="authenticated-device-1",
+                conversation_id="kai-session-fast",
+                backend_id="openab",
+                default_task_kind="research",
+                max_task_ttl_seconds=600,
+                acceptance_timeout_seconds=2,
+            )
+            server = await serve(make_handler(TOKEN, lambda: fake, slow_path_tool_handler=router), "127.0.0.1", 0)
+            port = server.sockets[0].getsockname()[1]
+            ws = await connect(f"ws://127.0.0.1:{port}/ws", additional_headers={"Authorization": f"Bearer {TOKEN}"})
+            try:
+                await self._send_turn(ws)
+                await self._controls_until(ws, lambda item, _items: item.get("type") == "turn_complete")
+            finally:
+                await ws.close()
+                server.close()
+                await server.wait_closed()
+            self.assertEqual(store.pending_dispatch_count(), 0)
+
+    async def test_unknown_tool_is_rejected_with_correlated_call_id(self):
+        fake = FakeProvider(auto_complete=False)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SQLiteTaskStore(database_path=Path(temp_dir) / "unknown.sqlite3", max_pending_tasks=8)
+            router = SlowPathToolRouter(
+                store=store,
+                client_id="authenticated-device-1",
+                conversation_id="kai-session-unknown",
+                backend_id="openab",
+                default_task_kind="research",
+                max_task_ttl_seconds=600,
+                acceptance_timeout_seconds=2,
+            )
+            server = await serve(make_handler(TOKEN, lambda: fake, slow_path_tool_handler=router), "127.0.0.1", 0)
+            port = server.sockets[0].getsockname()[1]
+            ws = await connect(f"ws://127.0.0.1:{port}/ws", additional_headers={"Authorization": f"Bearer {TOKEN}"})
+            try:
+                await self._send_turn(ws)
+                await self._controls_until(ws, lambda item, _items: item.get("type") == "state" and item.get("state") == "thinking")
+                await fake.callbacks["tool"](ToolCallEvent("call-unknown-1", "run_shell", {"command": "id"}))
+                await fake.callbacks["complete"](TurnCompleteEvent(cancelled=False))
+                await self._controls_until(ws, lambda item, _items: item.get("type") == "turn_complete")
+            finally:
+                await ws.close()
+                server.close()
+                await server.wait_closed()
+            self.assertEqual(fake.tool_results, [("call-unknown-1", {"status": "rejected", "code": "unsupported_tool"})])
+            self.assertEqual(store.pending_dispatch_count(), 0)
+
+    async def test_dispatch_handler_exception_returns_correlated_unknown(self):
+        fake = FakeProvider(auto_complete=False)
+
+        async def broken_handler(_event, _turn_id):
+            raise RuntimeError("sensitive diagnostic must not be forwarded")
+
+        server = await serve(make_handler(TOKEN, lambda: fake, slow_path_tool_handler=broken_handler), "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        ws = await connect(f"ws://127.0.0.1:{port}/ws", additional_headers={"Authorization": f"Bearer {TOKEN}"})
+        try:
+            await self._send_turn(ws)
+            await self._controls_until(ws, lambda item, _items: item.get("type") == "state" and item.get("state") == "thinking")
+            await fake.callbacks["tool"](ToolCallEvent("call-exception", "delegate_task", {"task": "Do work"}))
+            await fake.callbacks["complete"](TurnCompleteEvent(cancelled=False))
+            await self._controls_until(ws, lambda item, _items: item.get("type") == "turn_complete")
+        finally:
+            await ws.close()
+            server.close()
+            await server.wait_closed()
+        self.assertEqual(fake.tool_results, [("call-exception", {"status": "unknown", "code": "acceptance_unconfirmed"})])
+        self.assertNotIn("sensitive diagnostic", json.dumps(fake.tool_results))
+
+    async def test_oversized_dispatch_receipt_is_replaced_with_bounded_error(self):
+        fake = FakeProvider(auto_complete=False)
+
+        async def slow_path(_event, _turn_id):
+            return {"status": "accepted", "detail": "x" * 9000}
+
+        server = await serve(
+            make_handler(TOKEN, lambda: fake, slow_path_tool_handler=slow_path),
+            "127.0.0.1", 0, max_size=64 * 1024,
+        )
+        port = server.sockets[0].getsockname()[1]
+        ws = await connect(f"ws://127.0.0.1:{port}/ws", additional_headers={"Authorization": f"Bearer {TOKEN}"})
+        try:
+            await self._send_turn(ws)
+            await self._controls_until(ws, lambda item, _items: item.get("type") == "state" and item.get("state") == "thinking")
+            await fake.callbacks["tool"](ToolCallEvent("call-large", "delegate_task", {"task": "Do work"}))
+            await fake.callbacks["complete"](TurnCompleteEvent(cancelled=False))
+            await self._controls_until(ws, lambda item, _items: item.get("type") == "turn_complete")
+        finally:
+            await ws.close()
+            server.close()
+            await server.wait_closed()
+        self.assertEqual(fake.tool_results, [("call-large", {"status": "unknown", "code": "invalid_tool_result"})])
 
     async def test_short_ptt_tap_does_not_create_or_open_live_session(self):
         created = []
