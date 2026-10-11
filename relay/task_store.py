@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+from typing import Protocol
 from uuid import UUID
 
 MAX_TASK_CHARS = 4096
@@ -107,6 +108,37 @@ def _sanitize_error(code: str) -> str:
     if not isinstance(code, str) or not _ERROR_RE.fullmatch(code):
         return "dispatch_error"
     return code
+
+
+class TaskStore(Protocol):
+    """Durable Slow-Task ledger + Inbox. SQLite or DynamoDB adapter."""
+
+    def admit(self, request: TaskAdmissionRequest) -> AdmissionReceipt: ...
+
+    def recover_after_restart(self) -> RecoveryCounts: ...
+
+    def claim_due(self, *, now: datetime, lease_seconds: int, limit: int = 1) -> list[ClaimedTask]: ...
+
+    def mark_dispatch_started(self, task_id: str, *, now: datetime) -> None: ...
+
+    def complete(self, task_id: str, *, result: BoundedTaskResult | None = None) -> None: ...
+
+    def fail(self, task_id: str, *, code: str) -> None: ...
+
+    def mark_uncertain(self, task_id: str, *, code: str = "acp_result_unconfirmed") -> None: ...
+
+    def lookup_inbox(
+        self,
+        *,
+        client_id: str,
+        task_id: str | None = None,
+        speak: bool = False,
+        now: datetime | None = None,
+    ) -> dict[str, object] | None: ...
+
+    def get_by_task_id(self, task_id: str) -> dict[str, object] | None: ...
+
+    def pending_dispatch_count(self) -> int: ...
 
 
 class SQLiteTaskStore:

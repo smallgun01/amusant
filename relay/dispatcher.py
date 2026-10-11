@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal, Protocol
 
-from .task_store import BoundedTaskResult, ClaimedTask, SQLiteTaskStore
+from .task_store import BoundedTaskResult, ClaimedTask, TaskStore
 
 ExecutionStatus = Literal["completed", "failed"]
 
@@ -38,7 +38,7 @@ class AsyncDispatcher:
 
     def __init__(
         self,
-        store: SQLiteTaskStore,
+        store: TaskStore,
         executor: TaskExecutor,
         *,
         lease_seconds: int = 30,
