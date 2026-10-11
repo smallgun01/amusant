@@ -258,7 +258,8 @@ For a single Relay, a lightweight recovery scan and per-task execution stage are
 - **P3.2:** Application-scoped Async Dispatcher, SQLite lifecycle migration, queued recovery, and fake-executor offline tests. Real ACP remains P3.3; cloud persistence is separately approved.
 - **P3.3:** Relay ACP client for read-only bounded tasks, terminal-result parsing, errors, and uncertain execution. Implemented offline against a fake `/acp` server; live ECS B/Jellii remains separately gated.
 - **P3.4:** Persistent Inbox and voice-session-independent task-status/result lookup. Implemented offline as `check_task_status` on SQLite with independent delivery_state. User-requested speech returns the saved `speak` field and marks `spoken`; a new Gemini tool-disabled Live turn remains unproven. Live ECS stays separately gated.
-- **P4-A1 code:** ACP `cwd` is a remote runtime path. `wss://` must verify TLS; plaintext `ws://` is an explicit private-network exception, not a certificate bypass. The ACP-only smoke reuses Dispatcher/Inbox; AWS one-off execution is not authorized by the code PR.
+- **P4-A1 code:** ACP `cwd` is a remote runtime path. `wss://` must verify TLS; plaintext `ws://` is an explicit private-network exception, not a certificate bypass.
+- **P4-A1 live one-off:** Recorded PASS 2026-10-12 against Jellii using same-SG plaintext `/acp` as a one-off risk exception. Cleanup returned Jellii to desiredCount 0. This does not approve TLS, an external Task Store, 24/7 Relay, or device ingress. Sanitized timestamps and fields: `STATUS.md`.
 - **P4:** Approve and validate two-ECS staging/production networking, external durable storage, security, deploy/restart behavior, audio latency, cost and operational metrics.
 - **H0/H1:** Dedicated hardware remains gated on demonstrably improved interaction friction.
 
