@@ -419,7 +419,7 @@ This section describes **repository-recorded status**, not tests rerun for this 
 | **P3.2** in-process Dispatcher | PR #12 merged. SQLite claim/recovery; CLI recovers crashed in-flight work as uncertain | ECS replacement durability |
 | **P3.3** ACP execution | PR #13 merged. Authenticated JSON-RPC ACP client against a local fake `/acp` server | — |
 | **P3.4** Inbox | Authorized `check_task_status` lookup, independent delivery_state, bounded result on completion | Spoken Gemini tool-disabled turn, ECS-surviving store |
-| **P4-A1** ACP one-off | Live one-off PASS 2026-10-12: real Dispatcher/Inbox against Jellii, one prompt, cleanup to scale 0. Same-SG plaintext `/acp`, not TLS | External durable store, 24/7 Relay, device ingress, production sandbox |
+| **P4-A1** ACP one-off | Live one-off PASS 2026-10-12: real Dispatcher/Inbox against Jellii, one ACP `session/prompt`, cleanup to scale 0. Same-SG plaintext `/acp` is a one-off risk exception, not TLS | External durable store, 24/7 Relay, device ingress, production sandbox, billed model-inference proof |
 | **P4** AWS integration | Accepted two-ECS architecture target (PR #9). Continue one-off until store/ingress are separately approved | Replacement-safe ledger, public/device ingress |
 
 P3.2 migrates the SQLite schema to `queued/running/completed/failed/uncertain` with outbox claim/recovery. A `sent` or `completed` row from the fake executor is **not** proof that OpenAB ACP ran. Do not interpret an outbox record as a real ACP result. Inbox lookup is P3.4 SQLite evidence, not ECS durability.
@@ -432,7 +432,7 @@ P3.2 migrates the SQLite schema to `queued/running/completed/failed/uncertain` w
 - **P3.0:** OpenAB ACP/model feasibility — one-off smoke completed, **not** production security acceptance.
 - **P3.1:** Durable `delegate_task` admission — SQLite foundation merged; local CLI now wires tool declaration + admission. ECS/service startup and a replacement-safe store remain.
 - **P3.2:** Relay-internal Async Dispatcher, queued recovery, execution state, and SQLite lifecycle migration — implemented offline with a fake executor; real ACP remains P3.3.
-- **P3.3:** Authenticated ACP client with bounded text prompts and honest timeout/uncertainty handling — implemented offline against a fake `/acp` server; live OpenAB remains separately gated.
+- **P3.3:** Authenticated ACP client with bounded text prompts and honest timeout/uncertainty handling — implemented offline against a fake `/acp` server. Live ACP was exercised once in P4-A1, but authenticated TLS/WSS, restricted production agent sandbox, restart/persistence, and full device-to-agent runtime remain separately gated.
 - **P3.4:** Durable Result Inbox, authorized previous-task lookup, reconnect status and user-requested spoken result — implemented offline on SQLite; a new Gemini tool-disabled spoken session remains unproven.
 - **P4:** Two-ECS staging. P4-A1 live one-off is recorded PASS under a bounded envelope; it does not approve an external Task Store, 24/7 Relay, or device ingress.
 - **H0:** Hardware UX gate versus optimized phone workflow.
