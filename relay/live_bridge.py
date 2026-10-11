@@ -9,6 +9,7 @@ import asyncio
 import hmac
 import json
 import logging
+import math
 import os
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -18,7 +19,7 @@ from typing import Any
 from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 
-from fast_voice import AudioFrame, LiveProvider, ProviderError, build_live_provider
+from fast_voice import AudioFrame, LiveProvider, ProviderError
 from fast_voice.contracts import JSONValue, ToolCallEvent
 from relay.mock_relay import INPUT_RATE, MAX_FRAME_BYTES, OUTPUT_CHUNK_BYTES, OUTPUT_RATE, validate_bind_host
 
@@ -26,9 +27,13 @@ DEVICE_TOKEN_ENV = "AMUSANT_DEVICE_TOKEN"
 MAX_UTTERANCE_BYTES = 1_000_000
 MAX_TOOL_RESULT_BYTES = 8 * 1024
 MIN_UTTERANCE_BYTES = INPUT_RATE * 2 * 300 // 1000
+POST_TOOL_ACK_TIMEOUT_SECONDS = 3.0
+POST_TOOL_ACK_MAX_DURATION_SECONDS = 15.0
 LOG = logging.getLogger("amusant.p2.live_bridge")
 ProviderFactory = Callable[[], LiveProvider]
 SlowPathToolHandler = Callable[[ToolCallEvent, int], Awaitable[Mapping[str, JSONValue]]]
+SlowPathToolHandlerFactory = Callable[[str, str], SlowPathToolHandler]
+ConversationIdFactory = Callable[[], str]
 
 
 class TurnState(str, Enum):
@@ -59,6 +64,12 @@ class Turn:
     response_interrupted: bool = False
     invalidated: bool = False
     completion_sent: bool = False
+    tool_result_status: str | None = None
+    tool_response_sent: bool = False
+    post_tool_output_seen: bool = False
+    post_tool_timeout_task: asyncio.Task[None] | None = None
+    post_tool_timeout_generation: int = 0
+    post_tool_deadline: float | None = None
     input_bytes: int = 0
     output_bytes: int = 0
     provider_epoch: int | None = None
@@ -74,8 +85,29 @@ def make_handler(
     expected_token: str,
     provider_factory: ProviderFactory,
     slow_path_tool_handler: SlowPathToolHandler | None = None,
+    *,
+    slow_path_tool_handler_factory: SlowPathToolHandlerFactory | None = None,
+    authenticated_client_id: str | None = None,
+    conversation_id_factory: ConversationIdFactory | None = None,
+    post_tool_ack_timeout_seconds: float = POST_TOOL_ACK_TIMEOUT_SECONDS,
+    post_tool_ack_max_duration_seconds: float = POST_TOOL_ACK_MAX_DURATION_SECONDS,
 ):
     """Build a Kai-compatible /ws handler with explicit local turn ownership."""
+    if slow_path_tool_handler_factory is not None:
+        if not authenticated_client_id or conversation_id_factory is None:
+            raise ValueError(
+                "per-session slow-path wiring requires a server-authenticated client ID "
+                "and a server conversation-ID factory"
+            )
+    if (not isinstance(post_tool_ack_timeout_seconds, (int, float))
+            or not math.isfinite(post_tool_ack_timeout_seconds)
+            or post_tool_ack_timeout_seconds <= 0):
+        raise ValueError("post_tool_ack_timeout_seconds must be finite and positive")
+    if (not isinstance(post_tool_ack_max_duration_seconds, (int, float))
+            or not math.isfinite(post_tool_ack_max_duration_seconds)
+            or post_tool_ack_max_duration_seconds < post_tool_ack_timeout_seconds):
+        raise ValueError("post_tool_ack_max_duration_seconds must be finite and at least the inactivity timeout")
+
     async def handler(ws: ServerConnection) -> None:
         path = ws.request.path.split("?", 1)[0]
         if path != "/ws":
@@ -85,6 +117,20 @@ def make_handler(
         if not hmac.compare_digest(supplied, f"Bearer {expected_token}"):
             await ws.close(code=1008, reason="unauthorized client")
             return
+
+        session_slow_path_tool_handler = slow_path_tool_handler
+        if slow_path_tool_handler_factory is not None:
+            try:
+                conversation_id = conversation_id_factory()
+                if not isinstance(conversation_id, str) or not conversation_id:
+                    raise ValueError("conversation ID factory returned an empty/non-string ID")
+                session_slow_path_tool_handler = slow_path_tool_handler_factory(
+                    authenticated_client_id, conversation_id
+                )
+            except Exception as exc:
+                # The realtime Relay stays available, but SLOW admission fails closed.
+                LOG.warning("slow-path session setup failed error_type=%s", type(exc).__name__)
+                session_slow_path_tool_handler = None
 
         send_lock = asyncio.Lock()
         provider: LiveProvider | None = None
@@ -127,11 +173,65 @@ def make_handler(
                 except ConnectionClosed:
                     return False
 
+        def cancel_post_tool_timeout(turn: Turn) -> None:
+            turn.post_tool_timeout_generation += 1
+            task = turn.post_tool_timeout_task
+            if task is not None and task is not asyncio.current_task():
+                task.cancel()
+            turn.post_tool_timeout_task = None
+
+        def reset_post_tool_timeout(turn: Turn, epoch: int) -> None:
+            cancel_post_tool_timeout(turn)
+            loop = asyncio.get_running_loop()
+            if turn.post_tool_deadline is None:
+                turn.post_tool_deadline = loop.time() + post_tool_ack_max_duration_seconds
+            remaining = max(0.0, turn.post_tool_deadline - loop.time())
+            generation = turn.post_tool_timeout_generation
+            turn.post_tool_timeout_task = asyncio.create_task(
+                wait_for_post_tool_ack(turn, epoch, generation, min(post_tool_ack_timeout_seconds, remaining))
+            )
+
+        async def wait_for_post_tool_ack(turn: Turn, epoch: int, generation: int, delay: float) -> None:
+            try:
+                await asyncio.sleep(delay)
+            except asyncio.CancelledError:
+                return
+            if generation != turn.post_tool_timeout_generation:
+                return
+            turn.post_tool_timeout_task = None
+            if not owns_response(turn, epoch):
+                return
+            if turn.tool_result_status == "accepted" and turn.post_tool_output_seen:
+                title = "Voice response incomplete"
+                lines = ["The task is durably queued.", "The acknowledgement did not finish."]
+            elif turn.tool_result_status == "accepted":
+                title = "Task accepted"
+                lines = ["The task is durably queued.", "A spoken acknowledgement did not arrive."]
+            elif turn.tool_result_status == "unknown":
+                title = "Task status unknown"
+                lines = ["Admission could not be confirmed.", "Check task status before retrying."]
+            else:
+                title = "Task not accepted"
+                lines = ["No durable acceptance was confirmed.", "No background work was started."]
+            finished = await finish_locally(
+                turn,
+                TurnState.CLOSED,
+                [
+                    {"type": "card", "title": title, "lines": lines, "icon": "brain"},
+                    {"type": "turn_complete"},
+                    {"type": "state", "state": "idle"},
+                ],
+            )
+            if finished:
+                # Fence a silent/late provider response so it cannot leak into a later turn.
+                await retire_provider(epoch)
+
         async def finish_from_provider(turn: Turn, epoch: int) -> bool:
             nonlocal response_turn
             async with send_lock:
                 if not owns_response(turn, epoch):
                     return False
+                cancel_post_tool_timeout(turn)
                 turn.state = TurnState.CLOSED
                 turn.response_pending = False
                 turn.invalidated = True
@@ -156,6 +256,7 @@ def make_handler(
             async with send_lock:
                 if active_turn is not turn or turn.invalidated:
                     return False
+                cancel_post_tool_timeout(turn)
                 turn.invalidated = True
                 turn.state = state
                 turn.response_pending = False
@@ -200,6 +301,11 @@ def make_handler(
                 turn = response_turn
                 if turn is None or not owns_response(turn, epoch) or turn.response_interrupted:
                     return
+                if turn.tool_response_sent and turn.tool_result_status != "accepted":
+                    return
+                if turn.tool_response_sent:
+                    turn.post_tool_output_seen = True
+                    reset_post_tool_timeout(turn, epoch)
                 if frame.sample_rate_hz != OUTPUT_RATE or len(frame.data) % 2:
                     await fail_turn(turn, "invalid_audio_frame")
                     return
@@ -219,17 +325,22 @@ def make_handler(
                 turn = response_turn
                 if turn is None or turn.response_interrupted or event.direction != "output" or not event.text:
                     return
+                if turn.tool_response_sent and turn.tool_result_status != "accepted":
+                    return
+                if turn.tool_response_sent:
+                    turn.post_tool_output_seen = True
+                    reset_post_tool_timeout(turn, epoch)
                 await send_owned_control(turn, epoch, {"type": "caption", "delta": event.text})
 
             async def on_tool_call(event: ToolCallEvent) -> None:
                 turn = response_turn
                 if turn is None or not owns_response(turn, epoch) or turn.response_interrupted:
                     return
-                if slow_path_tool_handler is None:
+                if session_slow_path_tool_handler is None:
                     result: Mapping[str, JSONValue] = {"status": "unavailable", "code": "slow_path_not_configured"}
                 else:
                     try:
-                        result = await slow_path_tool_handler(event, turn.turn_id)
+                        result = await session_slow_path_tool_handler(event, turn.turn_id)
                         if not isinstance(result, Mapping):
                             result = {"status": "unknown", "code": "invalid_tool_result"}
                         else:
@@ -239,10 +350,19 @@ def make_handler(
                     except Exception:
                         # The dispatcher may have committed before a transport error; never claim failure.
                         result = {"status": "unknown", "code": "acceptance_unconfirmed"}
+                result_status = result.get("status")
+                if result_status not in {"accepted", "rejected", "unavailable", "unknown"}:
+                    result_status = "unknown"
+                if turn.tool_result_status is None:
+                    turn.tool_result_status = result_status
+                elif turn.tool_result_status != result_status:
+                    turn.tool_result_status = "unknown"
                 if not owns_response(turn, epoch):
                     return
                 try:
                     await instance.send_tool_result(event.call_id, result)
+                    turn.tool_response_sent = True
+                    reset_post_tool_timeout(turn, epoch)
                 except ProviderError as error:
                     await fail_turn(turn, error.code)
 
@@ -262,6 +382,10 @@ def make_handler(
             async def on_turn_complete(_event: Any) -> None:
                 turn = response_turn
                 if turn is not None:
+                    if turn.tool_response_sent and not turn.post_tool_output_seen:
+                        # A separate tool-phase turn_complete may precede the model's final ack.
+                        reset_post_tool_timeout(turn, epoch)
+                        return
                     await finish_from_provider(turn, epoch)
 
             async def on_error(error: ProviderError) -> None:
@@ -431,14 +555,26 @@ def make_handler(
     return handler
 
 
+def build_process_handler(token: str, environ: Mapping[str, str], **kwargs):
+    """Compose the supported process handler; never fall back to FAST-only Live."""
+    from .application import build_supported_relay_handler
+
+    return build_supported_relay_handler(
+        expected_device_token=token,
+        environ=environ,
+        **kwargs,
+    )
+
+
 async def run(host: str, port: int, token: str) -> None:
     validate_bind_host(host)
     if len(token) < 12:
         raise ValueError("AMUSANT_DEVICE_TOKEN must contain at least 12 characters")
     if os.environ.get("AMUSANT_LIVE_PROVIDER") != "gemini" or not os.environ.get("GEMINI_API_KEY"):
         raise ValueError("Set AMUSANT_LIVE_PROVIDER=gemini and inject GEMINI_API_KEY at runtime")
-    LOG.info("starting private Live bridge host=%s port=%d", host, port)
-    async with serve(make_handler(token, lambda: build_live_provider(os.environ)), host, port, max_size=MAX_FRAME_BYTES, ping_interval=20, ping_timeout=20) as server:
+    handler = build_process_handler(token, os.environ)
+    LOG.info("starting private Live bridge host=%s port=%d admission=on", host, port)
+    async with serve(handler, host, port, max_size=MAX_FRAME_BYTES, ping_interval=20, ping_timeout=20) as server:
         await server.serve_forever()
 
 

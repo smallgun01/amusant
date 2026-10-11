@@ -34,10 +34,12 @@ class FakeSession:
     def __init__(self, messages=()):
         self.messages = list(messages)
         self.calls = []
+        self.client_contents = []
         self.tool_responses = []
         self.closed = asyncio.Event()
 
     async def send_realtime_input(self, **kwargs): self.calls.append(kwargs)
+    async def send_client_content(self, **kwargs): self.client_contents.append(kwargs)
     async def send_tool_response(self, **kwargs): self.tool_responses.append(kwargs)
 
     async def receive(self):
@@ -129,6 +131,40 @@ class ContractTests(unittest.TestCase):
 
 
 class GeminiAdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_receive_failure_logs_safe_status_fields_only(self):
+        session = FakeSession()
+
+        class FakeAPIError(Exception):
+            code = 1011
+            status = None
+            message = "private prompt and credential must not be logged"
+
+        async def broken_receive():
+            if False:
+                yield None
+            raise FakeAPIError("private prompt and credential must not be logged")
+
+        session.receive = broken_receive
+        provider = GeminiLiveProvider(FakeClient(session), "test-model", {}, FakeTypes)
+        errors = []
+        error_reported = asyncio.Event()
+
+        def on_error(error):
+            errors.append(error)
+            error_reported.set()
+
+        provider.on_error(on_error)
+        with self.assertLogs("amusant.fast_voice.gemini", level="WARNING") as captured:
+            await provider.connect()
+            await asyncio.wait_for(error_reported.wait(), timeout=2)
+            await provider.close()
+
+        self.assertEqual(errors[0].code, "receive_failed")
+        self.assertIn("error_type=FakeAPIError", captured.output[0])
+        self.assertIn("error_code=1011", captured.output[0])
+        self.assertIn("api_status=unknown", captured.output[0])
+        self.assertNotIn("private prompt", "\n".join(captured.output))
+
     async def test_connect_sends_normalized_pcm_and_ptt_boundaries(self):
         session = FakeSession()
         client = FakeClient(session)
@@ -142,23 +178,33 @@ class GeminiAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.calls[0]["audio"].mime_type, "audio/pcm;rate=16000")
         self.assertIsInstance(session.calls[1]["activity_start"], FakeTypes.ActivityStart)
         self.assertIsInstance(session.calls[2]["activity_end"], FakeTypes.ActivityEnd)
-        self.assertEqual(session.calls[3]["text"], "test")
+        self.assertEqual(len(session.calls), 3)
+        self.assertEqual(session.client_contents, [{"turns": {"parts": [{"text": "test"}]}}])
         await provider.close()
         self.assertTrue(client.connection.exited)
 
     async def test_receive_dispatches_ordered_events_and_correlates_tool_result(self):
         function_call = SimpleNamespace(id="call-1", name="lookup", args={"q": "x"})
-        message = SimpleNamespace(
+        tool_message = SimpleNamespace(
             tool_call=SimpleNamespace(function_calls=[function_call]),
             server_content=SimpleNamespace(
-                interrupted=True,
-                input_transcription=SimpleNamespace(text="spoken", finished=True),
-                model_turn=SimpleNamespace(parts=[SimpleNamespace(inline_data=SimpleNamespace(data=b"\x00\x00", mime_type="audio/pcm;rate=24000"))]),
-                output_transcription=SimpleNamespace(text="heard", finished=False),
+                interrupted=False,
+                input_transcription=None,
+                model_turn=None,
+                output_transcription=None,
                 turn_complete=True,
             ),
         )
-        session = FakeSession([message])
+        followup_message = SimpleNamespace(
+            server_content=SimpleNamespace(
+                interrupted=False,
+                input_transcription=None,
+                model_turn=SimpleNamespace(parts=[SimpleNamespace(inline_data=SimpleNamespace(data=b"\x00\x00", mime_type="audio/pcm;rate=24000"))]),
+                output_transcription=SimpleNamespace(text="Accepted.", finished=True),
+                turn_complete=True,
+            ),
+        )
+        session = FakeSession([tool_message, followup_message])
         provider = GeminiLiveProvider(FakeClient(session), "test-model", {}, FakeTypes)
         seen = []
         complete = asyncio.Event()
@@ -172,9 +218,9 @@ class GeminiAdapterTests(unittest.IsolatedAsyncioTestCase):
         provider.on_turn_complete(lambda event: (seen.append(("complete", event.cancelled)), complete.set()))
         await provider.connect()
         await asyncio.wait_for(complete.wait(), timeout=2)
-        self.assertEqual([item[0] for item in seen], ["tool", "interrupted", "transcript", "audio", "transcript", "complete"])
+        self.assertEqual([item[0] for item in seen], ["tool", "audio", "transcript", "complete"])
         self.assertEqual(session.tool_responses[0]["function_responses"][0].name, "lookup")
-        self.assertEqual(seen[-1], ("complete", True))
+        self.assertEqual(seen[-1], ("complete", False))
         await provider.close()
 
     async def test_unsupported_output_audio_format_is_reported(self):

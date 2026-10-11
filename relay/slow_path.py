@@ -160,6 +160,7 @@ def build_delegate_task_tool(sdk_types):
                     "Admit bounded background research, comparison, or summarization. "
                     "Acceptance confirms durable admission only, not task completion."
                 ),
+                behavior=sdk_types.Behavior.BLOCKING,
                 parameters=sdk_types.Schema(
                     type="OBJECT",
                     properties={

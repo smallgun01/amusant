@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 import re
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
@@ -30,6 +31,8 @@ from .contracts import (
     TurnCompleteCallback,
     TurnCompleteEvent,
 )
+
+LOG = logging.getLogger("amusant.fast_voice.gemini")
 
 
 class GeminiLiveProvider:
@@ -149,8 +152,14 @@ class GeminiLiveProvider:
         )
 
     async def inject_text(self, text: str) -> None:
+        """Send one complete text turn through the Live API client-content path.
+
+        ``send_realtime_input(text=...)`` is for realtime input events; the
+        documented discrete text-turn path is ``send_client_content``.
+        """
         session = self._require_session()
-        await self._send(lambda: session.send_realtime_input(text=text))
+        turns = {"parts": [{"text": text}]}
+        await self._send(lambda: session.send_client_content(turns=turns))
 
     async def _emit(self, callback: Callable[[Any], Any] | None, event: Any) -> None:
         if callback is None:
@@ -184,6 +193,22 @@ class GeminiLiveProvider:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            # Preserve only the exception class for diagnosis; SDK messages may
+            # contain request content, headers, or other sensitive details.
+            error_code = getattr(exc, "code", None)
+            if type(error_code) is int and 0 <= error_code <= 65535:
+                pass
+            elif isinstance(error_code, str) and re.fullmatch(r"[A-Z0-9_]{1,64}", error_code):
+                pass
+            else:
+                error_code = "unknown"
+            api_status = getattr(exc, "status", None)
+            if not isinstance(api_status, str) or not re.fullmatch(r"[A-Z0-9_]{1,64}", api_status):
+                api_status = "unknown"
+            LOG.warning(
+                "Gemini Live receive loop failed error_type=%s error_code=%s api_status=%s",
+                type(exc).__name__, error_code, api_status,
+            )
             await self._notify_error(ProviderError(self.provider_id, "receive_failed", "Gemini Live receive failed", retryable=True))
         finally:
             if self._session is session:
@@ -197,7 +222,8 @@ class GeminiLiveProvider:
 
     async def _handle_message(self, session: Any, message: Any) -> None:
         tool_call = getattr(message, "tool_call", None)
-        for call in getattr(tool_call, "function_calls", None) or []:
+        function_calls = getattr(tool_call, "function_calls", None) or []
+        for call in function_calls:
             call_id = str(getattr(call, "id", "") or "")
             name = str(getattr(call, "name", "") or "")
             if not call_id or not name:
@@ -248,5 +274,10 @@ class GeminiLiveProvider:
             )
 
         if getattr(content, "turn_complete", False):
+            if function_calls:
+                # A Live tool-call turn can finish before the model speaks its
+                # post-FunctionResponse acknowledgement. Keep the Relay turn
+                # open for the follow-up response instead of truncating it.
+                return
             await self._emit(self._on_turn_complete, TurnCompleteEvent(cancelled=self._was_interrupted))
             self._was_interrupted = False
