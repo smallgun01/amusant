@@ -16,7 +16,16 @@ from uuid import uuid4
 
 from .acp_client import load_acp_executor
 from .dispatcher import AsyncDispatcher
-from .task_store import MAX_TASK_CHARS, TASK_KINDS, SQLiteTaskStore, TaskAdmissionRequest
+from .task_store import (
+    MAX_TASK_CHARS,
+    TASK_KINDS,
+    AdmissionCapacity,
+    AdmissionConflict,
+    AdmissionUnavailable,
+    AdmissionUnknown,
+    SQLiteTaskStore,
+    TaskAdmissionRequest,
+)
 
 EXIT_PASS = 0
 EXIT_FAILED = 2
@@ -72,24 +81,38 @@ async def run_smoke(environ) -> SmokeReport:
     except ValueError:
         return SmokeReport(EXIT_CONFIG, None, None, None, "invalid_config", False)
 
-    store = SQLiteTaskStore(database_path=Path(db_raw.strip()), max_pending_tasks=1)
-    store.recover_after_restart()
-    now = datetime.now(timezone.utc)
     task_id = str(uuid4())
-    store.admit(
-        TaskAdmissionRequest(
-            task_id=task_id,
-            client_id=client_id,
-            conversation_id="acp-smoke",
-            turn_id=1,
-            call_id="smoke-1",
-            task=task_text,
-            task_kind=task_kind,
-            backend=backend_id.strip(),
-            created_at=now,
-            expires_at=now + timedelta(seconds=600),
+    try:
+        store = SQLiteTaskStore(database_path=Path(db_raw.strip()), max_pending_tasks=1)
+        store.recover_after_restart()
+        now = datetime.now(timezone.utc)
+        receipt = store.admit(
+            TaskAdmissionRequest(
+                task_id=task_id,
+                client_id=client_id,
+                conversation_id=f"acp-smoke-{uuid4()}",
+                turn_id=1,
+                call_id=f"smoke-{uuid4()}",
+                task=task_text,
+                task_kind=task_kind,
+                backend=backend_id.strip(),
+                created_at=now,
+                expires_at=now + timedelta(seconds=600),
+            )
         )
-    )
+    except AdmissionUnknown:
+        return SmokeReport(EXIT_UNCERTAIN, task_id, None, None, "acceptance_unconfirmed", False)
+    except AdmissionUnavailable:
+        return SmokeReport(EXIT_CONFIG, None, None, None, "task_store_unavailable", False)
+    except AdmissionCapacity:
+        return SmokeReport(EXIT_FAILED, None, None, None, "task_capacity", False)
+    except AdmissionConflict:
+        return SmokeReport(EXIT_FAILED, None, None, None, "call_id_conflict", False)
+    except ValueError:
+        return SmokeReport(EXIT_CONFIG, None, None, None, "invalid_config", False)
+    if receipt.duplicate:
+        return SmokeReport(EXIT_FAILED, receipt.task_id, None, None, "duplicate_admission", False)
+    task_id = receipt.task_id
     dispatcher = AsyncDispatcher(store, executor, max_attempts=1, now=lambda: now)
     await dispatcher.dispatch_available()
     row = store.get_by_task_id(task_id) or {}
@@ -119,7 +142,10 @@ def _print_report(report: SmokeReport) -> None:
 
 
 def main() -> None:
-    report = asyncio.run(run_smoke(os.environ))
+    try:
+        report = asyncio.run(run_smoke(os.environ))
+    except Exception:
+        report = SmokeReport(EXIT_CONFIG, None, None, None, "invalid_config", False)
     _print_report(report)
     raise SystemExit(report.exit_code)
 

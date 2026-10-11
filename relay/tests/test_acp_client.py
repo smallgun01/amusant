@@ -39,6 +39,9 @@ class FakeAcpAgent:
             method = message.get("method")
             params = message.get("params") or {}
             if method == "initialize":
+                if self.mode == "hang_init":
+                    await asyncio.sleep(1)
+                    continue
                 await ws.send(json.dumps({
                     "jsonrpc": "2.0",
                     "id": request_id,
@@ -112,6 +115,31 @@ class AcpClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(executor._cwd, "/openab/work")
         with self.assertRaises(ValueError):
             OpenAbAcpExecutor(url="ws://127.0.0.1:9/acp", auth_key=ACP_KEY, cwd="../escape")
+
+    def test_metadata_and_documentation_ips_are_rejected(self):
+        for host in ("169.254.169.254", "192.0.2.1", "100.64.1.1"):
+            with self.assertRaises(ValueError):
+                OpenAbAcpExecutor(
+                    url=f"wss://{host}/acp",
+                    auth_key=ACP_KEY,
+                    cwd="/openab/work",
+                )
+
+    def test_infinite_timeout_is_rejected(self):
+        with self.assertRaises(ValueError):
+            OpenAbAcpExecutor(
+                url="ws://127.0.0.1:9/acp",
+                auth_key=ACP_KEY,
+                cwd="/openab/work",
+                timeout_seconds=float("inf"),
+            )
+        with self.assertRaises(ValueError):
+            load_acp_executor({
+                "AMUSANT_ACP_URL": "ws://127.0.0.1:9/acp",
+                "AMUSANT_ACP_AUTH_KEY": ACP_KEY,
+                "AMUSANT_ACP_CWD": "/openab/work",
+                "AMUSANT_ACP_TIMEOUT_SECONDS": "inf",
+            })
 
     def test_plaintext_non_loopback_requires_explicit_flag(self):
         with self.assertRaises(ValueError):
@@ -190,6 +218,22 @@ class AcpClientTests(unittest.IsolatedAsyncioTestCase):
                 await server.wait_closed()
         self.assertEqual(outcome.status, "failed")
         self.assertEqual(outcome.code, "acp_connect")
+
+    async def test_overall_deadline_covers_initialize(self):
+        agent = FakeAcpAgent(mode="hang_init")
+        server, url = await self._serve(agent)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            executor = OpenAbAcpExecutor(url=url, auth_key=ACP_KEY, cwd="/openab/work", timeout_seconds=0.05)
+            try:
+                started = asyncio.get_running_loop().time()
+                outcome = await executor.execute(claimed_task())
+                elapsed = asyncio.get_running_loop().time() - started
+            finally:
+                server.close()
+                await server.wait_closed()
+        self.assertEqual(outcome.status, "failed")
+        self.assertEqual(outcome.code, "acp_connect")
+        self.assertLess(elapsed, 0.5)
 
     async def test_prompt_timeout_is_uncertain(self):
         agent = FakeAcpAgent(mode="hang")

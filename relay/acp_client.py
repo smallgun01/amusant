@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
+import math
 import socket
 import ssl
 from typing import Any
@@ -21,6 +22,12 @@ from .task_store import BoundedTaskResult, ClaimedTask
 
 ACP_PROTOCOL_VERSION = 1
 DEFAULT_ACP_TIMEOUT_SECONDS = 120.0
+MAX_ACP_TIMEOUT_SECONDS = 120.0
+_RFC1918 = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+)
 MAX_SPEAK_CHARS = 240
 MAX_DETAILS_CHARS = 4096
 MAX_CARD_LINES = 4
@@ -32,8 +39,21 @@ class AcpUncertainError(RuntimeError):
     """Prompt was sent; the terminal ACP result is unknown."""
 
 
-def _is_loopback_or_private(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    return address.is_loopback or (address.is_private and not address.is_unspecified)
+def _is_allowed_destination(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Allow loopback and RFC1918 only. Not a substitute for Security Group egress."""
+    if address.is_unspecified or address.is_link_local or address.is_multicast or address.is_reserved:
+        return False
+    if address.is_loopback:
+        return True
+    if address.version == 4:
+        return any(address in network for network in _RFC1918)
+    return False
+
+
+def _require_timeout(timeout_seconds: object) -> float:
+    if not isinstance(timeout_seconds, (int, float)) or not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        raise ValueError("ACP timeout must be a finite positive number")
+    return min(float(timeout_seconds), MAX_ACP_TIMEOUT_SECONDS)
 
 
 def _require_private_host(host: str) -> None:
@@ -50,11 +70,11 @@ def _require_private_host(host: str) -> None:
             raise ValueError("AMUSANT_ACP_URL host must resolve to a loopback or private IP")
         for info in infos:
             address = ipaddress.ip_address(info[4][0])
-            if not _is_loopback_or_private(address):
-                raise ValueError("AMUSANT_ACP_URL host must resolve only to loopback or private IPs")
+            if not _is_allowed_destination(address):
+                raise ValueError("AMUSANT_ACP_URL host must resolve only to loopback or RFC1918 IPs")
         return
-    if not _is_loopback_or_private(address):
-        raise ValueError("AMUSANT_ACP_URL may target only loopback or a private LAN IP")
+    if not _is_allowed_destination(address):
+        raise ValueError("AMUSANT_ACP_URL may target only loopback or an RFC1918 address")
 
 
 def _require_private_ws_url(url: str, *, allow_plaintext: bool) -> str:
@@ -127,23 +147,22 @@ class OpenAbAcpExecutor:
     ) -> None:
         if not isinstance(auth_key, str) or len(auth_key) < 12:
             raise ValueError("AMUSANT_ACP_AUTH_KEY must contain at least 12 characters")
-        if (
-            not isinstance(timeout_seconds, (int, float))
-            or timeout_seconds <= 0
-        ):
-            raise ValueError("ACP timeout must be positive")
         self._url = _require_private_ws_url(url, allow_plaintext=allow_plaintext)
         self._auth_key = auth_key
         self._cwd = _require_remote_cwd(cwd)
-        self._timeout_seconds = float(timeout_seconds)
+        self._timeout_seconds = _require_timeout(timeout_seconds)
         self._connect = connect_factory
+        self._deadline: float | None = None
 
     async def execute(self, task: ClaimedTask) -> ExecutionOutcome:
         prompt_sent = False
+        loop = asyncio.get_running_loop()
+        self._deadline = loop.time() + self._timeout_seconds
         try:
+            remaining = max(0.01, self._deadline - loop.time())
             connect_kwargs: dict[str, Any] = {
                 "additional_headers": {"Authorization": f"Bearer {self._auth_key}"},
-                "open_timeout": min(5.0, self._timeout_seconds),
+                "open_timeout": min(5.0, remaining),
                 "max_size": 64 * 1024,
             }
             if urlparse(self._url).scheme == "wss":
@@ -200,7 +219,9 @@ class OpenAbAcpExecutor:
         on_update=None,
     ) -> dict[str, Any]:
         await ws.send(json.dumps({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}))
-        deadline = asyncio.get_running_loop().time() + self._timeout_seconds
+        deadline = self._deadline
+        if deadline is None:
+            raise asyncio.TimeoutError
         while True:
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:

@@ -5,8 +5,10 @@ import unittest
 
 from websockets.asyncio.server import serve
 
+from datetime import datetime, timedelta, timezone
+
 from relay.acp_smoke import EXIT_CONFIG, EXIT_FAILED, EXIT_PASS, EXIT_UNCERTAIN, run_smoke
-from relay.task_store import SQLiteTaskStore
+from relay.task_store import SQLiteTaskStore, TaskAdmissionRequest
 
 try:
     from test_acp_client import ACP_KEY, FakeAcpAgent
@@ -82,6 +84,47 @@ class AcpSmokeTests(unittest.IsolatedAsyncioTestCase):
                 await server.wait_closed()
             self.assertEqual(report.exit_code, EXIT_UNCERTAIN)
             self.assertEqual(report.status, "uncertain")
+
+    async def test_same_db_second_run_uses_new_identity(self):
+        agent = FakeAcpAgent()
+        server, url = await self._serve(agent)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "tasks.sqlite3"
+            try:
+                first = await run_smoke(self._env(url, db_path))
+                second = await run_smoke(self._env(url, db_path))
+            finally:
+                server.close()
+                await server.wait_closed()
+            self.assertEqual(first.exit_code, EXIT_PASS)
+            self.assertEqual(second.exit_code, EXIT_PASS)
+            self.assertNotEqual(first.task_id, second.task_id)
+
+    async def test_invalid_db_path_is_config_error(self):
+        report = await run_smoke(self._env("ws://127.0.0.1:9/acp", "relative.sqlite3"))
+        self.assertEqual(report.exit_code, EXIT_CONFIG)
+        self.assertEqual(report.error, "invalid_config")
+
+    async def test_queued_capacity_is_failed_not_traceback(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "tasks.sqlite3"
+            store = SQLiteTaskStore(database_path=db_path, max_pending_tasks=1)
+            now = datetime(2026, 10, 11, 15, 0, tzinfo=timezone.utc)
+            store.admit(TaskAdmissionRequest(
+                task_id="4db5aabc-284a-4a01-8a6d-5cddcc7934f1",
+                client_id="authenticated-client-1",
+                conversation_id="other",
+                turn_id=1,
+                call_id="other-1",
+                task="Hold the queue",
+                task_kind="compare",
+                backend="openab",
+                created_at=now,
+                expires_at=now + timedelta(seconds=600),
+            ))
+            report = await run_smoke(self._env("ws://127.0.0.1:9/acp", db_path))
+            self.assertEqual(report.exit_code, EXIT_FAILED)
+            self.assertEqual(report.error, "task_capacity")
 
     async def test_gemini_env_is_rejected_and_missing_config_is_config_error(self):
         with tempfile.TemporaryDirectory() as temp_dir:
