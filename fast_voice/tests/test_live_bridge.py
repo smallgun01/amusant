@@ -11,8 +11,8 @@ from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosedError
 
 from fast_voice.contracts import AudioFrame, ProviderCapabilities, ToolCallEvent, TranscriptEvent, TurnCompleteEvent
-from relay.application import build_relay_handler
-from relay.live_bridge import MIN_UTTERANCE_BYTES, make_handler
+from relay.application import build_relay_handler, build_supported_relay_handler, load_relay_process_config
+from relay.live_bridge import MIN_UTTERANCE_BYTES, make_handler, run as run_live_bridge
 from relay.slow_path import SlowPathToolRouter
 from relay.task_store import SQLiteTaskStore
 
@@ -865,6 +865,194 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
                 call_id="call-app-1",
             ))
             self.assertEqual(sum(item.get("type") == "turn_complete" for item in controls), 1)
+
+    async def test_supported_startup_fails_closed_without_required_identity_store(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "tasks.sqlite3"
+            for missing in ("AMUSANT_CLIENT_ID", "AMUSANT_BACKEND_ID", "AMUSANT_TASK_DB"):
+                with self.subTest(missing=missing):
+                    env = {
+                        "AMUSANT_LIVE_PROVIDER": "gemini",
+                        "GEMINI_API_KEY": "offline-test-key",
+                        "AMUSANT_CLIENT_ID": "trusted-owner",
+                        "AMUSANT_BACKEND_ID": "openab",
+                        "AMUSANT_TASK_DB": str(db_path),
+                    }
+                    env.pop(missing)
+                    with self.assertRaises(ValueError):
+                        build_supported_relay_handler(
+                            expected_device_token=TOKEN,
+                            environ=env,
+                            sdk_types=FakeSchemaTypes,
+                        )
+
+    def test_supported_startup_rejects_invalid_task_kind_and_client_id(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "tasks.sqlite3"
+            env = {
+                "AMUSANT_LIVE_PROVIDER": "gemini",
+                "GEMINI_API_KEY": "offline-test-key",
+                "AMUSANT_CLIENT_ID": "trusted-owner",
+                "AMUSANT_BACKEND_ID": "openab",
+                "AMUSANT_TASK_DB": str(db_path),
+                "AMUSANT_DEFAULT_TASK_KIND": "hack",
+            }
+            with self.assertRaises(ValueError):
+                load_relay_process_config(env, expected_device_token=TOKEN)
+            env["AMUSANT_DEFAULT_TASK_KIND"] = "research"
+            env["AMUSANT_CLIENT_ID"] = "not a valid id"
+            with self.assertRaises(ValueError):
+                load_relay_process_config(env, expected_device_token=TOKEN)
+
+    async def test_supported_startup_fast_turn_does_not_create_a_slow_task(self):
+        fake = FakeProvider()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "fast-supported.sqlite3"
+            env = {
+                "AMUSANT_LIVE_PROVIDER": "gemini",
+                "GEMINI_API_KEY": "offline-test-key",
+                "AMUSANT_CLIENT_ID": "trusted-owner",
+                "AMUSANT_BACKEND_ID": "openab",
+                "AMUSANT_TASK_DB": str(db_path),
+            }
+            with patch("relay.application.build_live_provider", return_value=fake):
+                handler = build_supported_relay_handler(
+                    expected_device_token=TOKEN,
+                    environ=env,
+                    sdk_types=FakeSchemaTypes,
+                    conversation_id_factory=lambda: "server-conversation-fast",
+                )
+                server = await serve(handler, "127.0.0.1", 0, max_size=64 * 1024)
+                port = server.sockets[0].getsockname()[1]
+                ws = await connect(
+                    f"ws://127.0.0.1:{port}/ws",
+                    additional_headers={"Authorization": f"Bearer {TOKEN}"},
+                )
+                try:
+                    await self._send_turn(ws)
+                    await self._controls_until(
+                        ws, lambda item, _items: item.get("type") == "turn_complete"
+                    )
+                finally:
+                    await ws.close()
+                    server.close()
+                    await server.wait_closed()
+            store = SQLiteTaskStore(database_path=db_path, max_pending_tasks=8)
+            self.assertEqual(store.pending_dispatch_count(), 0)
+
+    async def test_supported_startup_admits_delegate_task_with_server_identity(self):
+        fake = FakeProvider(auto_complete=False)
+        captured = {}
+
+        def provider_builder(environ, **kwargs):
+            captured["tool_declarations"] = kwargs["tool_declarations"]
+            return fake
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "slow-supported.sqlite3"
+            env = {
+                "AMUSANT_LIVE_PROVIDER": "gemini",
+                "GEMINI_API_KEY": "offline-test-key",
+                "AMUSANT_CLIENT_ID": "trusted-owner",
+                "AMUSANT_BACKEND_ID": "openab",
+                "AMUSANT_TASK_DB": str(db_path),
+            }
+            with patch("relay.application.build_live_provider", side_effect=provider_builder):
+                handler = build_supported_relay_handler(
+                    expected_device_token=TOKEN,
+                    environ=env,
+                    sdk_types=FakeSchemaTypes,
+                    conversation_id_factory=lambda: "server-conversation-startup",
+                    post_tool_ack_timeout_seconds=0.05,
+                )
+                server = await serve(handler, "127.0.0.1", 0, max_size=64 * 1024)
+                port = server.sockets[0].getsockname()[1]
+                ws = await connect(
+                    f"ws://127.0.0.1:{port}/ws",
+                    additional_headers={"Authorization": f"Bearer {TOKEN}"},
+                )
+                try:
+                    await ws.send(json.dumps({"type": "hello", "device": "untrusted-device-label"}))
+                    await self._send_turn(ws)
+                    await self._controls_until(
+                        ws,
+                        lambda item, _items: item.get("type") == "state" and item.get("state") == "thinking",
+                    )
+                    await fake.callbacks["tool"](
+                        ToolCallEvent(
+                            "call-startup-1",
+                            "delegate_task",
+                            {"task": "Research a bounded topic", "task_kind": "research"},
+                        )
+                    )
+                    await fake.callbacks["complete"](TurnCompleteEvent(cancelled=False))
+                    controls, _ = await self._controls_until(
+                        ws, lambda item, _items: item.get("type") == "turn_complete"
+                    )
+                finally:
+                    await ws.close()
+                    server.close()
+                    await server.wait_closed()
+            declaration = captured["tool_declarations"][0].function_declarations[0]
+            self.assertEqual(declaration.name, "delegate_task")
+            self.assertEqual(declaration.behavior, "BLOCKING")
+            self.assertEqual(len(fake.tool_results), 1)
+            call_id, receipt = fake.tool_results[0]
+            self.assertEqual(call_id, "call-startup-1")
+            self.assertEqual(receipt["status"], "accepted")
+            store = SQLiteTaskStore(database_path=db_path, max_pending_tasks=8)
+            row = store.get_by_call(
+                client_id="trusted-owner",
+                conversation_id="server-conversation-startup",
+                turn_id=1,
+                call_id="call-startup-1",
+            )
+            self.assertIsNotNone(row)
+            self.assertEqual(row["backend"], "openab")
+            self.assertEqual(row["dispatch_state"], "pending")
+            self.assertIsNone(store.get_by_call(
+                client_id="untrusted-device-label",
+                conversation_id="server-conversation-startup",
+                turn_id=1,
+                call_id="call-startup-1",
+            ))
+            self.assertEqual(sum(item.get("type") == "turn_complete" for item in controls), 1)
+
+    async def test_run_serves_supported_handler_not_fast_only_factory(self):
+        served = {}
+        sentinel = object()
+
+        class FakeServer:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def serve_forever(self):
+                return None
+
+        def fake_serve(handler, host, port, **kwargs):
+            served["handler"] = handler
+            served["host"] = host
+            served["port"] = port
+            return FakeServer()
+
+        token = "device-token-12"
+        with (
+            patch("relay.live_bridge.build_process_handler", return_value=sentinel) as builder,
+            patch("relay.live_bridge.serve", side_effect=fake_serve),
+            patch.dict(
+                "os.environ",
+                {"AMUSANT_LIVE_PROVIDER": "gemini", "GEMINI_API_KEY": "offline-test-key"},
+                clear=False,
+            ),
+        ):
+            await run_live_bridge("127.0.0.1", 8765, token)
+        builder.assert_called_once()
+        self.assertEqual(builder.call_args.args[0], token)
+        self.assertIs(served["handler"], sentinel)
+        self.assertEqual((served["host"], served["port"]), ("127.0.0.1", 8765))
 
 
 if __name__ == "__main__":

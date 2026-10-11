@@ -19,7 +19,7 @@ from typing import Any
 from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 
-from fast_voice import AudioFrame, LiveProvider, ProviderError, build_live_provider
+from fast_voice import AudioFrame, LiveProvider, ProviderError
 from fast_voice.contracts import JSONValue, ToolCallEvent
 from relay.mock_relay import INPUT_RATE, MAX_FRAME_BYTES, OUTPUT_CHUNK_BYTES, OUTPUT_RATE, validate_bind_host
 
@@ -555,14 +555,26 @@ def make_handler(
     return handler
 
 
+def build_process_handler(token: str, environ: Mapping[str, str], **kwargs):
+    """Compose the supported process handler; never fall back to FAST-only Live."""
+    from .application import build_supported_relay_handler
+
+    return build_supported_relay_handler(
+        expected_device_token=token,
+        environ=environ,
+        **kwargs,
+    )
+
+
 async def run(host: str, port: int, token: str) -> None:
     validate_bind_host(host)
     if len(token) < 12:
         raise ValueError("AMUSANT_DEVICE_TOKEN must contain at least 12 characters")
     if os.environ.get("AMUSANT_LIVE_PROVIDER") != "gemini" or not os.environ.get("GEMINI_API_KEY"):
         raise ValueError("Set AMUSANT_LIVE_PROVIDER=gemini and inject GEMINI_API_KEY at runtime")
-    LOG.info("starting private Live bridge host=%s port=%d", host, port)
-    async with serve(make_handler(token, lambda: build_live_provider(os.environ)), host, port, max_size=MAX_FRAME_BYTES, ping_interval=20, ping_timeout=20) as server:
+    handler = build_process_handler(token, os.environ)
+    LOG.info("starting private Live bridge host=%s port=%d admission=on", host, port)
+    async with serve(handler, host, port, max_size=MAX_FRAME_BYTES, ping_interval=20, ping_timeout=20) as server:
         await server.serve_forever()
 
 

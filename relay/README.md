@@ -36,19 +36,22 @@ The test server binds to a private IP or loopback only, requires Authorization b
 
 ## P2 Live bridge harness (local development only)
 
-`live_bridge.py` is separate from the no-model P1 mock. It accepts the Kai-sim `/ws` protocol with a bearer token, buffers the current PTT utterance in RAM, and forwards mono PCM16LE 16 kHz audio to the selected `LiveProvider`. It returns output captions, chunked mono PCM16LE 24 kHz audio, and `turn_complete`. A Live session is opened only after at least 300 ms of PTT audio; short taps do not create a Live session. The server binds only to loopback or an explicit private LAN IP. Audio and transcripts are not persisted.
+`live_bridge.py` is separate from the no-model P1 mock. It accepts the Kai-sim `/ws` protocol with a bearer token, buffers the current PTT utterance in RAM, and forwards mono PCM16LE 16 kHz audio to the selected `LiveProvider`. It returns output captions, chunked mono PCM16LE 24 kHz audio, and `turn_complete`. A Live session is opened only after at least 300 ms of PTT audio; short taps do not create a Live session. The server binds only to loopback or an explicit private LAN IP. Audio and transcripts are not persisted. `python -m relay.live_bridge` now composes FAST audio with durable `delegate_task` admission and fails closed if server-owned identity, backend, or SQLite path are missing.
 
-Run from the Amusant repository root on the private host. Inject the API key into the process environment from the approved Secrets Manager flow; never paste it into this file or shell command history. `AMUSANT_DEVICE_TOKEN` must match the Kai-sim client's `KAI_DEVICE_TOKEN`. The installed SDK warns if both `GOOGLE_API_KEY` and `GEMINI_API_KEY` are present; its explicit `api_key` argument takes precedence, but unset ambient `GOOGLE_API_KEY` in this dedicated bridge process to keep selection unambiguous.
+Run from the Amusant repository root on the private host. Inject the API key into the process environment from the approved Secrets Manager flow; never paste it into this file or shell command history. `AMUSANT_DEVICE_TOKEN` must match the Kai-sim client's `KAI_DEVICE_TOKEN`. `AMUSANT_CLIENT_ID` is the server-owned identity bound to that token; never take it from a client hello. `AMUSANT_BACKEND_ID` and `AMUSANT_TASK_DB` are also server-owned; the database path must be absolute and its parent directory must already exist. The installed SDK warns if both `GOOGLE_API_KEY` and `GEMINI_API_KEY` are present; its explicit `api_key` argument takes precedence, but unset ambient `GOOGLE_API_KEY` in this dedicated bridge process to keep selection unambiguous.
 
 ~~~bash
 read -rp 'Private LAN IP (or 127.0.0.1): ' RELAY_LAN_IP
 read -rsp 'One-time device test token: ' AMUSANT_DEVICE_TOKEN; echo
+read -rp 'Server-owned client ID: ' AMUSANT_CLIENT_ID
+read -rp 'Server-selected backend ID: ' AMUSANT_BACKEND_ID
+read -rp 'Absolute SQLite task DB path: ' AMUSANT_TASK_DB
 unset GOOGLE_API_KEY
 export AMUSANT_LIVE_PROVIDER=gemini
-export AMUSANT_DEVICE_TOKEN
+export AMUSANT_DEVICE_TOKEN AMUSANT_CLIENT_ID AMUSANT_BACKEND_ID AMUSANT_TASK_DB
 # GEMINI_API_KEY must be injected securely by the local secret-loading process
 uv run --locked python -m relay.live_bridge --host "$RELAY_LAN_IP" --port 8765
-unset AMUSANT_DEVICE_TOKEN AMUSANT_LIVE_PROVIDER RELAY_LAN_IP
+unset AMUSANT_DEVICE_TOKEN AMUSANT_LIVE_PROVIDER AMUSANT_CLIENT_ID AMUSANT_BACKEND_ID AMUSANT_TASK_DB RELAY_LAN_IP
 ~~~
 
 On the Kai-sim laptop (same trusted LAN), use that same one-time token:
@@ -66,7 +69,7 @@ This is a local PTT-to-Live test harness, not production relay deployment; do no
 From the Amusant repository root, run:
 
 ~~~bash
-PYTHONPATH=relay uv run --locked python -m unittest discover -s relay/tests -v
+PYTHONPATH=.:relay uv run --locked python -m unittest discover -s relay/tests -v
 ~~~
 
 This suite includes the P1 mock relay plus the P3.1 SQLite admission tests; it uses temporary local databases and fake tool calls and does not call Gemini or AWS. The backend-neutral `delegate_task(task, task_kind)` declaration is opt-in; the backend and authenticated client/conversation identity are supplied by server code, never by model arguments.
