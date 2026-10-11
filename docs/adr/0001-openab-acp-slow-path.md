@@ -157,7 +157,7 @@ Task completion and result *delivery* are different: a completed result may rema
 ### Store choice and lifecycle
 
 - **P3 local/offline:** Retain PR #8's SQLite durable admission and same-transaction outbox. SQLite remains useful for tests; extend it with completion/results in later implementation slices.
-- **AWS:** An external durable store is required before claiming survival of ECS A replacement. **DynamoDB is the preferred small-store option, subject to separate cost/security/implementation approval**, not an already-provisioned requirement. A container-local SQLite file does not meet AWS restart durability.
+- **AWS:** An external durable store is required before claiming survival of ECS A replacement. **DynamoDB is the preferred small-store option.** Design: ADR-0002 (proposed). Table/IAM/proof remain separately approved. A container-local SQLite file does not meet AWS restart durability.
 - **SQS:** Not required in the two-Service MVP. The internal Dispatcher may wake immediately on admission and independently recover `queued` records on startup/periodically. If SQS is added in a later design, explicitly preserve atomic dispatch-intent semantics; do not blindly dual-write.
 - The record store belongs to the Relay's *logical responsibility*, even when the bytes live in an AWS managed service. It should remain small and outside the voice critical path.
 
