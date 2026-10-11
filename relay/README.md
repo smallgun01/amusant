@@ -72,4 +72,4 @@ From the Amusant repository root, run:
 PYTHONPATH=.:relay uv run --locked python -m unittest discover -s relay/tests -v
 ~~~
 
-This suite includes the P1 mock relay plus the P3.1 SQLite admission tests; it uses temporary local databases and fake tool calls and does not call Gemini or AWS. The backend-neutral `delegate_task(task, task_kind)` declaration is opt-in; the backend and authenticated client/conversation identity are supplied by server code, never by model arguments.
+This suite includes the P1 mock relay, P3.1 SQLite admission tests, and P3.2 in-process Dispatcher/recovery tests; it uses temporary local databases, fake tool calls, and a fake ACP executor. It does not call Gemini, OpenAB, or AWS. The backend-neutral `delegate_task(task, task_kind)` declaration is opt-in; the backend and authenticated client/conversation identity are supplied by server code, never by model arguments. Dispatcher recovery on CLI start does not execute ACP.
