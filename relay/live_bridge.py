@@ -29,6 +29,8 @@ MIN_UTTERANCE_BYTES = INPUT_RATE * 2 * 300 // 1000
 LOG = logging.getLogger("amusant.p2.live_bridge")
 ProviderFactory = Callable[[], LiveProvider]
 SlowPathToolHandler = Callable[[ToolCallEvent, int], Awaitable[Mapping[str, JSONValue]]]
+SlowPathToolHandlerFactory = Callable[[str, str], SlowPathToolHandler]
+ConversationIdFactory = Callable[[], str]
 
 
 class TurnState(str, Enum):
@@ -74,8 +76,19 @@ def make_handler(
     expected_token: str,
     provider_factory: ProviderFactory,
     slow_path_tool_handler: SlowPathToolHandler | None = None,
+    *,
+    slow_path_tool_handler_factory: SlowPathToolHandlerFactory | None = None,
+    authenticated_client_id: str | None = None,
+    conversation_id_factory: ConversationIdFactory | None = None,
 ):
     """Build a Kai-compatible /ws handler with explicit local turn ownership."""
+    if slow_path_tool_handler_factory is not None:
+        if not authenticated_client_id or conversation_id_factory is None:
+            raise ValueError(
+                "per-session slow-path wiring requires a server-authenticated client ID "
+                "and a server conversation-ID factory"
+            )
+
     async def handler(ws: ServerConnection) -> None:
         path = ws.request.path.split("?", 1)[0]
         if path != "/ws":
@@ -85,6 +98,20 @@ def make_handler(
         if not hmac.compare_digest(supplied, f"Bearer {expected_token}"):
             await ws.close(code=1008, reason="unauthorized client")
             return
+
+        session_slow_path_tool_handler = slow_path_tool_handler
+        if slow_path_tool_handler_factory is not None:
+            try:
+                conversation_id = conversation_id_factory()
+                if not isinstance(conversation_id, str) or not conversation_id:
+                    raise ValueError("conversation ID factory returned an empty/non-string ID")
+                session_slow_path_tool_handler = slow_path_tool_handler_factory(
+                    authenticated_client_id, conversation_id
+                )
+            except Exception as exc:
+                # The realtime Relay stays available, but SLOW admission fails closed.
+                LOG.warning("slow-path session setup failed error_type=%s", type(exc).__name__)
+                session_slow_path_tool_handler = None
 
         send_lock = asyncio.Lock()
         provider: LiveProvider | None = None
@@ -225,11 +252,11 @@ def make_handler(
                 turn = response_turn
                 if turn is None or not owns_response(turn, epoch) or turn.response_interrupted:
                     return
-                if slow_path_tool_handler is None:
+                if session_slow_path_tool_handler is None:
                     result: Mapping[str, JSONValue] = {"status": "unavailable", "code": "slow_path_not_configured"}
                 else:
                     try:
-                        result = await slow_path_tool_handler(event, turn.turn_id)
+                        result = await session_slow_path_tool_handler(event, turn.turn_id)
                         if not isinstance(result, Mapping):
                             result = {"status": "unknown", "code": "invalid_tool_result"}
                         else:

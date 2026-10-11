@@ -11,6 +11,7 @@ from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosedError
 
 from fast_voice.contracts import AudioFrame, ProviderCapabilities, ToolCallEvent, TranscriptEvent, TurnCompleteEvent
+from relay.application import build_relay_handler
 from relay.live_bridge import MIN_UTTERANCE_BYTES, make_handler
 from relay.slow_path import SlowPathToolRouter
 from relay.task_store import SQLiteTaskStore
@@ -79,6 +80,15 @@ class FakeProvider:
     async def send_tool_result(self, call_id, result): self.tool_results.append((call_id, dict(result)))
     async def cancel_response(self): raise NotImplementedError
     async def inject_text(self, text): pass
+
+
+class FakeSchemaTypes:
+    class Schema:
+        def __init__(self, **kwargs): self.__dict__.update(kwargs)
+    class FunctionDeclaration:
+        def __init__(self, **kwargs): self.__dict__.update(kwargs)
+    class Tool:
+        def __init__(self, **kwargs): self.__dict__.update(kwargs)
 
 
 class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
@@ -538,6 +548,89 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
             server.close()
             await server.wait_closed()
         self.assertEqual(created, [])
+
+    async def test_relay_application_composes_server_identity_schema_and_admission(self):
+        fake = FakeProvider(auto_complete=False)
+        captured = {}
+
+        def provider_builder(environ, **kwargs):
+            captured["environ"] = dict(environ)
+            captured["tool_declarations"] = kwargs["tool_declarations"]
+            return fake
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SQLiteTaskStore(database_path=Path(temp_dir) / "relay-app.sqlite3", max_pending_tasks=8)
+            with patch("relay.application.build_live_provider", side_effect=provider_builder):
+                handler = build_relay_handler(
+                    expected_device_token=TOKEN,
+                    authenticated_client_id="trusted-owner",
+                    task_store=store,
+                    provider_environ={
+                        "AMUSANT_LIVE_PROVIDER": "gemini",
+                        "GEMINI_API_KEY": "offline-test-key",
+                    },
+                    backend_id="openab",
+                    default_task_kind="research",
+                    max_task_ttl_seconds=600,
+                    acceptance_timeout_seconds=2,
+                    sdk_types=FakeSchemaTypes,
+                    conversation_id_factory=lambda: "server-conversation-1",
+                )
+                server = await serve(handler, "127.0.0.1", 0, max_size=64 * 1024)
+                port = server.sockets[0].getsockname()[1]
+                ws = await connect(
+                    f"ws://127.0.0.1:{port}/ws",
+                    additional_headers={"Authorization": f"Bearer {TOKEN}"},
+                )
+                try:
+                    await ws.send(json.dumps({"type": "hello", "device": "untrusted-device-label"}))
+                    await self._send_turn(ws)
+                    await self._controls_until(
+                        ws,
+                        lambda item, _items: item.get("type") == "state" and item.get("state") == "thinking",
+                    )
+                    await fake.callbacks["tool"](
+                        ToolCallEvent(
+                            "call-app-1",
+                            "delegate_task",
+                            {"task": "Research a bounded topic", "task_kind": "research"},
+                        )
+                    )
+                    await fake.callbacks["complete"](TurnCompleteEvent(cancelled=False))
+                    controls, _ = await self._controls_until(
+                        ws, lambda item, _items: item.get("type") == "turn_complete"
+                    )
+                finally:
+                    await ws.close()
+                    server.close()
+                    await server.wait_closed()
+
+            declaration = captured["tool_declarations"][0].function_declarations[0]
+            self.assertEqual(declaration.name, "delegate_task")
+            self.assertEqual(declaration.parameters.required, ["task"])
+            self.assertEqual(captured["environ"]["AMUSANT_LIVE_PROVIDER"], "gemini")
+            self.assertEqual(len(fake.tool_results), 1)
+            call_id, receipt = fake.tool_results[0]
+            self.assertEqual(call_id, "call-app-1")
+            self.assertEqual(receipt["status"], "accepted")
+            self.assertFalse(receipt["duplicate"])
+            row = store.get_by_call(
+                client_id="trusted-owner",
+                conversation_id="server-conversation-1",
+                turn_id=1,
+                call_id="call-app-1",
+            )
+            self.assertIsNotNone(row)
+            self.assertEqual(row["task_id"], receipt["task_id"])
+            self.assertEqual(row["backend"], "openab")
+            self.assertEqual(row["dispatch_state"], "pending")
+            self.assertIsNone(store.get_by_call(
+                client_id="untrusted-device-label",
+                conversation_id="server-conversation-1",
+                turn_id=1,
+                call_id="call-app-1",
+            ))
+            self.assertEqual(sum(item.get("type") == "turn_complete" for item in controls), 1)
 
 
 if __name__ == "__main__":
