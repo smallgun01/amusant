@@ -1,5 +1,6 @@
 import asyncio
 import json
+import ssl
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import tempfile
@@ -101,6 +102,53 @@ class AcpClientTests(unittest.IsolatedAsyncioTestCase):
         server = await serve(agent.handler, "127.0.0.1", 0, max_size=64 * 1024)
         port = server.sockets[0].getsockname()[1]
         return server, f"ws://127.0.0.1:{port}/acp"
+
+    def test_cwd_is_remote_path_and_need_not_exist_locally(self):
+        executor = OpenAbAcpExecutor(
+            url="ws://127.0.0.1:9/acp",
+            auth_key=ACP_KEY,
+            cwd="/openab/work",
+        )
+        self.assertEqual(executor._cwd, "/openab/work")
+        with self.assertRaises(ValueError):
+            OpenAbAcpExecutor(url="ws://127.0.0.1:9/acp", auth_key=ACP_KEY, cwd="../escape")
+
+    def test_plaintext_non_loopback_requires_explicit_flag(self):
+        with self.assertRaises(ValueError):
+            OpenAbAcpExecutor(
+                url="ws://10.0.0.8/acp",
+                auth_key=ACP_KEY,
+                cwd="/openab/work",
+            )
+        executor = OpenAbAcpExecutor(
+            url="ws://10.0.0.8/acp",
+            auth_key=ACP_KEY,
+            cwd="/openab/work",
+            allow_plaintext=True,
+        )
+        self.assertTrue(executor._url.startswith("ws://"))
+
+    async def test_wss_connect_uses_verified_tls_context(self):
+        captured = {}
+
+        def fake_connect(url, **kwargs):
+            captured["url"] = url
+            captured["kwargs"] = kwargs
+            raise OSError("offline")
+
+        executor = OpenAbAcpExecutor(
+            url="wss://10.0.0.8/acp",
+            auth_key=ACP_KEY,
+            cwd="/openab/work",
+            connect_factory=fake_connect,
+        )
+        outcome = await executor.execute(claimed_task())
+        self.assertEqual(outcome.status, "failed")
+        self.assertEqual(outcome.code, "acp_connect")
+        tls = captured["kwargs"]["ssl"]
+        self.assertIsInstance(tls, ssl.SSLContext)
+        self.assertEqual(tls.verify_mode, ssl.CERT_REQUIRED)
+        self.assertFalse(tls.check_hostname is False and tls.verify_mode == ssl.CERT_NONE)
 
     def test_normalize_agent_text_is_bounded(self):
         result = normalize_agent_text("First line\nSecond line\n" + ("x" * 5000))

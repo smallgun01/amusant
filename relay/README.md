@@ -72,4 +72,6 @@ From the Amusant repository root, run:
 PYTHONPATH=.:relay uv run --locked python -m unittest discover -s relay/tests -v
 ~~~
 
-This suite includes the P1 mock relay, P3.1 admission, P3.2 dispatcher/recovery, P3.3 ACP client, and P3.4 Inbox lookup tests. ACP tests use a local fake `/acp` WebSocket. Inbox tests use local SQLite and do not call Gemini. They do not call Jellii, OpenAB, or AWS. Set `AMUSANT_ACP_URL`, `AMUSANT_ACP_AUTH_KEY`, and `AMUSANT_ACP_CWD` to enable the in-process dispatcher against a real ACP endpoint; missing ACP config leaves dispatcher off. Never forward audio to ACP.
+This suite includes the P1 mock relay, P3.1 admission, P3.2 dispatcher/recovery, P3.3 ACP client, P3.4 Inbox lookup, and P4-A1 ACP-only smoke tests. ACP tests use a local fake `/acp` WebSocket. Inbox and smoke tests use local SQLite and do not call Gemini, Jellii, OpenAB, or AWS.
+
+`python -m relay.acp_smoke` is the ACP-only one-shot: it reuses `SQLiteTaskStore`, `AsyncDispatcher`, `OpenAbAcpExecutor`, and Inbox. Exit 0 only when one admitted task is `completed` with a bounded Inbox result. `failed`/`uncertain` are non-zero. `AMUSANT_ACP_CWD` is sent to the remote runtime and is not required to exist on the Relay. `wss://` verifies TLS; non-loopback `ws://` requires `AMUSANT_ACP_ALLOW_PLAINTEXT=1`. Do not set `AMUSANT_LIVE_PROVIDER=gemini` for this entrypoint. Never forward audio to ACP.

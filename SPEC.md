@@ -419,7 +419,7 @@ This section describes **repository-recorded status**, not tests rerun for this 
 | **P3.2** in-process Dispatcher | PR #12 merged. SQLite claim/recovery; CLI recovers crashed in-flight work as uncertain | ECS replacement durability |
 | **P3.3** ACP execution | PR #13 merged. Authenticated JSON-RPC ACP client against a local fake `/acp` server | Live Jellii/OpenAB ACP |
 | **P3.4** Inbox | Authorized `check_task_status` lookup, independent delivery_state, bounded result on completion. Offline Relay 39/39 | Spoken Gemini tool-disabled turn, ECS-surviving store |
-| **P4** AWS integration | Accepted two-ECS architecture target (PR #9) | Approved/deployed complete two-Service runtime and persistent storage |
+| **P4** AWS integration | Accepted two-ECS architecture target (PR #9). P4-A1 code adds an ACP-only smoke entrypoint (offline) | Approved/deployed one-off Fargate against live Jellii, external store, device ingress |
 
 P3.2 migrates the SQLite schema to `queued/running/completed/failed/uncertain` with outbox claim/recovery. A `sent` or `completed` row from the fake executor is **not** proof that OpenAB ACP ran. Do not interpret an outbox record as a real ACP result. Inbox lookup is P3.4 SQLite evidence, not ECS durability.
 
@@ -433,7 +433,7 @@ P3.2 migrates the SQLite schema to `queued/running/completed/failed/uncertain` w
 - **P3.2:** Relay-internal Async Dispatcher, queued recovery, execution state, and SQLite lifecycle migration — implemented offline with a fake executor; real ACP remains P3.3.
 - **P3.3:** Authenticated ACP client with bounded text prompts and honest timeout/uncertainty handling — implemented offline against a fake `/acp` server; live OpenAB remains separately gated.
 - **P3.4:** Durable Result Inbox, authorized previous-task lookup, reconnect status and user-requested spoken result — implemented offline on SQLite; a new Gemini tool-disabled spoken session remains unproven.
-- **P4:** Approved two-ECS AWS deployment/security/cost/reliability evaluation, including approved external durable Task Store.
+- **P4:** Approved two-ECS AWS deployment/security/cost/reliability evaluation, including approved external durable Task Store. A1 AWS remains separately gated from the ACP-only code entrypoint.
 - **H0:** Hardware UX gate versus optimized phone workflow.
 - **H1:** M5StickS3 integration only after H0 success.
 

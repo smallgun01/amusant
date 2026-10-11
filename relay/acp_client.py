@@ -8,7 +8,8 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
-from pathlib import Path
+import socket
+import ssl
 from typing import Any
 from urllib.parse import urlparse
 
@@ -31,29 +32,61 @@ class AcpUncertainError(RuntimeError):
     """Prompt was sent; the terminal ACP result is unknown."""
 
 
-def _require_private_ws_url(url: str) -> str:
+def _is_loopback_or_private(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return address.is_loopback or (address.is_private and not address.is_unspecified)
+
+
+def _require_private_host(host: str) -> None:
+    if host in {"localhost"}:
+        return
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+        except OSError as exc:
+            raise ValueError("AMUSANT_ACP_URL host must resolve to a loopback or private IP") from exc
+        if not infos:
+            raise ValueError("AMUSANT_ACP_URL host must resolve to a loopback or private IP")
+        for info in infos:
+            address = ipaddress.ip_address(info[4][0])
+            if not _is_loopback_or_private(address):
+                raise ValueError("AMUSANT_ACP_URL host must resolve only to loopback or private IPs")
+        return
+    if not _is_loopback_or_private(address):
+        raise ValueError("AMUSANT_ACP_URL may target only loopback or a private LAN IP")
+
+
+def _require_private_ws_url(url: str, *, allow_plaintext: bool) -> str:
     if not isinstance(url, str) or not url.strip():
         raise ValueError("AMUSANT_ACP_URL must be a ws:// or wss:// /acp URL")
     parsed = urlparse(url.strip())
     if parsed.scheme not in {"ws", "wss"} or parsed.path != "/acp" or parsed.query or parsed.fragment:
         raise ValueError("AMUSANT_ACP_URL must be ws:// or wss:// host/acp with no query")
-    host = parsed.hostname
-    if host in {"localhost"}:
-        return url.strip()
-    try:
-        address = ipaddress.ip_address(host)
-    except ValueError as exc:
-        raise ValueError("AMUSANT_ACP_URL host must be localhost, loopback, or a private IP") from exc
-    if address.is_unspecified or not address.is_private:
-        raise ValueError("AMUSANT_ACP_URL may target only loopback or a private LAN IP")
+    if parsed.scheme == "ws" and not allow_plaintext:
+        host = parsed.hostname or ""
+        try:
+            address = ipaddress.ip_address(host) if host not in {"localhost"} else ipaddress.ip_address("127.0.0.1")
+        except ValueError:
+            address = None
+        if address is None or not address.is_loopback:
+            raise ValueError("plaintext ws:// to a non-loopback host requires AMUSANT_ACP_ALLOW_PLAINTEXT=1")
+    if not parsed.hostname:
+        raise ValueError("AMUSANT_ACP_URL host must be localhost, loopback, private IP, or private DNS")
+    _require_private_host(parsed.hostname)
     return url.strip()
 
 
-def _require_cwd(cwd: str) -> str:
-    path = Path(cwd).expanduser()
-    if not path.is_absolute() or path.is_symlink() or not path.is_dir():
-        raise ValueError("AMUSANT_ACP_CWD must be an existing absolute directory")
-    return str(path)
+def _require_remote_cwd(cwd: str) -> str:
+    """cwd is sent to the ACP runtime; do not require it to exist on the Relay."""
+    if not isinstance(cwd, str):
+        raise ValueError("AMUSANT_ACP_CWD must be an absolute POSIX path on the ACP runtime")
+    raw = cwd.strip()
+    if not raw.startswith("/") or raw.startswith("//") or "\x00" in raw or len(raw) > 256:
+        raise ValueError("AMUSANT_ACP_CWD must be an absolute POSIX path on the ACP runtime")
+    if any(part == ".." for part in raw.split("/")):
+        raise ValueError("AMUSANT_ACP_CWD must not contain ..")
+    return raw
 
 
 def normalize_agent_text(text: str) -> BoundedTaskResult:
@@ -89,6 +122,7 @@ class OpenAbAcpExecutor:
         auth_key: str,
         cwd: str,
         timeout_seconds: float = DEFAULT_ACP_TIMEOUT_SECONDS,
+        allow_plaintext: bool = False,
         connect_factory=connect,
     ) -> None:
         if not isinstance(auth_key, str) or len(auth_key) < 12:
@@ -98,21 +132,26 @@ class OpenAbAcpExecutor:
             or timeout_seconds <= 0
         ):
             raise ValueError("ACP timeout must be positive")
-        self._url = _require_private_ws_url(url)
+        self._url = _require_private_ws_url(url, allow_plaintext=allow_plaintext)
         self._auth_key = auth_key
-        self._cwd = _require_cwd(cwd)
+        self._cwd = _require_remote_cwd(cwd)
         self._timeout_seconds = float(timeout_seconds)
         self._connect = connect_factory
 
     async def execute(self, task: ClaimedTask) -> ExecutionOutcome:
         prompt_sent = False
         try:
-            async with self._connect(
-                self._url,
-                additional_headers={"Authorization": f"Bearer {self._auth_key}"},
-                open_timeout=min(5.0, self._timeout_seconds),
-                max_size=64 * 1024,
-            ) as ws:
+            connect_kwargs: dict[str, Any] = {
+                "additional_headers": {"Authorization": f"Bearer {self._auth_key}"},
+                "open_timeout": min(5.0, self._timeout_seconds),
+                "max_size": 64 * 1024,
+            }
+            if urlparse(self._url).scheme == "wss":
+                tls = ssl.create_default_context()
+                if tls.verify_mode == ssl.CERT_NONE:
+                    raise ValueError("ACP wss:// must verify TLS certificates")
+                connect_kwargs["ssl"] = tls
+            async with self._connect(self._url, **connect_kwargs) as ws:
                 await self._rpc(ws, 1, "initialize", {"protocolVersion": ACP_PROTOCOL_VERSION})
                 session = await self._rpc(ws, 2, "session/new", {"cwd": self._cwd, "mcpServers": []})
                 session_id = session.get("sessionId")
@@ -230,4 +269,11 @@ def load_acp_executor(environ) -> OpenAbAcpExecutor | None:
     timeout = DEFAULT_ACP_TIMEOUT_SECONDS
     if isinstance(timeout_raw, str) and timeout_raw.strip():
         timeout = float(timeout_raw)
-    return OpenAbAcpExecutor(url=url.strip(), auth_key=key.strip(), cwd=cwd.strip(), timeout_seconds=timeout)
+    allow_plaintext = environ.get("AMUSANT_ACP_ALLOW_PLAINTEXT", "") == "1"
+    return OpenAbAcpExecutor(
+        url=url.strip(),
+        auth_key=key.strip(),
+        cwd=cwd.strip(),
+        timeout_seconds=timeout,
+        allow_plaintext=allow_plaintext,
+    )
