@@ -164,6 +164,10 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
                 await self._controls_until(ws, lambda item, _items: item.get("type") == "state" and item.get("state") == "thinking")
                 event = ToolCallEvent("call-slow-1", "delegate_task", {"task": "Compare current options", "task_kind": "compare"})
                 await fake.callbacks["tool"](event)
+                # Gemini may finish the function-call phase in a separate event.
+                await fake.callbacks["complete"](TurnCompleteEvent(cancelled=False))
+                with self.assertRaises(asyncio.TimeoutError):
+                    await asyncio.wait_for(ws.recv(), timeout=0.05)
                 await fake.emit_response()
                 controls, returned_audio_bytes = await self._controls_until(
                     ws, lambda item, _items: item.get("type") == "turn_complete"
@@ -180,6 +184,122 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(sum(item.get("type") == "turn_complete" for item in controls), 1)
             self.assertEqual(returned_audio_bytes, 12_000)
             self.assertTrue(any(item.get("type") == "caption" for item in controls))
+
+    async def test_empty_post_tool_followup_uses_bounded_honest_ack_card(self):
+        fake = FakeProvider(auto_complete=False)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SQLiteTaskStore(database_path=Path(temp_dir) / "empty-followup.sqlite3", max_pending_tasks=8)
+            router = SlowPathToolRouter(
+                store=store,
+                client_id="authenticated-device-1",
+                conversation_id="kai-session-empty-followup",
+                backend_id="openab",
+                default_task_kind="research",
+                max_task_ttl_seconds=600,
+                acceptance_timeout_seconds=2,
+            )
+            server = await serve(
+                make_handler(TOKEN, lambda: fake, slow_path_tool_handler=router, post_tool_ack_timeout_seconds=0.05),
+                "127.0.0.1", 0, max_size=64 * 1024,
+            )
+            port = server.sockets[0].getsockname()[1]
+            ws = await connect(f"ws://127.0.0.1:{port}/ws", additional_headers={"Authorization": f"Bearer {TOKEN}"})
+            try:
+                await self._send_turn(ws)
+                await self._controls_until(ws, lambda item, _items: item.get("type") == "state" and item.get("state") == "thinking")
+                await fake.callbacks["tool"](ToolCallEvent("call-empty-1", "delegate_task", {"task": "Research this"}))
+                await fake.callbacks["complete"](TurnCompleteEvent(cancelled=False))
+                controls, audio_bytes = await self._controls_until(
+                    ws, lambda item, _items: item.get("type") == "turn_complete"
+                )
+            finally:
+                await ws.close()
+                server.close()
+                await server.wait_closed()
+            self.assertEqual(fake.tool_results[0][0], "call-empty-1")
+            self.assertEqual(fake.tool_results[0][1]["status"], "accepted")
+            self.assertEqual(audio_bytes, 0)
+            cards = [item for item in controls if item.get("type") == "card"]
+            self.assertEqual(cards[0]["title"], "Task accepted")
+            self.assertIn("durably queued", " ".join(cards[0]["lines"]))
+            self.assertEqual(sum(item.get("type") == "turn_complete" for item in controls), 1)
+
+    async def test_partial_post_tool_audio_has_bounded_completion(self):
+        fake = FakeProvider(auto_complete=False)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SQLiteTaskStore(database_path=Path(temp_dir) / "partial-followup.sqlite3", max_pending_tasks=8)
+            router = SlowPathToolRouter(
+                store=store,
+                client_id="authenticated-device-1",
+                conversation_id="kai-session-partial-followup",
+                backend_id="openab",
+                default_task_kind="research",
+                max_task_ttl_seconds=600,
+                acceptance_timeout_seconds=2,
+            )
+            server = await serve(
+                make_handler(TOKEN, lambda: fake, slow_path_tool_handler=router, post_tool_ack_timeout_seconds=0.05),
+                "127.0.0.1", 0, max_size=64 * 1024,
+            )
+            port = server.sockets[0].getsockname()[1]
+            ws = await connect(f"ws://127.0.0.1:{port}/ws", additional_headers={"Authorization": f"Bearer {TOKEN}"})
+            try:
+                await self._send_turn(ws)
+                await self._controls_until(ws, lambda item, _items: item.get("type") == "state" and item.get("state") == "thinking")
+                await fake.callbacks["tool"](ToolCallEvent("call-partial-1", "delegate_task", {"task": "Research this"}))
+                await fake.callbacks["complete"](TurnCompleteEvent(cancelled=False))
+                await fake.callbacks["audio"](AudioFrame(bytes([1, 0]) * 6000, 24000))
+                await fake.callbacks["transcript"](TranscriptEvent("Task accepted.", "output", True))
+                controls, audio_bytes = await self._controls_until(
+                    ws, lambda item, _items: item.get("type") == "turn_complete"
+                )
+            finally:
+                await ws.close()
+                server.close()
+                await server.wait_closed()
+            row = store.get_by_call(
+                client_id="authenticated-device-1",
+                conversation_id="kai-session-partial-followup",
+                turn_id=1,
+                call_id="call-partial-1",
+            )
+            self.assertIsNotNone(row)
+            self.assertEqual(row["status"], "queued")
+            self.assertEqual(audio_bytes, 12_000)
+            self.assertTrue(any(item.get("type") == "caption" for item in controls))
+            cards = [item for item in controls if item.get("type") == "card"]
+            self.assertEqual(cards[0]["title"], "Voice response incomplete")
+            self.assertNotIn("accepted", " ".join(cards[0]["lines"]).lower())
+
+    async def test_unknown_admission_never_uses_accepted_timeout_card(self):
+        fake = FakeProvider(auto_complete=False)
+
+        async def unknown_handler(_event, _turn_id):
+            return {"status": "unknown", "code": "acceptance_unconfirmed"}
+
+        server = await serve(
+            make_handler(TOKEN, lambda: fake, slow_path_tool_handler=unknown_handler, post_tool_ack_timeout_seconds=0.05),
+            "127.0.0.1", 0, max_size=64 * 1024,
+        )
+        port = server.sockets[0].getsockname()[1]
+        ws = await connect(f"ws://127.0.0.1:{port}/ws", additional_headers={"Authorization": f"Bearer {TOKEN}"})
+        try:
+            await self._send_turn(ws)
+            await self._controls_until(ws, lambda item, _items: item.get("type") == "state" and item.get("state") == "thinking")
+            await fake.callbacks["tool"](ToolCallEvent("call-unknown-followup", "delegate_task", {"task": "Research this"}))
+            await fake.callbacks["complete"](TurnCompleteEvent(cancelled=False))
+            controls, audio_bytes = await self._controls_until(
+                ws, lambda item, _items: item.get("type") == "turn_complete"
+            )
+        finally:
+            await ws.close()
+            server.close()
+            await server.wait_closed()
+        self.assertEqual(fake.tool_results, [("call-unknown-followup", {"status": "unknown", "code": "acceptance_unconfirmed"})])
+        self.assertEqual(audio_bytes, 0)
+        cards = [item for item in controls if item.get("type") == "card"]
+        self.assertEqual(cards[0]["title"], "Task status unknown")
+        self.assertNotIn("accepted", json.dumps(cards).lower())
 
     async def test_fast_turn_does_not_create_a_slow_task(self):
         fake = FakeProvider()
@@ -219,7 +339,10 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
                 max_task_ttl_seconds=600,
                 acceptance_timeout_seconds=2,
             )
-            server = await serve(make_handler(TOKEN, lambda: fake, slow_path_tool_handler=router), "127.0.0.1", 0)
+            server = await serve(
+                make_handler(TOKEN, lambda: fake, slow_path_tool_handler=router, post_tool_ack_timeout_seconds=0.05),
+                "127.0.0.1", 0,
+            )
             port = server.sockets[0].getsockname()[1]
             ws = await connect(f"ws://127.0.0.1:{port}/ws", additional_headers={"Authorization": f"Bearer {TOKEN}"})
             try:
@@ -241,7 +364,10 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
         async def broken_handler(_event, _turn_id):
             raise RuntimeError("sensitive diagnostic must not be forwarded")
 
-        server = await serve(make_handler(TOKEN, lambda: fake, slow_path_tool_handler=broken_handler), "127.0.0.1", 0)
+        server = await serve(
+            make_handler(TOKEN, lambda: fake, slow_path_tool_handler=broken_handler, post_tool_ack_timeout_seconds=0.05),
+            "127.0.0.1", 0,
+        )
         port = server.sockets[0].getsockname()[1]
         ws = await connect(f"ws://127.0.0.1:{port}/ws", additional_headers={"Authorization": f"Bearer {TOKEN}"})
         try:
@@ -264,7 +390,7 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
             return {"status": "accepted", "detail": "x" * 9000}
 
         server = await serve(
-            make_handler(TOKEN, lambda: fake, slow_path_tool_handler=slow_path),
+            make_handler(TOKEN, lambda: fake, slow_path_tool_handler=slow_path, post_tool_ack_timeout_seconds=0.05),
             "127.0.0.1", 0, max_size=64 * 1024,
         )
         port = server.sockets[0].getsockname()[1]
@@ -579,6 +705,7 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
                     acceptance_timeout_seconds=2,
                     sdk_types=FakeSchemaTypes,
                     conversation_id_factory=lambda: "server-conversation-1",
+                    post_tool_ack_timeout_seconds=0.05,
                 )
                 server = await serve(handler, "127.0.0.1", 0, max_size=64 * 1024)
                 port = server.sockets[0].getsockname()[1]
