@@ -164,8 +164,10 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
                 await self._controls_until(ws, lambda item, _items: item.get("type") == "state" and item.get("state") == "thinking")
                 event = ToolCallEvent("call-slow-1", "delegate_task", {"task": "Compare current options", "task_kind": "compare"})
                 await fake.callbacks["tool"](event)
-                await fake.callbacks["complete"](TurnCompleteEvent(cancelled=False))
-                controls, _ = await self._controls_until(ws, lambda item, _items: item.get("type") == "turn_complete")
+                await fake.emit_response()
+                controls, returned_audio_bytes = await self._controls_until(
+                    ws, lambda item, _items: item.get("type") == "turn_complete"
+                )
             finally:
                 await ws.close()
                 server.close()
@@ -176,6 +178,8 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(row["backend"], "openab")
             self.assertEqual(row["dispatch_state"], "pending")
             self.assertEqual(sum(item.get("type") == "turn_complete" for item in controls), 1)
+            self.assertEqual(returned_audio_bytes, 12_000)
+            self.assertTrue(any(item.get("type") == "caption" for item in controls))
 
     async def test_fast_turn_does_not_create_a_slow_task(self):
         fake = FakeProvider()
