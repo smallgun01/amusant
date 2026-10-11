@@ -417,9 +417,10 @@ This section describes **repository-recorded status**, not tests rerun for this 
 | **P3.0** OpenAB viability | One-off authenticated ACP/model response and separate client-to-Agent smoke recorded as pass, under limited test risk acceptance | Safe production agent sandbox, durable Relay and Inbox |
 | **P3.1** durable admission | Existing `relay/slow_path.py` and `relay/task_store.py` implement opt-in tool routing and SQLite atomic task + outbox admission; local CLI `relay.live_bridge.run()` fail-closes into that composition. PR #10 squash-merged. Repository reports offline Fast Voice 52/52 | ECS image/taskdef/ingress, replacement-safe store, physical-device startup |
 | **P3.2** in-process Dispatcher | PR #12 merged. SQLite claim/recovery; CLI recovers crashed in-flight work as uncertain | ECS replacement durability |
-| **P3.3** ACP execution | PR #13 merged. Authenticated JSON-RPC ACP client against a local fake `/acp` server | Live Jellii/OpenAB ACP |
-| **P3.4** Inbox | Authorized `check_task_status` lookup, independent delivery_state, bounded result on completion. Offline Relay 39/39 | Spoken Gemini tool-disabled turn, ECS-surviving store |
-| **P4** AWS integration | Accepted two-ECS architecture target (PR #9). P4-A1 code adds an ACP-only smoke entrypoint (offline) | Approved/deployed one-off Fargate against live Jellii, external store, device ingress |
+| **P3.3** ACP execution | PR #13 merged. Authenticated JSON-RPC ACP client against a local fake `/acp` server | — |
+| **P3.4** Inbox | Authorized `check_task_status` lookup, independent delivery_state, bounded result on completion | Spoken Gemini tool-disabled turn, ECS-surviving store |
+| **P4-A1** ACP one-off | Live one-off PASS 2026-10-12: real Dispatcher/Inbox against Jellii, one prompt, cleanup to scale 0. Same-SG plaintext `/acp`, not TLS | External durable store, 24/7 Relay, device ingress, production sandbox |
+| **P4** AWS integration | Accepted two-ECS architecture target (PR #9). Continue one-off until store/ingress are separately approved | Replacement-safe ledger, public/device ingress |
 
 P3.2 migrates the SQLite schema to `queued/running/completed/failed/uncertain` with outbox claim/recovery. A `sent` or `completed` row from the fake executor is **not** proof that OpenAB ACP ran. Do not interpret an outbox record as a real ACP result. Inbox lookup is P3.4 SQLite evidence, not ECS durability.
 
@@ -433,7 +434,7 @@ P3.2 migrates the SQLite schema to `queued/running/completed/failed/uncertain` w
 - **P3.2:** Relay-internal Async Dispatcher, queued recovery, execution state, and SQLite lifecycle migration — implemented offline with a fake executor; real ACP remains P3.3.
 - **P3.3:** Authenticated ACP client with bounded text prompts and honest timeout/uncertainty handling — implemented offline against a fake `/acp` server; live OpenAB remains separately gated.
 - **P3.4:** Durable Result Inbox, authorized previous-task lookup, reconnect status and user-requested spoken result — implemented offline on SQLite; a new Gemini tool-disabled spoken session remains unproven.
-- **P4:** Approved two-ECS AWS deployment/security/cost/reliability evaluation, including approved external durable Task Store. A1 AWS remains separately gated from the ACP-only code entrypoint.
+- **P4:** Two-ECS staging. P4-A1 live one-off is recorded PASS under a bounded envelope; it does not approve an external Task Store, 24/7 Relay, or device ingress.
 - **H0:** Hardware UX gate versus optimized phone workflow.
 - **H1:** M5StickS3 integration only after H0 success.
 
