@@ -129,6 +129,33 @@ class ContractTests(unittest.TestCase):
 
 
 class GeminiAdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_receive_failure_logs_only_exception_class(self):
+        session = FakeSession()
+
+        async def broken_receive():
+            if False:
+                yield None
+            raise RuntimeError("private prompt and credential must not be logged")
+
+        session.receive = broken_receive
+        provider = GeminiLiveProvider(FakeClient(session), "test-model", {}, FakeTypes)
+        errors = []
+        error_reported = asyncio.Event()
+
+        def on_error(error):
+            errors.append(error)
+            error_reported.set()
+
+        provider.on_error(on_error)
+        with self.assertLogs("amusant.fast_voice.gemini", level="WARNING") as captured:
+            await provider.connect()
+            await asyncio.wait_for(error_reported.wait(), timeout=2)
+            await provider.close()
+
+        self.assertEqual(errors[0].code, "receive_failed")
+        self.assertIn("error_type=RuntimeError", captured.output[0])
+        self.assertNotIn("private prompt", "\n".join(captured.output))
+
     async def test_connect_sends_normalized_pcm_and_ptt_boundaries(self):
         session = FakeSession()
         client = FakeClient(session)

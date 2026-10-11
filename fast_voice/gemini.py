@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 import re
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
@@ -30,6 +31,8 @@ from .contracts import (
     TurnCompleteCallback,
     TurnCompleteEvent,
 )
+
+LOG = logging.getLogger("amusant.fast_voice.gemini")
 
 
 class GeminiLiveProvider:
@@ -184,6 +187,9 @@ class GeminiLiveProvider:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            # Preserve only the exception class for diagnosis; SDK messages may
+            # contain request content, headers, or other sensitive details.
+            LOG.warning("Gemini Live receive loop failed error_type=%s", type(exc).__name__)
             await self._notify_error(ProviderError(self.provider_id, "receive_failed", "Gemini Live receive failed", retryable=True))
         finally:
             if self._session is session:
