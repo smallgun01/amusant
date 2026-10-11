@@ -185,17 +185,26 @@ class GeminiAdapterTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_receive_dispatches_ordered_events_and_correlates_tool_result(self):
         function_call = SimpleNamespace(id="call-1", name="lookup", args={"q": "x"})
-        message = SimpleNamespace(
+        tool_message = SimpleNamespace(
             tool_call=SimpleNamespace(function_calls=[function_call]),
             server_content=SimpleNamespace(
-                interrupted=True,
-                input_transcription=SimpleNamespace(text="spoken", finished=True),
-                model_turn=SimpleNamespace(parts=[SimpleNamespace(inline_data=SimpleNamespace(data=b"\x00\x00", mime_type="audio/pcm;rate=24000"))]),
-                output_transcription=SimpleNamespace(text="heard", finished=False),
+                interrupted=False,
+                input_transcription=None,
+                model_turn=None,
+                output_transcription=None,
                 turn_complete=True,
             ),
         )
-        session = FakeSession([message])
+        followup_message = SimpleNamespace(
+            server_content=SimpleNamespace(
+                interrupted=False,
+                input_transcription=None,
+                model_turn=SimpleNamespace(parts=[SimpleNamespace(inline_data=SimpleNamespace(data=b"\x00\x00", mime_type="audio/pcm;rate=24000"))]),
+                output_transcription=SimpleNamespace(text="Accepted.", finished=True),
+                turn_complete=True,
+            ),
+        )
+        session = FakeSession([tool_message, followup_message])
         provider = GeminiLiveProvider(FakeClient(session), "test-model", {}, FakeTypes)
         seen = []
         complete = asyncio.Event()
@@ -209,9 +218,9 @@ class GeminiAdapterTests(unittest.IsolatedAsyncioTestCase):
         provider.on_turn_complete(lambda event: (seen.append(("complete", event.cancelled)), complete.set()))
         await provider.connect()
         await asyncio.wait_for(complete.wait(), timeout=2)
-        self.assertEqual([item[0] for item in seen], ["tool", "interrupted", "transcript", "audio", "transcript", "complete"])
+        self.assertEqual([item[0] for item in seen], ["tool", "audio", "transcript", "complete"])
         self.assertEqual(session.tool_responses[0]["function_responses"][0].name, "lookup")
-        self.assertEqual(seen[-1], ("complete", True))
+        self.assertEqual(seen[-1], ("complete", False))
         await provider.close()
 
     async def test_unsupported_output_audio_format_is_reported(self):

@@ -222,7 +222,8 @@ class GeminiLiveProvider:
 
     async def _handle_message(self, session: Any, message: Any) -> None:
         tool_call = getattr(message, "tool_call", None)
-        for call in getattr(tool_call, "function_calls", None) or []:
+        function_calls = getattr(tool_call, "function_calls", None) or []
+        for call in function_calls:
             call_id = str(getattr(call, "id", "") or "")
             name = str(getattr(call, "name", "") or "")
             if not call_id or not name:
@@ -273,5 +274,10 @@ class GeminiLiveProvider:
             )
 
         if getattr(content, "turn_complete", False):
+            if function_calls:
+                # A Live tool-call turn can finish before the model speaks its
+                # post-FunctionResponse acknowledgement. Keep the Relay turn
+                # open for the follow-up response instead of truncating it.
+                return
             await self._emit(self._on_turn_complete, TurnCompleteEvent(cancelled=self._was_interrupted))
             self._was_interrupted = False
