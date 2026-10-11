@@ -25,7 +25,7 @@ from .live_bridge import (
 from .slow_path import (
     SlowPathToolRouter,
     TaskAdmissionStore,
-    build_delegate_task_tool,
+    build_relay_tools,
 )
 from .acp_client import load_acp_executor
 from .dispatcher import AsyncDispatcher
@@ -164,14 +164,14 @@ def build_relay_handler(
     if conversation_id_factory is None:
         conversation_id_factory = lambda: str(uuid4())
 
-    delegate_tool = build_delegate_task_tool(sdk_types)
+    live_tools = build_relay_tools(sdk_types)
 
     def provider_factory() -> LiveProvider:
         return build_live_provider(
             provider_environ,
             client_factory=client_factory,
             sdk_types=sdk_types,
-            tool_declarations=[delegate_tool],
+            tool_declarations=[live_tools],
         )
 
     def tool_handler_factory(client_id: str, conversation_id: str) -> SlowPathToolHandler:

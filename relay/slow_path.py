@@ -22,12 +22,24 @@ from .task_store import (
 )
 
 TOOL_NAME = "delegate_task"
+INBOX_TOOL_NAME = "check_task_status"
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 
 class TaskAdmissionStore(Protocol):
     def admit(self, request: TaskAdmissionRequest) -> AdmissionReceipt:
         """Return only after task + dispatch intent are durably committed."""
+        ...
+
+    def lookup_inbox(
+        self,
+        *,
+        client_id: str,
+        task_id: str | None = None,
+        speak: bool = False,
+        now=None,
+    ) -> Mapping[str, JSONValue] | None:
+        """Authorized previous-task lookup."""
         ...
 
 
@@ -76,6 +88,8 @@ class SlowPathToolRouter:
         self._new_task_id = new_task_id or (lambda: str(uuid4()))
 
     async def __call__(self, event: ToolCallEvent, turn_id: int) -> Mapping[str, JSONValue]:
+        if event.name == INBOX_TOOL_NAME:
+            return await self._lookup(event)
         if event.name != TOOL_NAME:
             return {"status": "rejected", "code": "unsupported_tool"}
         if type(turn_id) is not int or turn_id <= 0:
@@ -111,6 +125,57 @@ class SlowPathToolRouter:
             "task_id": receipt.task_id,
             "duplicate": receipt.duplicate,
         }
+
+    async def _lookup(self, event: ToolCallEvent) -> Mapping[str, JSONValue]:
+        arguments = event.arguments
+        if not isinstance(arguments, Mapping) or set(arguments) - {"task_id", "speak"}:
+            return {"status": "rejected", "code": "invalid_arguments"}
+        task_id = arguments.get("task_id")
+        speak = arguments.get("speak", False)
+        if task_id is not None and not isinstance(task_id, str):
+            return {"status": "rejected", "code": "invalid_arguments"}
+        if speak is None:
+            speak = False
+        if not isinstance(speak, bool):
+            return {"status": "rejected", "code": "invalid_arguments"}
+        lookup = getattr(self._store, "lookup_inbox", None)
+        if not callable(lookup):
+            return {"status": "unavailable", "code": "task_store_unavailable"}
+        try:
+            record = await asyncio.wait_for(
+                asyncio.to_thread(
+                    lookup,
+                    client_id=self._client_id,
+                    task_id=task_id,
+                    speak=speak,
+                    now=self._now(),
+                ),
+                timeout=self._timeout,
+            )
+        except asyncio.TimeoutError:
+            return {"status": "unknown", "code": "lookup_unconfirmed"}
+        except AdmissionUnavailable:
+            return {"status": "unavailable", "code": "task_store_unavailable"}
+        except Exception:
+            return {"status": "unknown", "code": "lookup_unconfirmed"}
+        if record is None:
+            return {"status": "not_found"}
+        payload: dict[str, JSONValue] = {
+            "status": str(record["status"]),
+            "task_id": str(record["task_id"]),
+            "task_kind": str(record["task_kind"]),
+            "delivery_state": record.get("delivery_state"),
+        }
+        if record.get("status") == "completed":
+            if isinstance(record.get("speak"), str):
+                payload["speak"] = record["speak"]
+            if isinstance(record.get("card"), dict):
+                payload["card"] = record["card"]
+            if isinstance(record.get("details_md"), str):
+                payload["details_md"] = record["details_md"]
+            if record.get("speak_now") is True:
+                payload["speak_now"] = True
+        return payload
 
     def _build_request(
         self,
@@ -148,6 +213,41 @@ class SlowPathToolRouter:
         except Exception:
             return None, {"status": "rejected", "code": "invalid_task_envelope"}
         return request, None
+
+
+def build_check_task_status_tool(sdk_types):
+    return sdk_types.FunctionDeclaration(
+        name=INBOX_TOOL_NAME,
+        description=(
+            "Look up this owner's previous slow-task status or saved result. "
+            "This does not rerun the agent and does not prove a live OpenAB call."
+        ),
+        behavior=sdk_types.Behavior.BLOCKING,
+        parameters=sdk_types.Schema(
+            type="OBJECT",
+            properties={
+                "task_id": sdk_types.Schema(
+                    type="STRING",
+                    description="Optional task id. Omit to use the latest task for this owner.",
+                ),
+                "speak": sdk_types.Schema(
+                    type="BOOLEAN",
+                    description="If true and the task completed, return the saved spoken summary.",
+                ),
+            },
+        ),
+    )
+
+
+def build_relay_tools(sdk_types):
+    """FAST-session tools: admission plus authorized Inbox lookup."""
+    delegate = build_delegate_task_tool(sdk_types)
+    return sdk_types.Tool(
+        function_declarations=[
+            *delegate.function_declarations,
+            build_check_task_status_tool(sdk_types),
+        ]
+    )
 
 
 def build_delegate_task_tool(sdk_types):
