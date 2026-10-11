@@ -1,0 +1,233 @@
+"""OpenAB ACP executor for P3.3: authenticated JSON-RPC over GET /acp.
+
+This talks to a configured ACP WebSocket. It does not start ECS, Jellii, or AWS.
+Prompt payloads are bounded text only; raw audio is never forwarded.
+"""
+from __future__ import annotations
+
+import asyncio
+import ipaddress
+import json
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
+
+from websockets.asyncio.client import connect
+from websockets.exceptions import ConnectionClosed
+
+from .dispatcher import ExecutionOutcome
+from .task_store import BoundedTaskResult, ClaimedTask
+
+ACP_PROTOCOL_VERSION = 1
+DEFAULT_ACP_TIMEOUT_SECONDS = 120.0
+MAX_SPEAK_CHARS = 240
+MAX_DETAILS_CHARS = 4096
+MAX_CARD_LINES = 4
+MAX_CARD_TITLE = 80
+MAX_PROMPT_CHARS = 4096
+
+
+class AcpUncertainError(RuntimeError):
+    """Prompt was sent; the terminal ACP result is unknown."""
+
+
+def _require_private_ws_url(url: str) -> str:
+    if not isinstance(url, str) or not url.strip():
+        raise ValueError("AMUSANT_ACP_URL must be a ws:// or wss:// /acp URL")
+    parsed = urlparse(url.strip())
+    if parsed.scheme not in {"ws", "wss"} or parsed.path != "/acp" or parsed.query or parsed.fragment:
+        raise ValueError("AMUSANT_ACP_URL must be ws:// or wss:// host/acp with no query")
+    host = parsed.hostname
+    if host in {"localhost"}:
+        return url.strip()
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError as exc:
+        raise ValueError("AMUSANT_ACP_URL host must be localhost, loopback, or a private IP") from exc
+    if address.is_unspecified or not address.is_private:
+        raise ValueError("AMUSANT_ACP_URL may target only loopback or a private LAN IP")
+    return url.strip()
+
+
+def _require_cwd(cwd: str) -> str:
+    path = Path(cwd).expanduser()
+    if not path.is_absolute() or path.is_symlink() or not path.is_dir():
+        raise ValueError("AMUSANT_ACP_CWD must be an existing absolute directory")
+    return str(path)
+
+
+def normalize_agent_text(text: str) -> BoundedTaskResult:
+    if not isinstance(text, str):
+        raise ValueError("acp_empty_result")
+    cleaned = "".join(ch for ch in text if ch in "\n\t" or ord(ch) >= 32).strip()
+    if not cleaned:
+        raise ValueError("acp_empty_result")
+    speak = " ".join(cleaned.split())[:MAX_SPEAK_CHARS].strip()
+    lines = [line.strip()[:120] for line in cleaned.splitlines() if line.strip()][:MAX_CARD_LINES]
+    title = (lines[0] if lines else "Task result")[:MAX_CARD_TITLE]
+    return BoundedTaskResult(
+        speak=speak,
+        card={"title": title, "lines": lines},
+        details_md=cleaned[:MAX_DETAILS_CHARS],
+    )
+
+
+def _prompt_blocks(task: ClaimedTask) -> list[dict[str, str]]:
+    body = f"Task kind: {task.task_kind}\n\n{task.task}".strip()
+    if len(body) > MAX_PROMPT_CHARS:
+        body = body[:MAX_PROMPT_CHARS]
+    return [{"type": "text", "text": body}]
+
+
+class OpenAbAcpExecutor:
+    """One ACP connection per claimed task; text-only, bounded, fail-closed."""
+
+    def __init__(
+        self,
+        *,
+        url: str,
+        auth_key: str,
+        cwd: str,
+        timeout_seconds: float = DEFAULT_ACP_TIMEOUT_SECONDS,
+        connect_factory=connect,
+    ) -> None:
+        if not isinstance(auth_key, str) or len(auth_key) < 12:
+            raise ValueError("AMUSANT_ACP_AUTH_KEY must contain at least 12 characters")
+        if (
+            not isinstance(timeout_seconds, (int, float))
+            or timeout_seconds <= 0
+        ):
+            raise ValueError("ACP timeout must be positive")
+        self._url = _require_private_ws_url(url)
+        self._auth_key = auth_key
+        self._cwd = _require_cwd(cwd)
+        self._timeout_seconds = float(timeout_seconds)
+        self._connect = connect_factory
+
+    async def execute(self, task: ClaimedTask) -> ExecutionOutcome:
+        prompt_sent = False
+        try:
+            async with self._connect(
+                self._url,
+                additional_headers={"Authorization": f"Bearer {self._auth_key}"},
+                open_timeout=min(5.0, self._timeout_seconds),
+                max_size=64 * 1024,
+            ) as ws:
+                await self._rpc(ws, 1, "initialize", {"protocolVersion": ACP_PROTOCOL_VERSION})
+                session = await self._rpc(ws, 2, "session/new", {"cwd": self._cwd, "mcpServers": []})
+                session_id = session.get("sessionId")
+                if not isinstance(session_id, str) or not session_id:
+                    return ExecutionOutcome(status="failed", code="acp_session")
+                prompt_sent = True
+                chunks: list[str] = []
+                result = await self._rpc(
+                    ws,
+                    3,
+                    "session/prompt",
+                    {"sessionId": session_id, "prompt": _prompt_blocks(task)},
+                    on_update=lambda params: _collect_chunk(chunks, params),
+                )
+        except AcpExecutorFailed as error:
+            return ExecutionOutcome(status="failed", code=error.code)
+        except (ConnectionClosed, OSError, TimeoutError, asyncio.TimeoutError):
+            if prompt_sent:
+                raise AcpUncertainError("acp_result_unconfirmed") from None
+            return ExecutionOutcome(status="failed", code="acp_connect")
+        except AcpUncertainError:
+            raise
+        except Exception:
+            if prompt_sent:
+                raise AcpUncertainError("acp_result_unconfirmed") from None
+            return ExecutionOutcome(status="failed", code="acp_connect")
+
+        stop = result.get("stopReason") if isinstance(result, dict) else None
+        if stop == "cancelled":
+            return ExecutionOutcome(status="failed", code="acp_cancelled")
+        if stop != "end_turn":
+            raise AcpUncertainError("acp_result_unconfirmed")
+        try:
+            bounded = normalize_agent_text("".join(chunks))
+        except ValueError:
+            return ExecutionOutcome(status="failed", code="acp_empty_result")
+        return ExecutionOutcome(status="completed", code="ok", result=bounded)
+
+    async def _rpc(
+        self,
+        ws,
+        request_id: int,
+        method: str,
+        params: dict[str, Any],
+        *,
+        on_update=None,
+    ) -> dict[str, Any]:
+        await ws.send(json.dumps({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}))
+        deadline = asyncio.get_running_loop().time() + self._timeout_seconds
+        while True:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise asyncio.TimeoutError
+            raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
+            if not isinstance(raw, str):
+                continue
+            try:
+                message = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(message, dict) or message.get("jsonrpc") != "2.0":
+                continue
+            if message.get("method") == "session/update":
+                if on_update is not None:
+                    on_update(message.get("params"))
+                continue
+            if message.get("id") != request_id:
+                continue
+            if "error" in message:
+                error = message.get("error") if isinstance(message.get("error"), dict) else {}
+                code = error.get("code")
+                if code == -32000:
+                    raise AcpExecutorFailed("acp_overloaded")
+                if method == "session/prompt":
+                    raise AcpUncertainError("acp_result_unconfirmed")
+                if method == "initialize":
+                    raise AcpExecutorFailed("acp_initialize")
+                raise AcpExecutorFailed("acp_session")
+            result = message.get("result")
+            if not isinstance(result, dict):
+                raise AcpExecutorFailed("acp_rpc_error")
+            return result
+
+
+class AcpExecutorFailed(RuntimeError):
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+def _collect_chunk(chunks: list[str], params: object) -> None:
+    if not isinstance(params, dict):
+        return
+    update = params.get("update")
+    if not isinstance(update, dict) or update.get("sessionUpdate") != "agent_message_chunk":
+        return
+    content = update.get("content")
+    if not isinstance(content, dict) or content.get("type") != "text":
+        return
+    text = content.get("text")
+    if isinstance(text, str) and text:
+        chunks.append(text)
+
+
+def load_acp_executor(environ) -> OpenAbAcpExecutor | None:
+    url = environ.get("AMUSANT_ACP_URL")
+    key = environ.get("AMUSANT_ACP_AUTH_KEY")
+    cwd = environ.get("AMUSANT_ACP_CWD")
+    present = [value for value in (url, key, cwd) if isinstance(value, str) and value.strip()]
+    if not present:
+        return None
+    if len(present) != 3:
+        raise ValueError("ACP executor requires AMUSANT_ACP_URL, AMUSANT_ACP_AUTH_KEY, and AMUSANT_ACP_CWD")
+    timeout_raw = environ.get("AMUSANT_ACP_TIMEOUT_SECONDS", "")
+    timeout = DEFAULT_ACP_TIMEOUT_SECONDS
+    if isinstance(timeout_raw, str) and timeout_raw.strip():
+        timeout = float(timeout_raw)
+    return OpenAbAcpExecutor(url=url.strip(), auth_key=key.strip(), cwd=cwd.strip(), timeout_seconds=timeout)

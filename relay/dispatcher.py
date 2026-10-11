@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal, Protocol
 
-from .task_store import ClaimedTask, SQLiteTaskStore
+from .task_store import BoundedTaskResult, ClaimedTask, SQLiteTaskStore
 
 ExecutionStatus = Literal["completed", "failed"]
 
@@ -21,6 +21,7 @@ ExecutionStatus = Literal["completed", "failed"]
 class ExecutionOutcome:
     status: ExecutionStatus
     code: str = "ok"
+    result: BoundedTaskResult | None = None
 
 
 class TaskExecutor(Protocol):
@@ -121,6 +122,6 @@ class AsyncDispatcher:
             self._store.mark_uncertain(task.task_id, code="acp_result_unconfirmed")
             return
         if outcome.status == "completed":
-            self._store.complete(task.task_id)
+            self._store.complete(task.task_id, result=outcome.result)
             return
         self._store.fail(task.task_id, code=outcome.code or "dispatch_failed")

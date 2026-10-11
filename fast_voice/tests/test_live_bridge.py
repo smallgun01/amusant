@@ -1040,7 +1040,7 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
 
         token = "device-token-12"
         with (
-            patch("relay.live_bridge.build_process_handler", return_value=sentinel) as builder,
+            patch("relay.live_bridge.build_process_runtime", return_value=(sentinel, None)) as builder,
             patch("relay.live_bridge.serve", side_effect=fake_serve),
             patch.dict(
                 "os.environ",

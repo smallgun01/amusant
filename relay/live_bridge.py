@@ -555,15 +555,22 @@ def make_handler(
     return handler
 
 
-def build_process_handler(token: str, environ: Mapping[str, str], **kwargs):
-    """Compose the supported process handler; never fall back to FAST-only Live."""
-    from .application import build_supported_relay_handler
+def build_process_runtime(token: str, environ: Mapping[str, str], **kwargs):
+    """Compose the supported process handler and optional ACP dispatcher."""
+    from .application import build_supported_relay_runtime
 
-    return build_supported_relay_handler(
+    handler, dispatcher, _store = build_supported_relay_runtime(
         expected_device_token=token,
         environ=environ,
         **kwargs,
     )
+    return handler, dispatcher
+
+
+def build_process_handler(token: str, environ: Mapping[str, str], **kwargs):
+    """Compose the supported process handler; never fall back to FAST-only Live."""
+    handler, _dispatcher = build_process_runtime(token, environ, **kwargs)
+    return handler
 
 
 async def run(host: str, port: int, token: str) -> None:
@@ -572,10 +579,21 @@ async def run(host: str, port: int, token: str) -> None:
         raise ValueError("AMUSANT_DEVICE_TOKEN must contain at least 12 characters")
     if os.environ.get("AMUSANT_LIVE_PROVIDER") != "gemini" or not os.environ.get("GEMINI_API_KEY"):
         raise ValueError("Set AMUSANT_LIVE_PROVIDER=gemini and inject GEMINI_API_KEY at runtime")
-    handler = build_process_handler(token, os.environ)
-    LOG.info("starting private Live bridge host=%s port=%d admission=on", host, port)
-    async with serve(handler, host, port, max_size=MAX_FRAME_BYTES, ping_interval=20, ping_timeout=20) as server:
-        await server.serve_forever()
+    handler, dispatcher = build_process_runtime(token, os.environ)
+    if dispatcher is not None:
+        await dispatcher.start()
+    LOG.info(
+        "starting private Live bridge host=%s port=%d admission=on acp=%s",
+        host,
+        port,
+        "on" if dispatcher is not None else "off",
+    )
+    try:
+        async with serve(handler, host, port, max_size=MAX_FRAME_BYTES, ping_interval=20, ping_timeout=20) as server:
+            await server.serve_forever()
+    finally:
+        if dispatcher is not None:
+            await dispatcher.stop()
 
 
 def main() -> None:
