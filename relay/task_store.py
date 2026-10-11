@@ -13,7 +13,7 @@ from uuid import UUID
 
 MAX_TASK_CHARS = 4096
 TASK_KINDS = frozenset({"research", "compare", "summarize"})
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _ERROR_RE = re.compile(r"^[A-Za-z0-9_]{1,64}$")
 _V2_TASK_STATUSES = "('queued','running','completed','failed','uncertain')"
@@ -89,6 +89,13 @@ class RecoveryCounts:
     uncertain: int
 
 
+@dataclass(frozen=True, slots=True)
+class BoundedTaskResult:
+    speak: str
+    card: dict[str, object]
+    details_md: str
+
+
 def _utc_iso(value: datetime) -> str:
     if value.tzinfo is None or value.utcoffset() is None:
         raise AdmissionUnavailable("invalid_task_time")
@@ -151,8 +158,12 @@ class SQLiteTaskStore:
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
             if "slow_tasks" not in tables:
                 self._create_v2(connection)
-            elif version < SCHEMA_VERSION:
-                self._migrate_v1_to_v2(connection)
+            else:
+                if version < 2:
+                    self._migrate_v1_to_v2(connection)
+                    version = 2
+                if version < 3:
+                    self._migrate_v2_to_v3(connection)
             os.chmod(self._path, 0o600)
         except (sqlite3.Error, OSError, AdmissionUnavailable):
             raise AdmissionUnavailable("task_store_unavailable") from None
@@ -186,7 +197,28 @@ class SQLiteTaskStore:
                 dispatch_started_at TEXT,
                 last_error TEXT
             );
+            CREATE TABLE task_results (
+                task_id TEXT PRIMARY KEY REFERENCES slow_tasks(task_id) ON DELETE CASCADE,
+                speak TEXT NOT NULL,
+                card_json TEXT NOT NULL,
+                details_md TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
             PRAGMA user_version={SCHEMA_VERSION};
+            """
+        )
+
+    def _migrate_v2_to_v3(self, connection: sqlite3.Connection) -> None:
+        connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS task_results (
+                task_id TEXT PRIMARY KEY REFERENCES slow_tasks(task_id) ON DELETE CASCADE,
+                speak TEXT NOT NULL,
+                card_json TEXT NOT NULL,
+                details_md TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            PRAGMA user_version=3;
             """
         )
 
@@ -236,7 +268,7 @@ class SQLiteTaskStore:
             connection.execute("DROP TABLE slow_tasks")
             connection.execute("ALTER TABLE slow_tasks_v2 RENAME TO slow_tasks")
             connection.execute("ALTER TABLE dispatch_outbox_v2 RENAME TO dispatch_outbox")
-            connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+            connection.execute("PRAGMA user_version=2")
             connection.execute("COMMIT")
         except sqlite3.Error:
             try:
@@ -458,8 +490,8 @@ class SQLiteTaskStore:
         finally:
             connection.close()
 
-    def complete(self, task_id: str) -> None:
-        self._finish(task_id, task_status="completed", outbox_state="sent", error=None)
+    def complete(self, task_id: str, *, result: BoundedTaskResult | None = None) -> None:
+        self._finish(task_id, task_status="completed", outbox_state="sent", error=None, result=result)
 
     def fail(self, task_id: str, *, code: str) -> None:
         self._finish(task_id, task_status="failed", outbox_state="failed", error=_sanitize_error(code))
@@ -467,7 +499,15 @@ class SQLiteTaskStore:
     def mark_uncertain(self, task_id: str, *, code: str = "acp_result_unconfirmed") -> None:
         self._finish(task_id, task_status="uncertain", outbox_state="uncertain", error=_sanitize_error(code))
 
-    def _finish(self, task_id: str, *, task_status: str, outbox_state: str, error: str | None) -> None:
+    def _finish(
+        self,
+        task_id: str,
+        *,
+        task_status: str,
+        outbox_state: str,
+        error: str | None,
+        result: BoundedTaskResult | None = None,
+    ) -> None:
         if not isinstance(task_id, str) or not task_id:
             raise AdmissionUnavailable("invalid_task_id")
         connection = self._connect()
@@ -485,6 +525,17 @@ class SQLiteTaskStore:
                 "UPDATE slow_tasks SET status=? WHERE task_id=? AND status='running'",
                 (task_status, task_id),
             )
+            if result is not None:
+                connection.execute(
+                    "INSERT INTO task_results(task_id,speak,card_json,details_md,created_at) VALUES(?,?,?,?,?)",
+                    (
+                        task_id,
+                        result.speak,
+                        json.dumps(result.card, separators=(",", ":"), ensure_ascii=False),
+                        result.details_md,
+                        datetime.now(timezone.utc).isoformat(),
+                    ),
+                )
             connection.execute("COMMIT")
         except AdmissionUnavailable:
             raise
@@ -537,6 +588,21 @@ class SQLiteTaskStore:
                 "last_error": row[5],
             }
         except sqlite3.Error:
+            raise AdmissionUnavailable("task_store_unavailable") from None
+        finally:
+            connection.close()
+
+    def get_result(self, task_id: str) -> dict[str, object] | None:
+        connection = self._connect()
+        try:
+            row = connection.execute(
+                "SELECT speak,card_json,details_md FROM task_results WHERE task_id=?",
+                (task_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return {"speak": row[0], "card": json.loads(row[1]), "details_md": row[2]}
+        except (sqlite3.Error, json.JSONDecodeError):
             raise AdmissionUnavailable("task_store_unavailable") from None
         finally:
             connection.close()

@@ -27,6 +27,8 @@ from .slow_path import (
     TaskAdmissionStore,
     build_delegate_task_tool,
 )
+from .acp_client import load_acp_executor
+from .dispatcher import AsyncDispatcher
 from .task_store import SQLiteTaskStore, TASK_KINDS
 
 ProviderClientFactory = Callable[..., Any]
@@ -194,6 +196,43 @@ def build_relay_handler(
     )
 
 
+def build_supported_relay_runtime(
+    *,
+    expected_device_token: str,
+    environ: Mapping[str, str],
+    client_factory: ProviderClientFactory | None = None,
+    sdk_types: Any | None = None,
+    conversation_id_factory: ConversationIdFactory | None = None,
+    post_tool_ack_timeout_seconds: float = POST_TOOL_ACK_TIMEOUT_SECONDS,
+    post_tool_ack_max_duration_seconds: float = POST_TOOL_ACK_MAX_DURATION_SECONDS,
+):
+    """Build handler plus optional ACP dispatcher. Missing ACP config skips ACP."""
+    config = load_relay_process_config(environ, expected_device_token=expected_device_token)
+    store = SQLiteTaskStore(
+        database_path=config.database_path,
+        max_pending_tasks=config.max_pending_tasks,
+    )
+    store.recover_after_restart()
+    handler = build_relay_handler(
+        expected_device_token=config.expected_device_token,
+        authenticated_client_id=config.authenticated_client_id,
+        task_store=store,
+        provider_environ=environ,
+        backend_id=config.backend_id,
+        default_task_kind=config.default_task_kind,
+        max_task_ttl_seconds=config.max_task_ttl_seconds,
+        acceptance_timeout_seconds=config.acceptance_timeout_seconds,
+        client_factory=client_factory,
+        sdk_types=sdk_types,
+        conversation_id_factory=conversation_id_factory,
+        post_tool_ack_timeout_seconds=post_tool_ack_timeout_seconds,
+        post_tool_ack_max_duration_seconds=post_tool_ack_max_duration_seconds,
+    )
+    executor = load_acp_executor(environ)
+    dispatcher = None if executor is None else AsyncDispatcher(store, executor)
+    return handler, dispatcher, store
+
+
 def build_supported_relay_handler(
     *,
     expected_device_token: str,
@@ -209,24 +248,13 @@ def build_supported_relay_handler(
     This is the process-level composition used by `relay.live_bridge.run()`.
     It still does not provision ECS, public ingress, or a replacement-safe store.
     """
-    config = load_relay_process_config(environ, expected_device_token=expected_device_token)
-    store = SQLiteTaskStore(
-        database_path=config.database_path,
-        max_pending_tasks=config.max_pending_tasks,
-    )
-    store.recover_after_restart()
-    return build_relay_handler(
-        expected_device_token=config.expected_device_token,
-        authenticated_client_id=config.authenticated_client_id,
-        task_store=store,
-        provider_environ=environ,
-        backend_id=config.backend_id,
-        default_task_kind=config.default_task_kind,
-        max_task_ttl_seconds=config.max_task_ttl_seconds,
-        acceptance_timeout_seconds=config.acceptance_timeout_seconds,
+    handler, _dispatcher, _store = build_supported_relay_runtime(
+        expected_device_token=expected_device_token,
+        environ=environ,
         client_factory=client_factory,
         sdk_types=sdk_types,
         conversation_id_factory=conversation_id_factory,
         post_tool_ack_timeout_seconds=post_tool_ack_timeout_seconds,
         post_tool_ack_max_duration_seconds=post_tool_ack_max_duration_seconds,
     )
+    return handler

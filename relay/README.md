@@ -72,4 +72,4 @@ From the Amusant repository root, run:
 PYTHONPATH=.:relay uv run --locked python -m unittest discover -s relay/tests -v
 ~~~
 
-This suite includes the P1 mock relay, P3.1 SQLite admission tests, and P3.2 in-process Dispatcher/recovery tests; it uses temporary local databases, fake tool calls, and a fake ACP executor. It does not call Gemini, OpenAB, or AWS. The backend-neutral `delegate_task(task, task_kind)` declaration is opt-in; the backend and authenticated client/conversation identity are supplied by server code, never by model arguments. Dispatcher recovery on CLI start does not execute ACP.
+This suite includes the P1 mock relay, P3.1 admission, P3.2 dispatcher/recovery, and P3.3 ACP client tests. ACP tests use a local fake `/acp` WebSocket; they do not call Gemini, Jellii, OpenAB, or AWS. Set `AMUSANT_ACP_URL`, `AMUSANT_ACP_AUTH_KEY`, and `AMUSANT_ACP_CWD` to enable the in-process dispatcher against a real ACP endpoint; missing ACP config leaves dispatcher off. Never forward audio to ACP.
