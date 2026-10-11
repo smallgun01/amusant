@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from fast_voice import LiveProvider, build_live_provider
 from .live_bridge import (
+    POST_TOOL_ACK_MAX_DURATION_SECONDS,
     POST_TOOL_ACK_TIMEOUT_SECONDS,
     ConversationIdFactory,
     SlowPathToolHandler,
@@ -40,6 +41,7 @@ def build_relay_handler(
     sdk_types: Any | None = None,
     conversation_id_factory: ConversationIdFactory | None = None,
     post_tool_ack_timeout_seconds: float = POST_TOOL_ACK_TIMEOUT_SECONDS,
+    post_tool_ack_max_duration_seconds: float = POST_TOOL_ACK_MAX_DURATION_SECONDS,
 ):
     """Compose Live tool declaration + per-authenticated-session admission.
 
@@ -90,4 +92,5 @@ def build_relay_handler(
         authenticated_client_id=authenticated_client_id,
         conversation_id_factory=conversation_id_factory,
         post_tool_ack_timeout_seconds=post_tool_ack_timeout_seconds,
+        post_tool_ack_max_duration_seconds=post_tool_ack_max_duration_seconds,
     )

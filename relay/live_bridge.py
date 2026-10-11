@@ -28,6 +28,7 @@ MAX_UTTERANCE_BYTES = 1_000_000
 MAX_TOOL_RESULT_BYTES = 8 * 1024
 MIN_UTTERANCE_BYTES = INPUT_RATE * 2 * 300 // 1000
 POST_TOOL_ACK_TIMEOUT_SECONDS = 3.0
+POST_TOOL_ACK_MAX_DURATION_SECONDS = 15.0
 LOG = logging.getLogger("amusant.p2.live_bridge")
 ProviderFactory = Callable[[], LiveProvider]
 SlowPathToolHandler = Callable[[ToolCallEvent, int], Awaitable[Mapping[str, JSONValue]]]
@@ -67,6 +68,8 @@ class Turn:
     tool_response_sent: bool = False
     post_tool_output_seen: bool = False
     post_tool_timeout_task: asyncio.Task[None] | None = None
+    post_tool_timeout_generation: int = 0
+    post_tool_deadline: float | None = None
     input_bytes: int = 0
     output_bytes: int = 0
     provider_epoch: int | None = None
@@ -87,6 +90,7 @@ def make_handler(
     authenticated_client_id: str | None = None,
     conversation_id_factory: ConversationIdFactory | None = None,
     post_tool_ack_timeout_seconds: float = POST_TOOL_ACK_TIMEOUT_SECONDS,
+    post_tool_ack_max_duration_seconds: float = POST_TOOL_ACK_MAX_DURATION_SECONDS,
 ):
     """Build a Kai-compatible /ws handler with explicit local turn ownership."""
     if slow_path_tool_handler_factory is not None:
@@ -99,6 +103,10 @@ def make_handler(
             or not math.isfinite(post_tool_ack_timeout_seconds)
             or post_tool_ack_timeout_seconds <= 0):
         raise ValueError("post_tool_ack_timeout_seconds must be finite and positive")
+    if (not isinstance(post_tool_ack_max_duration_seconds, (int, float))
+            or not math.isfinite(post_tool_ack_max_duration_seconds)
+            or post_tool_ack_max_duration_seconds < post_tool_ack_timeout_seconds):
+        raise ValueError("post_tool_ack_max_duration_seconds must be finite and at least the inactivity timeout")
 
     async def handler(ws: ServerConnection) -> None:
         path = ws.request.path.split("?", 1)[0]
@@ -166,19 +174,29 @@ def make_handler(
                     return False
 
         def cancel_post_tool_timeout(turn: Turn) -> None:
+            turn.post_tool_timeout_generation += 1
             task = turn.post_tool_timeout_task
             if task is not None and task is not asyncio.current_task():
                 task.cancel()
             turn.post_tool_timeout_task = None
 
-        def ensure_post_tool_timeout(turn: Turn, epoch: int) -> None:
-            if turn.post_tool_timeout_task is None or turn.post_tool_timeout_task.done():
-                turn.post_tool_timeout_task = asyncio.create_task(wait_for_post_tool_ack(turn, epoch))
+        def reset_post_tool_timeout(turn: Turn, epoch: int) -> None:
+            cancel_post_tool_timeout(turn)
+            loop = asyncio.get_running_loop()
+            if turn.post_tool_deadline is None:
+                turn.post_tool_deadline = loop.time() + post_tool_ack_max_duration_seconds
+            remaining = max(0.0, turn.post_tool_deadline - loop.time())
+            generation = turn.post_tool_timeout_generation
+            turn.post_tool_timeout_task = asyncio.create_task(
+                wait_for_post_tool_ack(turn, epoch, generation, min(post_tool_ack_timeout_seconds, remaining))
+            )
 
-        async def wait_for_post_tool_ack(turn: Turn, epoch: int) -> None:
+        async def wait_for_post_tool_ack(turn: Turn, epoch: int, generation: int, delay: float) -> None:
             try:
-                await asyncio.sleep(post_tool_ack_timeout_seconds)
+                await asyncio.sleep(delay)
             except asyncio.CancelledError:
+                return
+            if generation != turn.post_tool_timeout_generation:
                 return
             turn.post_tool_timeout_task = None
             if not owns_response(turn, epoch):
@@ -287,6 +305,7 @@ def make_handler(
                     return
                 if turn.tool_response_sent:
                     turn.post_tool_output_seen = True
+                    reset_post_tool_timeout(turn, epoch)
                 if frame.sample_rate_hz != OUTPUT_RATE or len(frame.data) % 2:
                     await fail_turn(turn, "invalid_audio_frame")
                     return
@@ -310,6 +329,7 @@ def make_handler(
                     return
                 if turn.tool_response_sent:
                     turn.post_tool_output_seen = True
+                    reset_post_tool_timeout(turn, epoch)
                 await send_owned_control(turn, epoch, {"type": "caption", "delta": event.text})
 
             async def on_tool_call(event: ToolCallEvent) -> None:
@@ -342,7 +362,7 @@ def make_handler(
                 try:
                     await instance.send_tool_result(event.call_id, result)
                     turn.tool_response_sent = True
-                    ensure_post_tool_timeout(turn, epoch)
+                    reset_post_tool_timeout(turn, epoch)
                 except ProviderError as error:
                     await fail_turn(turn, error.code)
 
@@ -364,7 +384,7 @@ def make_handler(
                 if turn is not None:
                     if turn.tool_response_sent and not turn.post_tool_output_seen:
                         # A separate tool-phase turn_complete may precede the model's final ack.
-                        ensure_post_tool_timeout(turn, epoch)
+                        reset_post_tool_timeout(turn, epoch)
                         return
                     await finish_from_provider(turn, epoch)
 

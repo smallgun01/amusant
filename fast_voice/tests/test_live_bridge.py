@@ -94,8 +94,8 @@ class FakeSchemaTypes:
 
 
 class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
-    async def _open(self, factory, max_size=64 * 1024):
-        server = await serve(make_handler(TOKEN, factory), "127.0.0.1", 0, max_size=max_size)
+    async def _open(self, factory, max_size=64 * 1024, **handler_kwargs):
+        server = await serve(make_handler(TOKEN, factory, **handler_kwargs), "127.0.0.1", 0, max_size=max_size)
         port = server.sockets[0].getsockname()[1]
         ws = await connect(f"ws://127.0.0.1:{port}/ws", additional_headers={"Authorization": f"Bearer {TOKEN}"})
         return server, ws
@@ -272,6 +272,106 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
             cards = [item for item in controls if item.get("type") == "card"]
             self.assertEqual(cards[0]["title"], "Voice response incomplete")
             self.assertNotIn("accepted", " ".join(cards[0]["lines"]).lower())
+
+    async def test_streaming_post_tool_audio_refreshes_inactivity_timeout(self):
+        fake = FakeProvider(auto_complete=False)
+        server, ws = await self._open(
+            lambda: fake,
+            slow_path_tool_handler=lambda _event, _turn_id: asyncio.sleep(0, result={"status": "accepted", "task_id": "task-refresh"}),
+            post_tool_ack_timeout_seconds=0.05,
+            post_tool_ack_max_duration_seconds=0.5,
+        )
+        try:
+            await self._send_turn(ws)
+            await self._controls_until(ws, lambda item, _items: item.get("type") == "state" and item.get("state") == "thinking")
+            await fake.callbacks["tool"](ToolCallEvent("call-refresh", "delegate_task", {"task": "Summarize this"}))
+            await fake.callbacks["complete"](TurnCompleteEvent(cancelled=False))
+            for _ in range(5):
+                await fake.callbacks["audio"](AudioFrame(bytes([1, 0]) * 1000, 24000))
+                await asyncio.sleep(0.03)
+            await fake.callbacks["transcript"](TranscriptEvent("Task accepted.", "output", True))
+            await fake.callbacks["complete"](TurnCompleteEvent(cancelled=False))
+            controls, audio_bytes = await self._controls_until(
+                ws, lambda item, _items: item.get("type") == "turn_complete"
+            )
+        finally:
+            await ws.close()
+            server.close()
+            await server.wait_closed()
+        self.assertEqual(audio_bytes, 10_000)
+        self.assertTrue(any(item.get("type") == "caption" for item in controls))
+        self.assertFalse(any(item.get("type") == "card" for item in controls))
+
+    async def test_post_tool_stream_has_absolute_completion_bound(self):
+        fake = FakeProvider(auto_complete=False)
+        server, ws = await self._open(
+            lambda: fake,
+            slow_path_tool_handler=lambda _event, _turn_id: asyncio.sleep(0, result={"status": "accepted", "task_id": "task-bound"}),
+            post_tool_ack_timeout_seconds=0.05,
+            post_tool_ack_max_duration_seconds=0.15,
+        )
+        try:
+            await self._send_turn(ws)
+            await self._controls_until(ws, lambda item, _items: item.get("type") == "state" and item.get("state") == "thinking")
+            await fake.callbacks["tool"](ToolCallEvent("call-bound", "delegate_task", {"task": "Summarize this"}))
+            await fake.callbacks["complete"](TurnCompleteEvent(cancelled=False))
+            for _ in range(4):
+                await fake.callbacks["audio"](AudioFrame(bytes([1, 0]) * 1000, 24000))
+                await asyncio.sleep(0.03)
+            controls, audio_bytes = await self._controls_until(
+                ws, lambda item, _items: item.get("type") == "turn_complete"
+            )
+        finally:
+            await ws.close()
+            server.close()
+            await server.wait_closed()
+        self.assertGreater(audio_bytes, 0)
+        self.assertTrue(any(item.get("type") == "card" and item.get("title") == "Voice response incomplete" for item in controls))
+
+    async def test_barge_in_cancels_post_tool_timer_without_false_result(self):
+        fake = FakeProvider(auto_complete=False)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SQLiteTaskStore(database_path=Path(temp_dir) / "tool-barge-in.sqlite3", max_pending_tasks=8)
+            router = SlowPathToolRouter(
+                store=store,
+                client_id="authenticated-device-1",
+                conversation_id="kai-session-tool-barge-in",
+                backend_id="openab",
+                default_task_kind="research",
+                max_task_ttl_seconds=600,
+                acceptance_timeout_seconds=2,
+            )
+            server = await serve(
+                make_handler(TOKEN, lambda: fake, slow_path_tool_handler=router, post_tool_ack_timeout_seconds=0.3),
+                "127.0.0.1", 0, max_size=64 * 1024,
+            )
+            port = server.sockets[0].getsockname()[1]
+            ws = await connect(f"ws://127.0.0.1:{port}/ws", additional_headers={"Authorization": f"Bearer {TOKEN}"})
+            try:
+                await self._send_turn(ws)
+                await self._controls_until(ws, lambda item, _items: item.get("type") == "state" and item.get("state") == "thinking")
+                await fake.callbacks["tool"](ToolCallEvent("call-barge-tool", "delegate_task", {"task": "Research this"}))
+                await fake.callbacks["complete"](TurnCompleteEvent(cancelled=False))
+                # A new PTT supersedes the pending acknowledgement window.
+                await ws.send(json.dumps({"type": "ptt_start"}))
+                controls, audio_bytes = await self._controls_until(
+                    ws, lambda item, _items: item.get("type") == "state" and item.get("state") == "idle"
+                )
+                await asyncio.sleep(0.1)
+            finally:
+                await ws.close()
+                server.close()
+                await server.wait_closed()
+            row = store.get_by_call(
+                client_id="authenticated-device-1",
+                conversation_id="kai-session-tool-barge-in",
+                turn_id=1,
+                call_id="call-barge-tool",
+            )
+            self.assertIsNotNone(row)
+            self.assertEqual(row["dispatch_state"], "pending")
+            self.assertEqual(audio_bytes, 0)
+            self.assertFalse(any(item.get("type") == "card" and item.get("title") == "Task accepted" for item in controls))
 
     async def test_unknown_admission_never_uses_accepted_timeout_card(self):
         fake = FakeProvider(auto_complete=False)
