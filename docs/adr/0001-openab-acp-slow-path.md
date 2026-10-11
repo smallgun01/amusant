@@ -255,7 +255,7 @@ For a single Relay, a lightweight recovery scan and per-task execution stage are
 - **P0/P1/P2:** Already completed under earlier validated gates; unchanged by this amendment.
 - **P3.0:** ACP connectivity/model feasibility previously verified in isolated, one-off tests; do not interpret as production readiness.
 - **P3.1:** Existing SQLite `delegate_task` admission and atomic outbox implementation merged. Local CLI now wires the tool declaration and admission handler; ECS/service startup and a replacement-safe store remain.
-- **P3.2:** Add application-scoped Async Dispatcher, minimal task lifecycle, queued recovery, and persistence abstraction. Keep SQLite for offline tests; any cloud persistence is separately approved.
+- **P3.2:** Application-scoped Async Dispatcher, SQLite lifecycle migration, queued recovery, and fake-executor offline tests. Real ACP remains P3.3; cloud persistence is separately approved.
 - **P3.3:** Wire the Relay's ACP client to ECS B for read-only bounded tasks, terminal-result parsing, errors, and uncertain execution cases.
 - **P3.4:** Implement persistent Inbox and voice-session-independent task-status/result lookup and user-requested spoken delivery.
 - **P4:** Approve and validate two-ECS staging/production networking, external durable storage, security, deploy/restart behavior, audio latency, cost and operational metrics.

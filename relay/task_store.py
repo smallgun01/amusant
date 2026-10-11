@@ -1,8 +1,8 @@
-"""P3.1 durable SQLite admission registry; worker execution is a later slice."""
+"""P3.1 durable SQLite admission registry plus P3.2 claim/recovery lifecycle."""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
@@ -13,7 +13,11 @@ from uuid import UUID
 
 MAX_TASK_CHARS = 4096
 TASK_KINDS = frozenset({"research", "compare", "summarize"})
+SCHEMA_VERSION = 2
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+_ERROR_RE = re.compile(r"^[A-Za-z0-9_]{1,64}$")
+_V2_TASK_STATUSES = "('queued','running','completed','failed','uncertain')"
+_V2_OUTBOX_STATES = "('pending','claimed','sent','failed','uncertain')"
 
 
 class AdmissionError(RuntimeError):
@@ -66,11 +70,44 @@ class AdmissionReceipt:
     duplicate: bool
 
 
+@dataclass(frozen=True, slots=True)
+class ClaimedTask:
+    task_id: str
+    client_id: str
+    conversation_id: str
+    turn_id: int
+    call_id: str
+    task: str
+    task_kind: str
+    backend: str
+    attempts: int
+
+
+@dataclass(frozen=True, slots=True)
+class RecoveryCounts:
+    requeued: int
+    uncertain: int
+
+
+def _utc_iso(value: datetime) -> str:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise AdmissionUnavailable("invalid_task_time")
+    return value.astimezone(timezone.utc).isoformat()
+
+
+def _sanitize_error(code: str) -> str:
+    if not isinstance(code, str) or not _ERROR_RE.fullmatch(code):
+        return "dispatch_error"
+    return code
+
+
 class SQLiteTaskStore:
     """SQLite system-of-record for accepted tasks and transactional dispatch intent.
 
     No default database path or in-memory fallback is provided. P3.1 commits
-    admission + outbox intent atomically; P3.2 owns claiming and worker recovery.
+    admission + outbox intent atomically. P3.2 claims, recovers, and records
+    terminal/uncertain execution state. A container-local file is not claimed
+    to survive ECS replacement.
     """
 
     def __init__(self, *, database_path: str | Path, max_pending_tasks: int) -> None:
@@ -105,9 +142,61 @@ class SQLiteTaskStore:
         connection = self._connect()
         try:
             connection.execute("PRAGMA journal_mode=WAL")
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS slow_tasks (
+            tables = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+            if "slow_tasks" not in tables:
+                self._create_v2(connection)
+            elif version < SCHEMA_VERSION:
+                self._migrate_v1_to_v2(connection)
+            os.chmod(self._path, 0o600)
+        except (sqlite3.Error, OSError, AdmissionUnavailable):
+            raise AdmissionUnavailable("task_store_unavailable") from None
+        finally:
+            connection.close()
+
+    def _create_v2(self, connection: sqlite3.Connection) -> None:
+        connection.executescript(
+            f"""
+            CREATE TABLE slow_tasks (
+                task_id TEXT PRIMARY KEY,
+                client_id TEXT NOT NULL,
+                conversation_id TEXT NOT NULL,
+                turn_id INTEGER NOT NULL,
+                call_id TEXT NOT NULL,
+                payload_sha256 TEXT NOT NULL,
+                task_text TEXT NOT NULL,
+                task_kind TEXT NOT NULL CHECK(task_kind IN ('research','compare','summarize')),
+                backend TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN {_V2_TASK_STATUSES}),
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                UNIQUE(client_id, conversation_id, turn_id, call_id)
+            );
+            CREATE TABLE dispatch_outbox (
+                task_id TEXT PRIMARY KEY REFERENCES slow_tasks(task_id) ON DELETE CASCADE,
+                state TEXT NOT NULL CHECK(state IN {_V2_OUTBOX_STATES}),
+                attempts INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                claimed_until TEXT,
+                dispatch_started_at TEXT,
+                last_error TEXT
+            );
+            PRAGMA user_version={SCHEMA_VERSION};
+            """
+        )
+
+    def _migrate_v1_to_v2(self, connection: sqlite3.Connection) -> None:
+        connection.execute("PRAGMA foreign_keys=OFF")
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                f"""
+                CREATE TABLE slow_tasks_v2 (
                     task_id TEXT PRIMARY KEY,
                     client_id TEXT NOT NULL,
                     conversation_id TEXT NOT NULL,
@@ -117,24 +206,46 @@ class SQLiteTaskStore:
                     task_text TEXT NOT NULL,
                     task_kind TEXT NOT NULL CHECK(task_kind IN ('research','compare','summarize')),
                     backend TEXT NOT NULL,
-                    status TEXT NOT NULL CHECK(status = 'queued'),
+                    status TEXT NOT NULL CHECK(status IN {_V2_TASK_STATUSES}),
                     created_at TEXT NOT NULL,
                     expires_at TEXT NOT NULL,
                     UNIQUE(client_id, conversation_id, turn_id, call_id)
-                );
-                CREATE TABLE IF NOT EXISTS dispatch_outbox (
-                    task_id TEXT PRIMARY KEY REFERENCES slow_tasks(task_id) ON DELETE CASCADE,
-                    state TEXT NOT NULL CHECK(state IN ('pending','sent')),
-                    attempts INTEGER NOT NULL DEFAULT 0,
-                    created_at TEXT NOT NULL
-                );
+                )
                 """
             )
-            os.chmod(self._path, 0o600)
-        except (sqlite3.Error, OSError):
-            raise AdmissionUnavailable("task_store_unavailable") from None
+            connection.execute("INSERT INTO slow_tasks_v2 SELECT * FROM slow_tasks")
+            connection.execute(
+                f"""
+                CREATE TABLE dispatch_outbox_v2 (
+                    task_id TEXT PRIMARY KEY REFERENCES slow_tasks_v2(task_id) ON DELETE CASCADE,
+                    state TEXT NOT NULL CHECK(state IN {_V2_OUTBOX_STATES}),
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    claimed_until TEXT,
+                    dispatch_started_at TEXT,
+                    last_error TEXT
+                )
+                """
+            )
+            connection.execute(
+                "INSERT INTO dispatch_outbox_v2("
+                "task_id,state,attempts,created_at,claimed_until,dispatch_started_at,last_error) "
+                "SELECT task_id,state,attempts,created_at,NULL,NULL,NULL FROM dispatch_outbox"
+            )
+            connection.execute("DROP TABLE dispatch_outbox")
+            connection.execute("DROP TABLE slow_tasks")
+            connection.execute("ALTER TABLE slow_tasks_v2 RENAME TO slow_tasks")
+            connection.execute("ALTER TABLE dispatch_outbox_v2 RENAME TO dispatch_outbox")
+            connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+            connection.execute("COMMIT")
+        except sqlite3.Error:
+            try:
+                connection.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise
         finally:
-            connection.close()
+            connection.execute("PRAGMA foreign_keys=ON")
 
     @staticmethod
     def _validate(request: TaskAdmissionRequest) -> None:
@@ -166,8 +277,8 @@ class SQLiteTaskStore:
         """Durably accept one task, deduplicated by trusted identity + call ID."""
         self._validate(request)
         fingerprint = request.fingerprint()
-        created = request.created_at.astimezone(timezone.utc).isoformat()
-        expires = request.expires_at.astimezone(timezone.utc).isoformat()
+        created = _utc_iso(request.created_at)
+        expires = _utc_iso(request.expires_at)
         connection = self._connect()
         transaction_open = False
         try:
@@ -227,6 +338,165 @@ class SQLiteTaskStore:
         finally:
             connection.close()
 
+    def recover_after_restart(self) -> RecoveryCounts:
+        """Single-Relay crash recovery: unsent claims are requeued; started ACP is uncertain."""
+        connection = self._connect()
+        transaction_open = False
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            transaction_open = True
+            uncertain = connection.execute(
+                "UPDATE dispatch_outbox SET state='uncertain', last_error='acp_result_unconfirmed' "
+                "WHERE state='claimed' AND dispatch_started_at IS NOT NULL"
+            ).rowcount
+            connection.execute(
+                "UPDATE slow_tasks SET status='uncertain' WHERE task_id IN ("
+                "SELECT task_id FROM dispatch_outbox WHERE state='uncertain')"
+            )
+            requeued = connection.execute(
+                "UPDATE dispatch_outbox SET state='pending', claimed_until=NULL "
+                "WHERE state='claimed' AND dispatch_started_at IS NULL"
+            ).rowcount
+            connection.execute(
+                "UPDATE slow_tasks SET status='queued' WHERE task_id IN ("
+                "SELECT task_id FROM dispatch_outbox WHERE state='pending')"
+                "AND status='running'"
+            )
+            connection.execute("COMMIT")
+            transaction_open = False
+            return RecoveryCounts(requeued=int(requeued or 0), uncertain=int(uncertain or 0))
+        except sqlite3.Error:
+            if transaction_open:
+                try:
+                    connection.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+            raise AdmissionUnavailable("task_store_unavailable") from None
+        finally:
+            connection.close()
+
+    def claim_due(self, *, now: datetime, lease_seconds: int, limit: int = 1) -> list[ClaimedTask]:
+        """Claim due pending work for the in-process Dispatcher."""
+        if type(lease_seconds) is not int or lease_seconds <= 0:
+            raise ValueError("lease_seconds must be a positive integer")
+        if type(limit) is not int or limit <= 0:
+            raise ValueError("limit must be a positive integer")
+        claimed_until = _utc_iso(now + timedelta(seconds=lease_seconds))
+        connection = self._connect()
+        transaction_open = False
+        claimed: list[ClaimedTask] = []
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            transaction_open = True
+            rows = connection.execute(
+                "SELECT t.task_id,t.client_id,t.conversation_id,t.turn_id,t.call_id,"
+                "t.task_text,t.task_kind,t.backend,o.attempts "
+                "FROM slow_tasks AS t JOIN dispatch_outbox AS o USING(task_id) "
+                "WHERE o.state='pending' AND t.status='queued' "
+                "ORDER BY o.created_at ASC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            for row in rows:
+                connection.execute(
+                    "UPDATE dispatch_outbox SET state='claimed', attempts=attempts+1, claimed_until=? "
+                    "WHERE task_id=? AND state='pending'",
+                    (claimed_until, row[0]),
+                )
+                connection.execute(
+                    "UPDATE slow_tasks SET status='running' WHERE task_id=? AND status='queued'",
+                    (row[0],),
+                )
+                claimed.append(
+                    ClaimedTask(
+                        task_id=row[0],
+                        client_id=row[1],
+                        conversation_id=row[2],
+                        turn_id=row[3],
+                        call_id=row[4],
+                        task=row[5],
+                        task_kind=row[6],
+                        backend=row[7],
+                        attempts=int(row[8]) + 1,
+                    )
+                )
+            connection.execute("COMMIT")
+            transaction_open = False
+            return claimed
+        except sqlite3.Error:
+            if transaction_open:
+                try:
+                    connection.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+            raise AdmissionUnavailable("task_store_unavailable") from None
+        finally:
+            connection.close()
+
+    def mark_dispatch_started(self, task_id: str, *, now: datetime) -> None:
+        """Record that ACP/send has begun; a crash after this is uncertain, not retryable."""
+        started = _utc_iso(now)
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            updated = connection.execute(
+                "UPDATE dispatch_outbox SET dispatch_started_at=? "
+                "WHERE task_id=? AND state='claimed' AND dispatch_started_at IS NULL",
+                (started, task_id),
+            ).rowcount
+            if not updated:
+                connection.execute("ROLLBACK")
+                raise AdmissionUnavailable("dispatch_not_claimed")
+            connection.execute("COMMIT")
+        except AdmissionUnavailable:
+            raise
+        except sqlite3.Error:
+            try:
+                connection.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise AdmissionUnavailable("task_store_unavailable") from None
+        finally:
+            connection.close()
+
+    def complete(self, task_id: str) -> None:
+        self._finish(task_id, task_status="completed", outbox_state="sent", error=None)
+
+    def fail(self, task_id: str, *, code: str) -> None:
+        self._finish(task_id, task_status="failed", outbox_state="failed", error=_sanitize_error(code))
+
+    def mark_uncertain(self, task_id: str, *, code: str = "acp_result_unconfirmed") -> None:
+        self._finish(task_id, task_status="uncertain", outbox_state="uncertain", error=_sanitize_error(code))
+
+    def _finish(self, task_id: str, *, task_status: str, outbox_state: str, error: str | None) -> None:
+        if not isinstance(task_id, str) or not task_id:
+            raise AdmissionUnavailable("invalid_task_id")
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            updated = connection.execute(
+                "UPDATE dispatch_outbox SET state=?, last_error=? "
+                "WHERE task_id=? AND state='claimed'",
+                (outbox_state, error, task_id),
+            ).rowcount
+            if not updated:
+                connection.execute("ROLLBACK")
+                raise AdmissionUnavailable("dispatch_not_claimed")
+            connection.execute(
+                "UPDATE slow_tasks SET status=? WHERE task_id=? AND status='running'",
+                (task_status, task_id),
+            )
+            connection.execute("COMMIT")
+        except AdmissionUnavailable:
+            raise
+        except sqlite3.Error:
+            try:
+                connection.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise AdmissionUnavailable("task_store_unavailable") from None
+        finally:
+            connection.close()
+
     def get_by_call(self, *, client_id: str, conversation_id: str, turn_id: int, call_id: str) -> dict[str, object] | None:
         """Read-only diagnostics helper used by local acceptance tests."""
         connection = self._connect()
@@ -242,6 +512,29 @@ class SQLiteTaskStore:
             return {
                 "task_id": row[0], "task": row[1], "task_kind": row[2],
                 "backend": row[3], "status": row[4], "dispatch_state": row[5],
+            }
+        except sqlite3.Error:
+            raise AdmissionUnavailable("task_store_unavailable") from None
+        finally:
+            connection.close()
+
+    def get_by_task_id(self, task_id: str) -> dict[str, object] | None:
+        connection = self._connect()
+        try:
+            row = connection.execute(
+                "SELECT t.task_id,t.status,o.state,o.attempts,o.dispatch_started_at,o.last_error "
+                "FROM slow_tasks AS t JOIN dispatch_outbox AS o USING(task_id) WHERE t.task_id=?",
+                (task_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return {
+                "task_id": row[0],
+                "status": row[1],
+                "dispatch_state": row[2],
+                "attempts": row[3],
+                "dispatch_started": row[4] is not None,
+                "last_error": row[5],
             }
         except sqlite3.Error:
             raise AdmissionUnavailable("task_store_unavailable") from None

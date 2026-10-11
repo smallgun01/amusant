@@ -214,6 +214,7 @@ def build_supported_relay_handler(
         database_path=config.database_path,
         max_pending_tasks=config.max_pending_tasks,
     )
+    store.recover_after_restart()
     return build_relay_handler(
         expected_device_token=config.expected_device_token,
         authenticated_client_id=config.authenticated_client_id,
