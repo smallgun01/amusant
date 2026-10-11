@@ -114,10 +114,20 @@ async def run_smoke(environ) -> SmokeReport:
         return SmokeReport(EXIT_FAILED, receipt.task_id, None, None, "duplicate_admission", False)
     task_id = receipt.task_id
     dispatcher = AsyncDispatcher(store, executor, max_attempts=1, now=lambda: now)
-    await dispatcher.dispatch_available()
-    row = store.get_by_task_id(task_id) or {}
-    inbox = store.get_inbox(task_id)
-    result = store.get_result(task_id)
+    try:
+        await dispatcher.dispatch_available()
+        row = store.get_by_task_id(task_id) or {}
+        inbox = store.get_inbox(task_id)
+        result = store.get_result(task_id)
+    except (AdmissionUnavailable, AdmissionUnknown, Exception):
+        return SmokeReport(
+            EXIT_UNCERTAIN,
+            task_id,
+            None,
+            None,
+            "acp_result_unconfirmed",
+            False,
+        )
     status = row.get("status") if isinstance(row.get("status"), str) else None
     error = row.get("last_error") if isinstance(row.get("last_error"), str) else None
     delivery = inbox.get("delivery_state") if inbox else None
@@ -145,7 +155,7 @@ def main() -> None:
     try:
         report = asyncio.run(run_smoke(os.environ))
     except Exception:
-        report = SmokeReport(EXIT_CONFIG, None, None, None, "invalid_config", False)
+        report = SmokeReport(EXIT_UNCERTAIN, None, None, None, "acp_result_unconfirmed", False)
     _print_report(report)
     raise SystemExit(report.exit_code)
 

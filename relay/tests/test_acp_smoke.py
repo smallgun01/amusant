@@ -2,13 +2,14 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from websockets.asyncio.server import serve
 
 from datetime import datetime, timedelta, timezone
 
 from relay.acp_smoke import EXIT_CONFIG, EXIT_FAILED, EXIT_PASS, EXIT_UNCERTAIN, run_smoke
-from relay.task_store import SQLiteTaskStore, TaskAdmissionRequest
+from relay.task_store import AdmissionUnavailable, SQLiteTaskStore, TaskAdmissionRequest
 
 try:
     from test_acp_client import ACP_KEY, FakeAcpAgent
@@ -125,6 +126,36 @@ class AcpSmokeTests(unittest.IsolatedAsyncioTestCase):
             report = await run_smoke(self._env("ws://127.0.0.1:9/acp", db_path))
             self.assertEqual(report.exit_code, EXIT_FAILED)
             self.assertEqual(report.error, "task_capacity")
+
+    async def test_complete_failure_after_acp_is_uncertain_not_config(self):
+        agent = FakeAcpAgent()
+        server, url = await self._serve(agent)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "tasks.sqlite3"
+            with patch.object(SQLiteTaskStore, "complete", side_effect=AdmissionUnavailable("task_store_unavailable")):
+                try:
+                    report = await run_smoke(self._env(url, db_path))
+                finally:
+                    server.close()
+                    await server.wait_closed()
+            self.assertEqual(report.exit_code, EXIT_UNCERTAIN)
+            self.assertEqual(report.error, "acp_result_unconfirmed")
+            self.assertEqual(len(agent.prompts), 1)
+
+    async def test_result_read_failure_after_acp_is_uncertain_not_config(self):
+        agent = FakeAcpAgent()
+        server, url = await self._serve(agent)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "tasks.sqlite3"
+            with patch.object(SQLiteTaskStore, "get_result", side_effect=AdmissionUnavailable("task_store_unavailable")):
+                try:
+                    report = await run_smoke(self._env(url, db_path))
+                finally:
+                    server.close()
+                    await server.wait_closed()
+            self.assertEqual(report.exit_code, EXIT_UNCERTAIN)
+            self.assertEqual(report.error, "acp_result_unconfirmed")
+            self.assertEqual(len(agent.prompts), 1)
 
     async def test_gemini_env_is_rejected_and_missing_config_is_config_error(self):
         with tempfile.TemporaryDirectory() as temp_dir:
