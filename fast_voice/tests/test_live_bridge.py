@@ -83,6 +83,8 @@ class FakeProvider:
 
 
 class FakeSchemaTypes:
+    class Behavior:
+        BLOCKING = "BLOCKING"
     class Schema:
         def __init__(self, **kwargs): self.__dict__.update(kwargs)
     class FunctionDeclaration:
@@ -738,6 +740,7 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
 
             declaration = captured["tool_declarations"][0].function_declarations[0]
             self.assertEqual(declaration.name, "delegate_task")
+            self.assertEqual(declaration.behavior, "BLOCKING")
             self.assertEqual(declaration.parameters.required, ["task"])
             self.assertEqual(captured["environ"]["AMUSANT_LIVE_PROVIDER"], "gemini")
             self.assertEqual(len(fake.tool_results), 1)

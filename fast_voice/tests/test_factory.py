@@ -94,6 +94,10 @@ class FactoryTests(unittest.TestCase):
             tool_declarations=[tool],
         )
         self.assertEqual(provider._config.tools[0].function_declarations[0].name, "delegate_task")
+        self.assertEqual(
+            provider._config.tools[0].function_declarations[0].behavior,
+            google_types.Behavior.BLOCKING,
+        )
         schema = provider._config.tools[0].function_declarations[0].parameters
         self.assertEqual(schema.required, ["task"])
         self.assertEqual(schema.properties["task_kind"].enum, ["research", "compare", "summarize"])
