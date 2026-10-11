@@ -152,8 +152,14 @@ class GeminiLiveProvider:
         )
 
     async def inject_text(self, text: str) -> None:
+        """Send one complete text turn through the Live API client-content path.
+
+        ``send_realtime_input(text=...)`` is for realtime input events; the
+        documented discrete text-turn path is ``send_client_content``.
+        """
         session = self._require_session()
-        await self._send(lambda: session.send_realtime_input(text=text))
+        turns = {"parts": [{"text": text}]}
+        await self._send(lambda: session.send_client_content(turns=turns))
 
     async def _emit(self, callback: Callable[[Any], Any] | None, event: Any) -> None:
         if callback is None:
@@ -189,7 +195,20 @@ class GeminiLiveProvider:
         except Exception as exc:
             # Preserve only the exception class for diagnosis; SDK messages may
             # contain request content, headers, or other sensitive details.
-            LOG.warning("Gemini Live receive loop failed error_type=%s", type(exc).__name__)
+            error_code = getattr(exc, "code", None)
+            if type(error_code) is int and 0 <= error_code <= 65535:
+                pass
+            elif isinstance(error_code, str) and re.fullmatch(r"[A-Z0-9_]{1,64}", error_code):
+                pass
+            else:
+                error_code = "unknown"
+            api_status = getattr(exc, "status", None)
+            if not isinstance(api_status, str) or not re.fullmatch(r"[A-Z0-9_]{1,64}", api_status):
+                api_status = "unknown"
+            LOG.warning(
+                "Gemini Live receive loop failed error_type=%s error_code=%s api_status=%s",
+                type(exc).__name__, error_code, api_status,
+            )
             await self._notify_error(ProviderError(self.provider_id, "receive_failed", "Gemini Live receive failed", retryable=True))
         finally:
             if self._session is session:

@@ -34,10 +34,12 @@ class FakeSession:
     def __init__(self, messages=()):
         self.messages = list(messages)
         self.calls = []
+        self.client_contents = []
         self.tool_responses = []
         self.closed = asyncio.Event()
 
     async def send_realtime_input(self, **kwargs): self.calls.append(kwargs)
+    async def send_client_content(self, **kwargs): self.client_contents.append(kwargs)
     async def send_tool_response(self, **kwargs): self.tool_responses.append(kwargs)
 
     async def receive(self):
@@ -129,13 +131,18 @@ class ContractTests(unittest.TestCase):
 
 
 class GeminiAdapterTests(unittest.IsolatedAsyncioTestCase):
-    async def test_receive_failure_logs_only_exception_class(self):
+    async def test_receive_failure_logs_safe_status_fields_only(self):
         session = FakeSession()
+
+        class FakeAPIError(Exception):
+            code = 1011
+            status = None
+            message = "private prompt and credential must not be logged"
 
         async def broken_receive():
             if False:
                 yield None
-            raise RuntimeError("private prompt and credential must not be logged")
+            raise FakeAPIError("private prompt and credential must not be logged")
 
         session.receive = broken_receive
         provider = GeminiLiveProvider(FakeClient(session), "test-model", {}, FakeTypes)
@@ -153,7 +160,9 @@ class GeminiAdapterTests(unittest.IsolatedAsyncioTestCase):
             await provider.close()
 
         self.assertEqual(errors[0].code, "receive_failed")
-        self.assertIn("error_type=RuntimeError", captured.output[0])
+        self.assertIn("error_type=FakeAPIError", captured.output[0])
+        self.assertIn("error_code=1011", captured.output[0])
+        self.assertIn("api_status=unknown", captured.output[0])
         self.assertNotIn("private prompt", "\n".join(captured.output))
 
     async def test_connect_sends_normalized_pcm_and_ptt_boundaries(self):
@@ -169,7 +178,8 @@ class GeminiAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.calls[0]["audio"].mime_type, "audio/pcm;rate=16000")
         self.assertIsInstance(session.calls[1]["activity_start"], FakeTypes.ActivityStart)
         self.assertIsInstance(session.calls[2]["activity_end"], FakeTypes.ActivityEnd)
-        self.assertEqual(session.calls[3]["text"], "test")
+        self.assertEqual(len(session.calls), 3)
+        self.assertEqual(session.client_contents, [{"turns": {"parts": [{"text": "test"}]}}])
         await provider.close()
         self.assertTrue(client.connection.exited)
 
