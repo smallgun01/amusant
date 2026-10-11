@@ -260,7 +260,7 @@ Do **not** save raw audio PCM, full Gemini transcripts by default, model reasoni
 }
 ```
 
-The new Gemini Live session has no obligation to remember Monday's conversation. The Relay exposes an authorized local lookup (`check_task_status` or `check_inbox`, exact tool names to be fixed during P3.4); it retrieves the completed task and gives the bounded result to Gemini for a new **tool-disabled** spoken turn.
+The new Gemini Live session has no obligation to remember Monday's conversation. The Relay exposes an authorized local lookup (`check_task_status`); it retrieves the completed task and returns the bounded result. A new **tool-disabled** spoken Gemini turn remains a later Live-session behavior, not proven by the SQLite lookup tests.
 
 This is **Task History**, not general chat memory. Agent memory and scratchpad remain backend responsibilities. OpenAB need not be asked to reconstruct an already-delivered final result.
 
@@ -417,11 +417,11 @@ This section describes **repository-recorded status**, not tests rerun for this 
 | **P3.0** OpenAB viability | One-off authenticated ACP/model response and separate client-to-Agent smoke recorded as pass, under limited test risk acceptance | Safe production agent sandbox, durable Relay and Inbox |
 | **P3.1** durable admission | Existing `relay/slow_path.py` and `relay/task_store.py` implement opt-in tool routing and SQLite atomic task + outbox admission; local CLI `relay.live_bridge.run()` fail-closes into that composition. PR #10 squash-merged. Repository reports offline Fast Voice 52/52 | ECS image/taskdef/ingress, replacement-safe store, physical-device startup |
 | **P3.2** in-process Dispatcher | PR #12 merged. SQLite claim/recovery; CLI recovers crashed in-flight work as uncertain | ECS replacement durability |
-| **P3.3** ACP execution | Authenticated JSON-RPC ACP client against a local fake `/acp` server; bounded speak/card/details_md persisted. Offline Relay 29/29 | Live Jellii/OpenAB ACP, Result Inbox lookup |
-| **P3.4** Inbox | Planned | Previous-task lookup and spoken delivery |
+| **P3.3** ACP execution | PR #13 merged. Authenticated JSON-RPC ACP client against a local fake `/acp` server | Live Jellii/OpenAB ACP |
+| **P3.4** Inbox | Authorized `check_task_status` lookup, independent delivery_state, bounded result on completion. Offline Relay 39/39 | Spoken Gemini tool-disabled turn, ECS-surviving store |
 | **P4** AWS integration | Accepted two-ECS architecture target (PR #9) | Approved/deployed complete two-Service runtime and persistent storage |
 
-P3.2 migrates the SQLite schema to `queued/running/completed/failed/uncertain` with outbox claim/recovery. A `sent` or `completed` row from the fake executor is **not** proof that OpenAB ACP ran. Do not interpret an outbox record as a real ACP result. Inbox lookup remains P3.4.
+P3.2 migrates the SQLite schema to `queued/running/completed/failed/uncertain` with outbox claim/recovery. A `sent` or `completed` row from the fake executor is **not** proof that OpenAB ACP ran. Do not interpret an outbox record as a real ACP result. Inbox lookup is P3.4 SQLite evidence, not ECS durability.
 
 ## 15. Delivery plan and approval boundaries
 
@@ -432,7 +432,7 @@ P3.2 migrates the SQLite schema to `queued/running/completed/failed/uncertain` w
 - **P3.1:** Durable `delegate_task` admission — SQLite foundation merged; local CLI now wires tool declaration + admission. ECS/service startup and a replacement-safe store remain.
 - **P3.2:** Relay-internal Async Dispatcher, queued recovery, execution state, and SQLite lifecycle migration — implemented offline with a fake executor; real ACP remains P3.3.
 - **P3.3:** Authenticated ACP client with bounded text prompts and honest timeout/uncertainty handling — implemented offline against a fake `/acp` server; live OpenAB remains separately gated.
-- **P3.4:** Durable Result Inbox, authorized previous-task lookup, reconnect status and user-requested spoken result.
+- **P3.4:** Durable Result Inbox, authorized previous-task lookup, reconnect status and user-requested spoken result — implemented offline on SQLite; a new Gemini tool-disabled spoken session remains unproven.
 - **P4:** Approved two-ECS AWS deployment/security/cost/reliability evaluation, including approved external durable Task Store.
 - **H0:** Hardware UX gate versus optimized phone workflow.
 - **H1:** M5StickS3 integration only after H0 success.

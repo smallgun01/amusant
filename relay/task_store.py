@@ -13,7 +13,8 @@ from uuid import UUID
 
 MAX_TASK_CHARS = 4096
 TASK_KINDS = frozenset({"research", "compare", "summarize"})
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
+DELIVERY_STATES = frozenset({"pending", "notified", "read", "spoken"})
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _ERROR_RE = re.compile(r"^[A-Za-z0-9_]{1,64}$")
 _V2_TASK_STATUSES = "('queued','running','completed','failed','uncertain')"
@@ -164,6 +165,9 @@ class SQLiteTaskStore:
                     version = 2
                 if version < 3:
                     self._migrate_v2_to_v3(connection)
+                    version = 3
+                if version < 4:
+                    self._migrate_v3_to_v4(connection)
             os.chmod(self._path, 0o600)
         except (sqlite3.Error, OSError, AdmissionUnavailable):
             raise AdmissionUnavailable("task_store_unavailable") from None
@@ -204,6 +208,11 @@ class SQLiteTaskStore:
                 details_md TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
+            CREATE TABLE task_inbox (
+                task_id TEXT PRIMARY KEY REFERENCES slow_tasks(task_id) ON DELETE CASCADE,
+                delivery_state TEXT NOT NULL CHECK(delivery_state IN ('pending','notified','read','spoken')),
+                updated_at TEXT NOT NULL
+            );
             PRAGMA user_version={SCHEMA_VERSION};
             """
         )
@@ -219,6 +228,23 @@ class SQLiteTaskStore:
                 created_at TEXT NOT NULL
             );
             PRAGMA user_version=3;
+            """
+        )
+
+    def _migrate_v3_to_v4(self, connection: sqlite3.Connection) -> None:
+        connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS task_inbox (
+                task_id TEXT PRIMARY KEY REFERENCES slow_tasks(task_id) ON DELETE CASCADE,
+                delivery_state TEXT NOT NULL CHECK(delivery_state IN ('pending','notified','read','spoken')),
+                updated_at TEXT NOT NULL
+            );
+            INSERT OR IGNORE INTO task_inbox(task_id,delivery_state,updated_at)
+            SELECT task_id,'pending',created_at FROM task_results;
+            INSERT OR IGNORE INTO task_inbox(task_id,delivery_state,updated_at)
+            SELECT task_id,'pending',created_at FROM slow_tasks
+            WHERE status IN ('completed','failed','uncertain');
+            PRAGMA user_version=4;
             """
         )
 
@@ -424,9 +450,9 @@ class SQLiteTaskStore:
                 "SELECT t.task_id,t.client_id,t.conversation_id,t.turn_id,t.call_id,"
                 "t.task_text,t.task_kind,t.backend,o.attempts "
                 "FROM slow_tasks AS t JOIN dispatch_outbox AS o USING(task_id) "
-                "WHERE o.state='pending' AND t.status='queued' "
+                "WHERE o.state='pending' AND t.status='queued' AND t.expires_at>? "
                 "ORDER BY o.created_at ASC LIMIT ?",
-                (limit,),
+                (_utc_iso(now), limit),
             ).fetchall()
             for row in rows:
                 connection.execute(
@@ -525,6 +551,7 @@ class SQLiteTaskStore:
                 "UPDATE slow_tasks SET status=? WHERE task_id=? AND status='running'",
                 (task_status, task_id),
             )
+            finished_at = datetime.now(timezone.utc).isoformat()
             if result is not None:
                 connection.execute(
                     "INSERT INTO task_results(task_id,speak,card_json,details_md,created_at) VALUES(?,?,?,?,?)",
@@ -533,9 +560,13 @@ class SQLiteTaskStore:
                         result.speak,
                         json.dumps(result.card, separators=(",", ":"), ensure_ascii=False),
                         result.details_md,
-                        datetime.now(timezone.utc).isoformat(),
+                        finished_at,
                     ),
                 )
+            connection.execute(
+                "INSERT OR IGNORE INTO task_inbox(task_id,delivery_state,updated_at) VALUES(?,?,?)",
+                (task_id, "pending", finished_at),
+            )
             connection.execute("COMMIT")
         except AdmissionUnavailable:
             raise
@@ -587,6 +618,111 @@ class SQLiteTaskStore:
                 "dispatch_started": row[4] is not None,
                 "last_error": row[5],
             }
+        except sqlite3.Error:
+            raise AdmissionUnavailable("task_store_unavailable") from None
+        finally:
+            connection.close()
+
+    def lookup_inbox(
+        self,
+        *,
+        client_id: str,
+        task_id: str | None = None,
+        speak: bool = False,
+        now: datetime | None = None,
+    ) -> dict[str, object] | None:
+        """Authorized previous-task lookup. Never returns another client's row."""
+        if not isinstance(client_id, str) or not _ID_RE.fullmatch(client_id):
+            raise AdmissionUnavailable("invalid_identity")
+        if task_id is not None:
+            try:
+                parsed = str(UUID(task_id))
+            except (ValueError, TypeError, AttributeError):
+                return None
+            if parsed != task_id.lower():
+                return None
+        clock = now or datetime.now(timezone.utc)
+        now_iso = _utc_iso(clock)
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            if task_id is None:
+                row = connection.execute(
+                    "SELECT t.task_id,t.status,t.task_kind,t.expires_at,i.delivery_state,"
+                    "r.speak,r.card_json,r.details_md "
+                    "FROM slow_tasks AS t LEFT JOIN task_inbox AS i USING(task_id) "
+                    "LEFT JOIN task_results AS r USING(task_id) "
+                    "WHERE t.client_id=? ORDER BY t.created_at DESC LIMIT 1",
+                    (client_id,),
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    "SELECT t.task_id,t.status,t.task_kind,t.expires_at,i.delivery_state,"
+                    "r.speak,r.card_json,r.details_md "
+                    "FROM slow_tasks AS t LEFT JOIN task_inbox AS i USING(task_id) "
+                    "LEFT JOIN task_results AS r USING(task_id) "
+                    "WHERE t.client_id=? AND t.task_id=?",
+                    (client_id, task_id),
+                ).fetchone()
+            if row is None:
+                connection.execute("COMMIT")
+                return None
+            status = row[1]
+            if status in {"queued", "running"} and row[3] <= now_iso:
+                status = "expired"
+            delivery = row[4]
+            result = None
+            if row[5] is not None:
+                result = {
+                    "speak": row[5],
+                    "card": json.loads(row[6]),
+                    "details_md": row[7],
+                }
+            next_delivery = delivery
+            if status in {"completed", "failed", "uncertain", "expired"}:
+                if speak and status == "completed" and result is not None:
+                    next_delivery = "spoken"
+                elif delivery in {None, "pending", "notified"}:
+                    next_delivery = "read"
+                if next_delivery is not None and next_delivery != delivery:
+                    connection.execute(
+                        "INSERT INTO task_inbox(task_id,delivery_state,updated_at) VALUES(?,?,?) "
+                        "ON CONFLICT(task_id) DO UPDATE SET delivery_state=excluded.delivery_state, "
+                        "updated_at=excluded.updated_at",
+                        (row[0], next_delivery, now_iso),
+                    )
+                    delivery = next_delivery
+            connection.execute("COMMIT")
+            payload: dict[str, object] = {
+                "task_id": row[0],
+                "status": status,
+                "task_kind": row[2],
+                "delivery_state": delivery,
+            }
+            if status == "completed" and result is not None:
+                payload.update(result)
+            if speak and status == "completed" and result is not None:
+                payload["speak_now"] = True
+            return payload
+        except (sqlite3.Error, json.JSONDecodeError):
+            try:
+                connection.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise AdmissionUnavailable("task_store_unavailable") from None
+        finally:
+            connection.close()
+
+    def get_inbox(self, task_id: str) -> dict[str, object] | None:
+        connection = self._connect()
+        try:
+            row = connection.execute(
+                "SELECT delivery_state,updated_at FROM task_inbox WHERE task_id=?",
+                (task_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return {"delivery_state": row[0], "updated_at": row[1]}
         except sqlite3.Error:
             raise AdmissionUnavailable("task_store_unavailable") from None
         finally:
