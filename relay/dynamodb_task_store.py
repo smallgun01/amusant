@@ -585,3 +585,12 @@ class DynamoDbTaskStore:
     def pending_dispatch_count(self) -> int:
         with self._lock:
             return sum(1 for row in self._task_rows() if row.get("outbox_state") == "pending")
+
+    def has_client_tasks(self, client_id: str) -> bool:
+        """Strongly query this owner's complete TASK# partition, failing closed on truncation."""
+        if not isinstance(client_id, str) or not _ID_RE.fullmatch(client_id):
+            raise AdmissionUnavailable("invalid_identity")
+        if client_id != self._client_id:
+            raise AdmissionUnavailable("invalid_identity")
+        with self._lock:
+            return bool(self._task_rows())

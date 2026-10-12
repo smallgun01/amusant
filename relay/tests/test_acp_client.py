@@ -237,6 +237,40 @@ class AcpClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured["server_hostname"], "jellii-acp.internal")
         self.assertIsNone(captured["proxy"])
 
+    async def test_expected_private_ip_mismatch_fails_before_dial(self):
+        dial_called = False
+
+        def fake_connect(url, **kwargs):
+            nonlocal dial_called
+            dial_called = True
+            raise OSError("must not dial mismatched DNS target")
+
+        executor = OpenAbAcpExecutor(
+            url="wss://jellii-acp.internal:8443/acp",
+            auth_key=ACP_KEY,
+            cwd="/openab/work",
+            expected_private_ip="10.23.45.67",
+            connect_factory=fake_connect,
+        )
+        loop = asyncio.get_running_loop()
+
+        async def changed_lookup(host, port, **kwargs):
+            return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("10.23.45.68", port))]
+
+        with patch.object(loop, "getaddrinfo", new=changed_lookup):
+            outcome = await executor.execute(claimed_task())
+        self.assertEqual((outcome.status, outcome.code), ("failed", "acp_connect"))
+        self.assertFalse(dial_called)
+
+    def test_expected_private_ip_rejects_non_rfc1918(self):
+        with self.assertRaises(ValueError):
+            OpenAbAcpExecutor(
+                url="wss://jellii-acp.internal:8443/acp",
+                auth_key=ACP_KEY,
+                cwd="/openab/work",
+                expected_private_ip="8.8.8.8",
+            )
+
     async def test_dual_stack_localhost_answers_allow_ipv6_loopback(self):
         agent = FakeAcpAgent()
         server, ipv4_url = await self._serve(agent)
