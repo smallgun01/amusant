@@ -8,7 +8,7 @@
       "Condition": {
         "StringEquals": { "aws:SourceAccount": "REPLACE_ACCOUNT_ID" },
         "ArnLike": {
-          "aws:SourceArn": "arn:aws:ecs:us-east-1:REPLACE_ACCOUNT_ID:task-definition/oab-amusant-relay:*"
+          "aws:SourceArn": "arn:aws:ecs:us-east-1:REPLACE_ACCOUNT_ID:*"
         }
       }
     }

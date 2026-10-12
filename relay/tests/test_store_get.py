@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 from uuid import uuid4
 
 from relay.dynamodb_task_store import DynamoDbTaskStore
@@ -149,6 +150,31 @@ class StoreGetTests(unittest.TestCase):
         report = run_get(env)
         self.assertEqual(report.exit_code, EXIT_CONFIG)
         self.assertFalse(report.has_result)
+
+    def test_sdk_endpoint_env_is_config_not_aws_pass(self):
+        for key in ("AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_DYNAMODB"):
+            env = _env(str(uuid4()))
+            env[key] = "http://127.0.0.1:1"
+            report = run_get(env)
+            self.assertEqual(report.exit_code, EXIT_CONFIG, key)
+            self.assertFalse(report.has_result)
+
+    def test_proof_client_ignores_configured_endpoint_urls(self):
+        captured: dict[str, object] = {}
+
+        def fake_client(service, **kwargs):
+            captured["service"] = service
+            captured["kwargs"] = kwargs
+            raise RuntimeError("no network")
+
+        with patch("boto3.client", side_effect=fake_client):
+            report = run_get(_env(str(uuid4())))
+        self.assertEqual(captured["service"], "dynamodb")
+        kwargs = captured["kwargs"]
+        assert isinstance(kwargs, dict)
+        self.assertNotIn("endpoint_url", kwargs)
+        self.assertTrue(kwargs["config"].ignore_configured_endpoint_urls)
+        self.assertEqual(report.exit_code, EXIT_CONFIG)
 
     def test_missing_store_kind_is_config_not_sqlite_default(self):
         env = _env(str(uuid4()))

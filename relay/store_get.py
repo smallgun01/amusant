@@ -6,8 +6,22 @@ import json
 import os
 from uuid import UUID
 
-from .store_factory import build_task_store
-from .task_store import AdmissionUnavailable, AdmissionUnknown
+from .dynamodb_task_store import DynamoDbTaskStore
+from .store_factory import (
+    CLIENT_ID_ENV,
+    DEFAULT_MAX_PENDING_TASKS,
+    DDB_REGION_ENV,
+    DDB_TABLE_ENV,
+    _max_pending,
+    _require,
+)
+from .task_store import AdmissionUnavailable, AdmissionUnknown, _ID_RE
+
+_BLOCKED_ENDPOINT_ENV = (
+    "AMUSANT_DDB_ENDPOINT",
+    "AWS_ENDPOINT_URL",
+    "AWS_ENDPOINT_URL_DYNAMODB",
+)
 
 EXIT_PASS = 0
 EXIT_FAILED = 2
@@ -35,17 +49,50 @@ def _task_id(environ) -> str:
     return parsed
 
 
+def _proof_store(environ):
+    kind = (environ.get("AMUSANT_TASK_STORE") or "").strip().lower()
+    if kind != "dynamodb":
+        raise ValueError("AMUSANT_TASK_STORE must be dynamodb")
+    for name in _BLOCKED_ENDPOINT_ENV:
+        if (environ.get(name) or "").strip():
+            raise ValueError(f"{name} is not allowed for store_get proof")
+    client_id = _require(environ, CLIENT_ID_ENV)
+    if not _ID_RE.fullmatch(client_id):
+        raise ValueError("AMUSANT_CLIENT_ID must be a bounded authenticated identity")
+    table = _require(environ, DDB_TABLE_ENV)
+    region = (
+        (environ.get(DDB_REGION_ENV) or "").strip()
+        or (environ.get("AWS_REGION") or "").strip()
+        or (environ.get("AWS_DEFAULT_REGION") or "").strip()
+    )
+    if not region:
+        raise ValueError("AMUSANT_DDB_REGION or AWS_REGION must be set for DynamoDB")
+    import boto3
+    from botocore.config import Config
+
+    from .boto3_dynamodb_ledger import Boto3DynamoLedger
+
+    try:
+        client = boto3.client(
+            "dynamodb",
+            region_name=region,
+            config=Config(ignore_configured_endpoint_urls=True),
+        )
+    except Exception as exc:
+        raise ValueError("dynamodb_client_unavailable") from exc
+    return DynamoDbTaskStore(
+        Boto3DynamoLedger(client, table),
+        client_id=client_id,
+        max_pending_tasks=_max_pending(environ, DEFAULT_MAX_PENDING_TASKS),
+    )
+
+
 def run_get(environ) -> GetReport:
     try:
         if environ.get("AMUSANT_LIVE_PROVIDER") == "gemini":
             raise ValueError("store get must not enable Gemini Live")
-        kind = (environ.get("AMUSANT_TASK_STORE") or "").strip().lower()
-        if kind != "dynamodb":
-            raise ValueError("AMUSANT_TASK_STORE must be dynamodb")
-        if (environ.get("AMUSANT_DDB_ENDPOINT") or "").strip():
-            raise ValueError("AMUSANT_DDB_ENDPOINT is not allowed for store_get proof")
         task_id = _task_id(environ)
-        store = build_task_store(environ)
+        store = _proof_store(environ)
     except (ValueError, TypeError, AttributeError):
         return GetReport(EXIT_CONFIG, None, None, None, "invalid_config", False)
     try:

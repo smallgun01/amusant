@@ -30,10 +30,10 @@ A pasted template with blanks is not approval. Mutate only after Arthur names ev
 | Table name | `REPLACE_TABLE_NAME` |
 | Region | `us-east-1` |
 | TTL | `retain_until` epoch Number; enable after CreateTable |
-| On-demand max RRU / WRU | `REPLACE_MAX_READ_RRU` / `REPLACE_MAX_WRITE_WRU`; throughput cap is **not** a dollar cap |
+| On-demand max RRU / WRU | Substitute as JSON **numbers**, not quoted strings. Throughput cap is **not** a dollar cap |
 | Spend / elapsed / cleanup guard | fill at execute; keep vs delete table; AWS Budget alert is not a hard cutoff |
 | Writer permission policy | `deploy/amusant-relay-task-role.iam.json` (`PutItem` covers transactional Put; no `dynamodb:TransactWriteItems` IAM action) |
-| Writer trust | `deploy/amusant-relay-task-role.trust.json` (`ecs-tasks.amazonaws.com`, `aws:SourceAccount`, `aws:SourceArn`) |
+| Writer trust | `deploy/amusant-relay-task-role.trust.json` (`ecs-tasks.amazonaws.com`, `aws:SourceAccount`, `aws:SourceArn=arn:aws:ecs:us-east-1:REPLACE_ACCOUNT_ID:*`). Do not scope SourceArn to a task-definition ARN. |
 | Reader permission policy | `deploy/amusant-store-reader.iam.json` (GetItem/Query only) |
 | Reader trust / principal | `deploy/amusant-store-reader.trust.json` (`REPLACE_READER_PRINCIPAL_ARN`) |
 | Task **execution** role | existing `oab-task-execution` for ECR / CloudWatch Logs / Secrets Manager; not the ledger task role; not Jellii's broad role |
@@ -71,7 +71,7 @@ AMUSANT_TASK_ID=<uuid>
 python -m relay.store_get
 ```
 
-Requires explicit `AMUSANT_TASK_STORE=dynamodb`. Rejects `AMUSANT_DDB_ENDPOINT`. Prints `exit_code`, `task_id`, `status`, `delivery_state`, `error`, `has_result`. Does not print speak/card/details. Does not admit or dispatch.
+Requires explicit `AMUSANT_TASK_STORE=dynamodb`. Rejects `AMUSANT_DDB_ENDPOINT`, `AWS_ENDPOINT_URL`, and `AWS_ENDPOINT_URL_DYNAMODB`. The proof client sets `ignore_configured_endpoint_urls=True` so shared AWS config cannot redirect to LocalStack. Prints `exit_code`, `task_id`, `status`, `delivery_state`, `error`, `has_result`. Does not print speak/card/details. Does not admit or dispatch.
 
 ## Not authorized by this PR
 
