@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import threading
 import unittest
 from uuid import uuid4
 
@@ -153,6 +154,63 @@ class DynamoDbTaskStoreTests(unittest.TestCase):
         self.assertIsInstance(task["retain_until"], int)
         self.assertEqual(task["retain_until"], dedup["retain_until"])
         self.assertGreater(task["retain_until"], int(NOW.timestamp()))
+
+    def test_failed_aligns_dedup_ttl(self):
+        ledger, store = _store()
+        task_id = str(uuid4())
+        store.admit(_request(task_id))
+        store.claim_due(now=NOW, lease_seconds=30, limit=1)
+        store.fail(task_id, code="acp_failed")
+        task = ledger.get_item(CLIENT, f"TASK#{task_id}")
+        dedup = ledger.get_item(CLIENT, f"DEDUP#{CONVERSATION}#1#call-1")
+        self.assertEqual(task["retain_until"], dedup["retain_until"])
+        self.assertEqual(task["status"], "failed")
+
+    def test_spoken_is_not_downgraded_to_read(self):
+        ledger, store = _store()
+        task_id = str(uuid4())
+        store.admit(_request(task_id))
+        store.claim_due(now=NOW, lease_seconds=30, limit=1)
+        store.complete(
+            task_id,
+            result=BoundedTaskResult(speak="Done.", card={"title": "Ok"}, details_md="md"),
+        )
+        spoken = store.lookup_inbox(client_id=CLIENT, task_id=task_id, speak=True)
+        self.assertEqual(spoken["delivery_state"], "spoken")
+        later = store.lookup_inbox(client_id=CLIENT, task_id=task_id, speak=False)
+        self.assertEqual(later["delivery_state"], "spoken")
+        self.assertEqual(store.get_inbox(task_id)["delivery_state"], "spoken")
+
+    def test_capacity_one_serializes_two_threads(self):
+        ledger, store = _store(max_pending_tasks=1)
+        errors: list[BaseException] = []
+
+        def worker(call_id: str, turn_id: int) -> None:
+            try:
+                store.admit(_request(str(uuid4()), call_id=call_id, turn_id=turn_id))
+            except BaseException as exc:
+                errors.append(exc)
+
+        first = threading.Thread(target=worker, args=("c-a", 1))
+        second = threading.Thread(target=worker, args=("c-b", 2))
+        first.start()
+        second.start()
+        first.join()
+        second.join()
+        self.assertEqual(sum(isinstance(item, AdmissionCapacity) for item in errors), 1)
+        self.assertEqual(store.pending_dispatch_count(), 1)
+
+    def test_complete_inbox_stays_pending_without_lookup(self):
+        ledger, store = _store()
+        task_id = str(uuid4())
+        store.admit(_request(task_id))
+        store.claim_due(now=NOW, lease_seconds=30, limit=1)
+        store.complete(
+            task_id,
+            result=BoundedTaskResult(speak="Done.", card={"title": "Ok"}, details_md="md"),
+        )
+        self.assertEqual(store.get_inbox(task_id)["delivery_state"], "pending")
+        self.assertEqual(store.get_result(task_id)["speak"], "Done.")
 
 
 if __name__ == "__main__":

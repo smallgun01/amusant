@@ -74,7 +74,7 @@ class AsyncDispatcher:
     async def start(self) -> None:
         if self._running:
             return
-        self.recover()
+        await self._store_call(self._store.recover_after_restart)
         self._running = True
         self._task = asyncio.create_task(self._run_loop())
 
@@ -86,15 +86,22 @@ class AsyncDispatcher:
         if task is not None:
             await task
 
+    async def _store_call(self, fn, /, *args, **kwargs):
+        return await asyncio.to_thread(fn, *args, **kwargs)
+
     async def dispatch_available(self) -> int:
-        """Synchronously drain currently due work. Used by tests and startup."""
+        """Drain currently due work without blocking the event loop on store I/O."""
         handled = 0
         while True:
-            claimed = self._store.claim_due(
-                now=self._now(),
-                lease_seconds=self._lease_seconds,
-                limit=1,
-            )
+            try:
+                claimed = await self._store_call(
+                    self._store.claim_due,
+                    now=self._now(),
+                    lease_seconds=self._lease_seconds,
+                    limit=1,
+                )
+            except Exception:
+                return handled
             if not claimed:
                 return handled
             await self._dispatch_one(claimed[0])
@@ -102,7 +109,10 @@ class AsyncDispatcher:
 
     async def _run_loop(self) -> None:
         while self._running:
-            await self.dispatch_available()
+            try:
+                await self.dispatch_available()
+            except Exception:
+                pass
             self._wakeup.clear()
             if not self._running:
                 return
@@ -111,17 +121,41 @@ class AsyncDispatcher:
             except asyncio.TimeoutError:
                 continue
 
+    async def _safe_store(self, fn, /, *args, **kwargs) -> None:
+        try:
+            await self._store_call(fn, *args, **kwargs)
+        except Exception:
+            return
+
     async def _dispatch_one(self, task: ClaimedTask) -> None:
         if task.attempts > self._max_attempts:
-            self._store.fail(task.task_id, code="dispatch_attempts_exhausted")
+            await self._safe_store(self._store.fail, task.task_id, code="dispatch_attempts_exhausted")
             return
-        self._store.mark_dispatch_started(task.task_id, now=self._now())
+        try:
+            await self._store_call(
+                self._store.mark_dispatch_started,
+                task.task_id,
+                now=self._now(),
+            )
+        except Exception:
+            return
         try:
             outcome = await self._executor.execute(task)
         except Exception:
-            self._store.mark_uncertain(task.task_id, code="acp_result_unconfirmed")
+            await self._safe_store(
+                self._store.mark_uncertain,
+                task.task_id,
+                code="acp_result_unconfirmed",
+            )
             return
-        if outcome.status == "completed":
-            self._store.complete(task.task_id, result=outcome.result)
-            return
-        self._store.fail(task.task_id, code=outcome.code or "dispatch_failed")
+        try:
+            if outcome.status == "completed":
+                await self._store_call(self._store.complete, task.task_id, result=outcome.result)
+                return
+            await self._store_call(self._store.fail, task.task_id, code=outcome.code or "dispatch_failed")
+        except Exception:
+            await self._safe_store(
+                self._store.mark_uncertain,
+                task.task_id,
+                code="acp_result_unconfirmed",
+            )

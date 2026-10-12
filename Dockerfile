@@ -11,4 +11,4 @@ RUN uv sync --locked --no-dev
 ENV PYTHONPATH=/app
 ARG GIT_SHA=unknown
 LABEL org.opencontainers.image.revision=$GIT_SHA
-CMD ["uv", "run", "--locked", "python", "-m", "relay.acp_smoke"]
+CMD ["/app/.venv/bin/python", "-m", "relay.acp_smoke"]

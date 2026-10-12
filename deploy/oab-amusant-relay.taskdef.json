@@ -16,7 +16,7 @@
         { "name": "AMUSANT_TASK_STORE", "value": "sqlite" },
         { "name": "AMUSANT_TASK_DB", "value": "/tmp/amusant-tasks.sqlite3" },
         { "name": "AMUSANT_ACP_CWD", "value": "/home/agent/workspace" },
-        { "name": "AMUSANT_ACP_ALLOW_PLAINTEXT", "value": "1" }
+        { "name": "AMUSANT_ACP_URL", "value": "REPLACE_ACP_WSS_URL" }
       ],
       "secrets": [
         {

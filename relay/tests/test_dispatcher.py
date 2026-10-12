@@ -3,6 +3,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sqlite3
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -62,6 +64,21 @@ def request_for(task_id, *, turn_id=1, call_id="call-1", task="Compare current o
     )
 
 
+class SlowClaimStore:
+    def __init__(self, inner, started: threading.Event, delay: float = 0.15):
+        self._inner = inner
+        self.started = started
+        self.delay = delay
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    def claim_due(self, **kwargs):
+        self.started.set()
+        time.sleep(self.delay)
+        return self._inner.claim_due(**kwargs)
+
+
 class DispatcherTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -86,6 +103,30 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["dispatch_state"], "sent")
         self.assertTrue(row["dispatch_started"])
         self.assertEqual(store.pending_dispatch_count(), 0)
+
+    async def test_blocking_store_does_not_freeze_event_loop(self):
+        store = self.store()
+        store.admit(request_for(TASK_ID))
+        started = threading.Event()
+        dispatcher = AsyncDispatcher(
+            SlowClaimStore(store, started),
+            FakeExecutor(),
+            now=lambda: NOW,
+        )
+        ticks = []
+
+        async def heartbeat():
+            while len(ticks) < 4:
+                ticks.append(True)
+                await asyncio.sleep(0.02)
+
+        handled, _ = await asyncio.gather(
+            dispatcher.dispatch_available(),
+            heartbeat(),
+        )
+        self.assertTrue(started.is_set())
+        self.assertEqual(handled, 1)
+        self.assertGreaterEqual(len(ticks), 4)
 
     async def test_restart_before_acp_send_requeues_and_dispatches(self):
         first = self.store()

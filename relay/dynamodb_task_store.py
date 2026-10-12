@@ -6,6 +6,7 @@ Boto3DynamoLedger talks to an existing table and never calls CreateTable.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import threading
 from typing import Protocol
 from uuid import UUID
 
@@ -74,6 +75,10 @@ def _condition_holds(current: dict[str, object] | None, condition: str) -> bool:
         return current.get("outbox_state") == "claimed" and bool(current.get("dispatch_started_at"))
     if condition == "pending_queued":
         return current.get("outbox_state") == "pending" and current.get("status") == "queued"
+    if condition == "delivery_can_speak":
+        return current.get("delivery_state") != "spoken"
+    if condition == "delivery_can_read":
+        return current.get("delivery_state") in {None, "pending", "notified"}
     raise ValueError(f"unknown ledger condition {condition}")
 
 
@@ -172,6 +177,7 @@ class DynamoDbTaskStore:
         self._ledger = ledger
         self._client_id = client_id
         self._max_pending_tasks = max_pending_tasks
+        self._lock = threading.Lock()
 
     def _task_rows(self) -> list[dict[str, object]]:
         rows, truncated = self._ledger.query_prefix(self._client_id, TASK_SK_PREFIX)
@@ -185,6 +191,15 @@ class DynamoDbTaskStore:
             raise AdmissionUnavailable("invalid_identity")
         fingerprint = request.fingerprint()
         dedup_sk = _dedup_sk(request.conversation_id, request.turn_id, request.call_id)
+        with self._lock:
+            return self._admit_locked(request, fingerprint, dedup_sk)
+
+    def _admit_locked(
+        self,
+        request: TaskAdmissionRequest,
+        fingerprint: str,
+        dedup_sk: str,
+    ) -> AdmissionReceipt:
         existing = self._ledger.get_item(request.client_id, dedup_sk, consistent=True)
         if existing is not None:
             if existing.get("payload_sha256") != fingerprint:
@@ -250,6 +265,10 @@ class DynamoDbTaskStore:
         return AdmissionReceipt(task_id=request.task_id, duplicate=False)
 
     def recover_after_restart(self) -> RecoveryCounts:
+        with self._lock:
+            return self._recover_locked()
+
+    def _recover_locked(self) -> RecoveryCounts:
         requeued = 0
         uncertain = 0
         for row in self._task_rows():
@@ -291,6 +310,10 @@ class DynamoDbTaskStore:
             raise ValueError("limit must be a positive integer")
         now_iso = _utc_iso(now)
         claimed_until = _utc_iso(now + timedelta(seconds=lease_seconds))
+        with self._lock:
+            return self._claim_due_locked(now_iso, claimed_until, limit)
+
+    def _claim_due_locked(self, now_iso: str, claimed_until: str, limit: int) -> list[ClaimedTask]:
         eligible = [
             row
             for row in self._task_rows()
@@ -334,6 +357,10 @@ class DynamoDbTaskStore:
 
     def mark_dispatch_started(self, task_id: str, *, now: datetime) -> None:
         started = _utc_iso(now)
+        with self._lock:
+            self._mark_dispatch_started_locked(task_id, started)
+
+    def _mark_dispatch_started_locked(self, task_id: str, started: str) -> None:
         try:
             self._ledger.update_item(
                 self._client_id,
@@ -369,6 +396,24 @@ class DynamoDbTaskStore:
     ) -> None:
         if not isinstance(task_id, str) or not task_id:
             raise AdmissionUnavailable("invalid_task_id")
+        with self._lock:
+            self._finish_locked(
+                task_id,
+                task_status=task_status,
+                outbox_state=outbox_state,
+                error=error,
+                result=result,
+            )
+
+    def _finish_locked(
+        self,
+        task_id: str,
+        *,
+        task_status: str,
+        outbox_state: str,
+        error: str | None,
+        result: BoundedTaskResult | None,
+    ) -> None:
         finished_at = datetime.now(timezone.utc)
         patch: dict[str, object] = {
             "outbox_state": outbox_state,
@@ -391,10 +436,9 @@ class DynamoDbTaskStore:
             )
         except LedgerConditionFailed as exc:
             raise AdmissionUnavailable("dispatch_not_claimed") from exc
-        if result is not None:
-            task = self._ledger.get_item(self._client_id, _task_sk(task_id), consistent=True)
-            if task is not None:
-                self._align_dedup_ttl(task)
+        task = self._ledger.get_item(self._client_id, _task_sk(task_id), consistent=True)
+        if task is not None:
+            self._align_dedup_ttl(task)
 
     def _align_dedup_ttl(self, task: dict[str, object]) -> None:
         sk = _dedup_sk(str(task["conversation_id"]), int(task["turn_id"]), str(task["call_id"]))
@@ -410,6 +454,10 @@ class DynamoDbTaskStore:
             return
 
     def get_by_task_id(self, task_id: str) -> dict[str, object] | None:
+        with self._lock:
+            return self._get_by_task_id_locked(task_id)
+
+    def _get_by_task_id_locked(self, task_id: str) -> dict[str, object] | None:
         row = self._ledger.get_item(self._client_id, _task_sk(task_id), consistent=True)
         if row is None:
             return None
@@ -441,6 +489,16 @@ class DynamoDbTaskStore:
                 return None
         clock = now or datetime.now(timezone.utc)
         now_iso = _utc_iso(clock)
+        with self._lock:
+            return self._lookup_inbox_locked(client_id, task_id, speak, now_iso)
+
+    def _lookup_inbox_locked(
+        self,
+        client_id: str,
+        task_id: str | None,
+        speak: bool,
+        now_iso: str,
+    ) -> dict[str, object] | None:
         if task_id is None:
             rows = self._task_rows()
             if not rows:
@@ -470,13 +528,19 @@ class DynamoDbTaskStore:
             elif delivery in {None, "pending", "notified"}:
                 next_delivery = "read"
             if next_delivery is not None and next_delivery != delivery:
-                self._ledger.update_item(
-                    str(row["pk"]),
-                    str(row["sk"]),
-                    {"delivery_state": next_delivery, "inbox_updated_at": now_iso},
-                    condition="exists",
-                )
-                delivery = next_delivery
+                condition = "delivery_can_speak" if next_delivery == "spoken" else "delivery_can_read"
+                try:
+                    updated = self._ledger.update_item(
+                        str(row["pk"]),
+                        str(row["sk"]),
+                        {"delivery_state": next_delivery, "inbox_updated_at": now_iso},
+                        condition=condition,
+                    )
+                    delivery = updated.get("delivery_state")
+                except LedgerConditionFailed:
+                    fresh = self._ledger.get_item(str(row["pk"]), str(row["sk"]), consistent=True)
+                    if fresh is not None:
+                        delivery = fresh.get("delivery_state")
         payload: dict[str, object] = {
             "task_id": row["task_id"],
             "status": status,
@@ -489,5 +553,27 @@ class DynamoDbTaskStore:
             payload["speak_now"] = True
         return payload
 
+    def get_inbox(self, task_id: str) -> dict[str, object] | None:
+        with self._lock:
+            row = self._ledger.get_item(self._client_id, _task_sk(task_id), consistent=True)
+            if row is None or row.get("delivery_state") is None:
+                return None
+            return {
+                "delivery_state": row.get("delivery_state"),
+                "updated_at": row.get("inbox_updated_at"),
+            }
+
+    def get_result(self, task_id: str) -> dict[str, object] | None:
+        with self._lock:
+            row = self._ledger.get_item(self._client_id, _task_sk(task_id), consistent=True)
+            if row is None or row.get("speak") is None:
+                return None
+            return {
+                "speak": row.get("speak"),
+                "card": row.get("card_json") or {},
+                "details_md": row.get("details_md") or "",
+            }
+
     def pending_dispatch_count(self) -> int:
-        return sum(1 for row in self._task_rows() if row.get("outbox_state") == "pending")
+        with self._lock:
+            return sum(1 for row in self._task_rows() if row.get("outbox_state") == "pending")
