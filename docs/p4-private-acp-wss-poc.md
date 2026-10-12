@@ -18,7 +18,7 @@ relay/devtools/wss_proxy.py is a dev-only reverse proxy. It:
 - forwards only the Authorization header and WebSocket frames to a loopback ws://.../acp fake server;
 - emits no request headers, bearer values, prompts, or result bodies in logs.
 
-The WSS connection uses the existing OpenAbAcpExecutor with its default certificate and hostname verification enabled. Tests generate a short-lived private CA and CA-issued server certificates in a temporary directory; no certificates or private keys are checked in. The test CA is supplied to the test process through SSL_CERT_FILE.
+The WSS connection uses the existing OpenAbAcpExecutor with its default certificate and hostname verification enabled. Relay and proxy pass explicit INFO-level WebSocket loggers so root DEBUG configuration cannot expose handshake headers or ACP frames. A regression enables root DEBUG and checks that the bearer, prompt, and result sentinels are absent. Tests generate a short-lived private CA and CA-issued server certificates in a temporary directory; no certificates or private keys are checked in. The test CA is supplied to the test process through SSL_CERT_FILE.
 
 Run from the repository root:
 

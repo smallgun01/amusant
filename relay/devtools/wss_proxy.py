@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import ipaddress
+import logging
 import ssl
 from urllib.parse import urlsplit
 
@@ -17,6 +18,12 @@ from websockets.asyncio.server import Server, ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 
 MAX_MESSAGE_SIZE = 64 * 1024
+
+# DEBUG logging from websockets can include HTTP headers and frame contents.
+_PROXY_SERVER_LOGGER = logging.getLogger("amusant.p4.wss_proxy.server")
+_PROXY_CLIENT_LOGGER = logging.getLogger("amusant.p4.wss_proxy.upstream")
+_PROXY_SERVER_LOGGER.setLevel(logging.INFO)
+_PROXY_CLIENT_LOGGER.setLevel(logging.INFO)
 
 
 def _is_loopback(host: str) -> bool:
@@ -74,6 +81,7 @@ class LoopbackWssProxy:
             max_size=MAX_MESSAGE_SIZE,
             ping_interval=20,
             ping_timeout=20,
+            logger=_PROXY_SERVER_LOGGER,
         )
 
     async def _handler(self, client: ServerConnection) -> None:
@@ -92,6 +100,7 @@ class LoopbackWssProxy:
                 max_size=MAX_MESSAGE_SIZE,
                 ping_interval=20,
                 ping_timeout=20,
+                logger=_PROXY_CLIENT_LOGGER,
             ) as upstream:
                 await self._bridge(client, upstream)
         except asyncio.CancelledError:

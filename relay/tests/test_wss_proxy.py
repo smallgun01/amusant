@@ -1,5 +1,7 @@
 import asyncio
+import io
 import json
+import logging
 import os
 from pathlib import Path
 import shutil
@@ -174,7 +176,15 @@ class WssProxyTests(unittest.IsolatedAsyncioTestCase):
         self.previous_exception_handler = self.loop.get_exception_handler()
         self.loop.set_exception_handler(self._handle_expected_tls_rejection)
         self.agent = FakeAcpServer()
-        self.upstream = await serve(self.agent.handler, "127.0.0.1", 0, max_size=64 * 1024)
+        self.fake_logger = logging.getLogger("amusant.tests.fake_acp")
+        self.fake_logger.setLevel(logging.INFO)
+        self.upstream = await serve(
+            self.agent.handler,
+            "127.0.0.1",
+            0,
+            max_size=64 * 1024,
+            logger=self.fake_logger,
+        )
         upstream_port = self.upstream.sockets[0].getsockname()[1]
         self.upstream_url = f"ws://127.0.0.1:{upstream_port}/acp"
         self.proxy_server = None
@@ -220,6 +230,30 @@ class WssProxyTests(unittest.IsolatedAsyncioTestCase):
     async def _run_with_test_ca(self, executor: OpenAbAcpExecutor, ca_file: str):
         with patch.dict(os.environ, {"SSL_CERT_FILE": ca_file}):
             return await executor.execute(_task())
+
+    async def test_debug_root_never_logs_bearer_prompt_or_result(self):
+        url = await self._start_proxy()
+        captured = io.StringIO()
+        handler = logging.StreamHandler(captured)
+        root = logging.getLogger()
+        previous_level = root.level
+        root.addHandler(handler)
+        root.setLevel(logging.DEBUG)
+        try:
+            outcome = await self._run_with_test_ca(self._executor(url), self.good_ca)
+        finally:
+            root.removeHandler(handler)
+            root.setLevel(previous_level)
+            handler.close()
+
+        self.assertEqual(outcome.status, "completed")
+        logs = captured.getvalue()
+        leaks = {
+            "bearer": TOKEN in logs,
+            "prompt": _task().task in logs,
+            "result": "Local verified WSS result." in logs,
+        }
+        self.assertEqual(leaks, {"bearer": False, "prompt": False, "result": False})
 
     async def test_verified_wss_proxy_completes_authenticated_acp(self):
         url = await self._start_proxy()
