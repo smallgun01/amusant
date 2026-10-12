@@ -34,6 +34,7 @@ MAX_DETAILS_CHARS = 4096
 MAX_CARD_LINES = 4
 MAX_CARD_TITLE = 80
 MAX_PROMPT_CHARS = 4096
+MAX_ACP_CA_PEM_CHARS = 64 * 1024
 
 # websockets DEBUG logs handshake headers and, depending on version, frame data.
 # Keep the transport logger at INFO even when the application's root is DEBUG.
@@ -149,11 +150,21 @@ class OpenAbAcpExecutor:
         cwd: str,
         timeout_seconds: float = DEFAULT_ACP_TIMEOUT_SECONDS,
         allow_plaintext: bool = False,
+        ca_pem: str | None = None,
         connect_factory=connect,
     ) -> None:
         if not isinstance(auth_key, str) or len(auth_key) < 12:
             raise ValueError("AMUSANT_ACP_AUTH_KEY must contain at least 12 characters")
         self._url = _require_private_ws_url(url, allow_plaintext=allow_plaintext)
+        if ca_pem is not None:
+            if not isinstance(ca_pem, str) or len(ca_pem) > MAX_ACP_CA_PEM_CHARS:
+                raise ValueError("AMUSANT_ACP_CA_PEM must be a bounded PEM certificate bundle")
+            ca_pem = ca_pem.strip() or None
+            if ca_pem is not None and "-----BEGIN CERTIFICATE-----" not in ca_pem:
+                raise ValueError("AMUSANT_ACP_CA_PEM must contain PEM certificate data")
+            if ca_pem is not None and urlparse(self._url).scheme != "wss":
+                raise ValueError("AMUSANT_ACP_CA_PEM requires a wss:// ACP URL")
+        self._ca_pem = ca_pem
         self._auth_key = auth_key
         self._cwd = _require_remote_cwd(cwd)
         self._timeout_seconds = _require_timeout(timeout_seconds)
@@ -174,8 +185,10 @@ class OpenAbAcpExecutor:
             }
             if urlparse(self._url).scheme == "wss":
                 tls = ssl.create_default_context()
-                if tls.verify_mode == ssl.CERT_NONE:
-                    raise ValueError("ACP wss:// must verify TLS certificates")
+                if self._ca_pem is not None:
+                    tls.load_verify_locations(cadata=self._ca_pem)
+                if tls.verify_mode != ssl.CERT_REQUIRED or not tls.check_hostname:
+                    raise ValueError("ACP wss:// must verify TLS certificates and hostnames")
                 connect_kwargs["ssl"] = tls
             async with self._connect(self._url, **connect_kwargs) as ws:
                 await self._rpc(ws, 1, "initialize", {"protocolVersion": ACP_PROTOCOL_VERSION})
@@ -298,10 +311,12 @@ def load_acp_executor(environ) -> OpenAbAcpExecutor | None:
     if isinstance(timeout_raw, str) and timeout_raw.strip():
         timeout = float(timeout_raw)
     allow_plaintext = environ.get("AMUSANT_ACP_ALLOW_PLAINTEXT", "") == "1"
+    ca_pem = environ.get("AMUSANT_ACP_CA_PEM")
     return OpenAbAcpExecutor(
         url=url.strip(),
         auth_key=key.strip(),
         cwd=cwd.strip(),
         timeout_seconds=timeout,
         allow_plaintext=allow_plaintext,
+        ca_pem=ca_pem,
     )

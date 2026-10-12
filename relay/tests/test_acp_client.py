@@ -189,6 +189,22 @@ class AcpClientTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             load_acp_executor({"AMUSANT_ACP_URL": "ws://127.0.0.1:9/acp"})
 
+    def test_private_ca_pem_is_optional_bounded_and_wss_only(self):
+        base = {
+            "AMUSANT_ACP_URL": "wss://10.0.0.8/acp",
+            "AMUSANT_ACP_AUTH_KEY": ACP_KEY,
+            "AMUSANT_ACP_CWD": "/openab/work",
+        }
+        ca_pem = "-----BEGIN CERTIFICATE-----\nunit-test\n-----END CERTIFICATE-----\n"
+        executor = load_acp_executor({**base, "AMUSANT_ACP_CA_PEM": ca_pem})
+        self.assertEqual(executor._ca_pem, ca_pem.strip())
+        with self.assertRaises(ValueError):
+            load_acp_executor({**base, "AMUSANT_ACP_CA_PEM": "not a PEM certificate"})
+        with self.assertRaises(ValueError):
+            load_acp_executor({**base, "AMUSANT_ACP_CA_PEM": ca_pem * 4096})
+        with self.assertRaises(ValueError):
+            load_acp_executor({**base, "AMUSANT_ACP_URL": "ws://127.0.0.1:8080/acp", "AMUSANT_ACP_CA_PEM": ca_pem})
+
     async def test_happy_path_text_prompt_without_audio(self):
         agent = FakeAcpAgent()
         server, url = await self._serve(agent)
