@@ -134,6 +134,6 @@ On-demand DynamoDB for a handful of items is typically cents, not the model bill
 
 ## 9. Consequences
 
-- *Code slice:* `TaskStore` protocol + `DynamoDbTaskStore` over an injected fake ledger, with offline tests for latest-by-`created_at`, `claim_due` oldest-queued, `max_pending_tasks`, `dispatch_started_at` recovery, DEDUP ambiguous commit, and TTL epoch type. CLI still uses SQLite. No AWS create unless Arthur's envelope says so.
+- *Code slice:* `TaskStore` protocol + `DynamoDbTaskStore` over a fake ledger or boto3 client. CLI selects sqlite/dynamodb by env. Dockerfile and taskdef templates are versioned. Default remains SQLite. No CreateTable unless Arthur's envelope says so.
 - Next *AWS* slice: explicit envelope for table + task role + one-off write/read-after-stop.
 - Reject expanding the table into chat memory, artifacts, or audio.

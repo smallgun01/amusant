@@ -1,0 +1,37 @@
+{
+  "family": "oab-amusant-relay",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::REPLACE_ACCOUNT_ID:role/oab-task-execution",
+  "containerDefinitions": [
+    {
+      "name": "amusant-relay",
+      "image": "REPLACE_ECR_IMAGE_URI",
+      "essential": true,
+      "environment": [
+        { "name": "AMUSANT_CLIENT_ID", "value": "amusant-a1" },
+        { "name": "AMUSANT_BACKEND_ID", "value": "openab" },
+        { "name": "AMUSANT_TASK_STORE", "value": "sqlite" },
+        { "name": "AMUSANT_TASK_DB", "value": "/tmp/amusant-tasks.sqlite3" },
+        { "name": "AMUSANT_ACP_CWD", "value": "/home/agent/workspace" },
+        { "name": "AMUSANT_ACP_ALLOW_PLAINTEXT", "value": "1" }
+      ],
+      "secrets": [
+        {
+          "name": "AMUSANT_ACP_AUTH_KEY",
+          "valueFrom": "REPLACE_SECRET_ARN"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/openab",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "amusant-relay"
+        }
+      }
+    }
+  ]
+}

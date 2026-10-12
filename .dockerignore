@@ -1,0 +1,7 @@
+.venv
+.git
+**/__pycache__
+**/*.pyc
+home_bridge
+docs/gateway-isolation-eli5
+*.html

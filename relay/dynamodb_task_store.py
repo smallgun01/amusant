@@ -1,12 +1,12 @@
-"""DynamoDB Task Ledger adapter (ADR-0002 first slice).
+"""DynamoDB Task Ledger adapter (ADR-0002).
 
-Talks to an injected ledger, not live AWS. InMemoryDynamoLedger is the fake
-endpoint for tests. No table, IAM, or boto3 client is created here.
+Talks to an injected ledger. InMemoryDynamoLedger is the fake endpoint.
+Boto3DynamoLedger talks to an existing table and never calls CreateTable.
 """
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Callable
+from typing import Protocol
 from uuid import UUID
 
 from .task_store import (
@@ -37,6 +37,54 @@ class LedgerConditionFailed(RuntimeError):
 
 class LedgerAmbiguous(RuntimeError):
     """Commit result is unknown; caller must read then AdmissionUnknown."""
+
+
+class DynamoLedger(Protocol):
+    def get_item(self, pk: str, sk: str, *, consistent: bool = True) -> dict[str, object] | None: ...
+
+    def query_prefix(self, pk: str, sk_prefix: str) -> tuple[list[dict[str, object]], bool]: ...
+
+    def transact_put(
+        self,
+        puts: list[dict[str, object]],
+        *,
+        absent: list[tuple[str, str]],
+    ) -> None: ...
+
+    def update_item(
+        self,
+        pk: str,
+        sk: str,
+        patch: dict[str, object],
+        *,
+        condition: str,
+    ) -> dict[str, object]: ...
+
+
+def _condition_holds(current: dict[str, object] | None, condition: str) -> bool:
+    if current is None:
+        return False
+    if condition == "exists":
+        return True
+    if condition == "claimed":
+        return current.get("outbox_state") == "claimed"
+    if condition == "claimed_unsent":
+        return current.get("outbox_state") == "claimed" and not current.get("dispatch_started_at")
+    if condition == "claimed_started":
+        return current.get("outbox_state") == "claimed" and bool(current.get("dispatch_started_at"))
+    if condition == "pending_queued":
+        return current.get("outbox_state") == "pending" and current.get("status") == "queued"
+    raise ValueError(f"unknown ledger condition {condition}")
+
+
+def _apply_patch(current: dict[str, object], patch: dict[str, object]) -> dict[str, object]:
+    merged = dict(current)
+    for key, value in patch.items():
+        if value is None:
+            merged.pop(key, None)
+        else:
+            merged[key] = value
+    return merged
 
 
 class InMemoryDynamoLedger:
@@ -74,7 +122,7 @@ class InMemoryDynamoLedger:
                 raise LedgerConditionFailed()
         for item in puts:
             key = (str(item["pk"]), str(item["sk"]))
-            self.items[key] = dict(item)
+            self.items[key] = {k: v for k, v in item.items() if v is not None}
 
     def update_item(
         self,
@@ -82,14 +130,13 @@ class InMemoryDynamoLedger:
         sk: str,
         patch: dict[str, object],
         *,
-        predicate: Callable[[dict[str, object] | None], bool],
+        condition: str,
     ) -> dict[str, object]:
         key = (pk, sk)
         current = self.items.get(key)
-        if not predicate(None if current is None else dict(current)):
+        if not _condition_holds(None if current is None else dict(current), condition):
             raise LedgerConditionFailed()
-        merged = dict(current or {})
-        merged.update(patch)
+        merged = _apply_patch(dict(current or {}), patch)
         merged["pk"] = pk
         merged["sk"] = sk
         self.items[key] = merged
@@ -113,7 +160,7 @@ class DynamoDbTaskStore:
 
     def __init__(
         self,
-        ledger: InMemoryDynamoLedger,
+        ledger: DynamoLedger,
         *,
         client_id: str,
         max_pending_tasks: int,
@@ -220,9 +267,7 @@ class DynamoDbTaskStore:
                         "last_error": "acp_result_unconfirmed",
                         "retain_until": int(datetime.now(timezone.utc).timestamp()) + RETAIN_SECONDS,
                     },
-                    predicate=lambda current: current is not None
-                    and current.get("outbox_state") == "claimed"
-                    and current.get("dispatch_started_at"),
+                    condition="claimed_started",
                 )
                 uncertain += 1
             else:
@@ -234,9 +279,7 @@ class DynamoDbTaskStore:
                         "status": "queued",
                         "claimed_until": None,
                     },
-                    predicate=lambda current: current is not None
-                    and current.get("outbox_state") == "claimed"
-                    and not current.get("dispatch_started_at"),
+                    condition="claimed_unsent",
                 )
                 requeued += 1
         return RecoveryCounts(requeued=requeued, uncertain=uncertain)
@@ -270,9 +313,7 @@ class DynamoDbTaskStore:
                         "attempts": int(row.get("attempts") or 0) + 1,
                         "claimed_until": claimed_until,
                     },
-                    predicate=lambda current: current is not None
-                    and current.get("outbox_state") == "pending"
-                    and current.get("status") == "queued",
+                    condition="pending_queued",
                 )
             except LedgerConditionFailed:
                 continue
@@ -298,9 +339,7 @@ class DynamoDbTaskStore:
                 self._client_id,
                 _task_sk(task_id),
                 {"dispatch_started_at": started},
-                predicate=lambda current: current is not None
-                and current.get("outbox_state") == "claimed"
-                and not current.get("dispatch_started_at"),
+                condition="claimed_unsent",
             )
         except LedgerConditionFailed as exc:
             raise AdmissionUnavailable("dispatch_not_claimed") from exc
@@ -348,7 +387,7 @@ class DynamoDbTaskStore:
                 self._client_id,
                 _task_sk(task_id),
                 patch,
-                predicate=lambda current: current is not None and current.get("outbox_state") == "claimed",
+                condition="claimed",
             )
         except LedgerConditionFailed as exc:
             raise AdmissionUnavailable("dispatch_not_claimed") from exc
@@ -365,7 +404,7 @@ class DynamoDbTaskStore:
                 str(task["pk"]),
                 sk,
                 {"retain_until": retain},
-                predicate=lambda current: current is not None,
+                condition="exists",
             )
         except LedgerConditionFailed:
             return
@@ -435,7 +474,7 @@ class DynamoDbTaskStore:
                     str(row["pk"]),
                     str(row["sk"]),
                     {"delivery_state": next_delivery, "inbox_updated_at": now_iso},
-                    predicate=lambda current: current is not None,
+                    condition="exists",
                 )
                 delivery = next_delivery
         payload: dict[str, object] = {
