@@ -2,20 +2,21 @@ import asyncio
 import io
 import json
 import logging
-import os
 from pathlib import Path
 import shutil
+import socket
 import ssl
 import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
+from urllib.parse import urlsplit
 
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed
 
-from relay.acp_client import AcpUncertainError, OpenAbAcpExecutor
+from relay.acp_client import AcpUncertainError, OpenAbAcpExecutor, load_acp_executor
 from relay.devtools.wss_proxy import LoopbackWssProxy
 from relay.task_store import ClaimedTask
 
@@ -71,7 +72,7 @@ class FakeAcpServer:
             elif method == "session/prompt":
                 self.prompt_count += 1
                 if self.mode == "hang":
-                    await asyncio.sleep(0.15)
+                    await asyncio.sleep(2.0)
                 if self.mode == "drop":
                     await websocket.close()
                     return
@@ -110,6 +111,9 @@ class WssProxyTests(unittest.IsolatedAsyncioTestCase):
         )
         cls.wrong_host_cert, cls.wrong_host_key = cls._make_server_cert(
             root, "wrong-host", "IP:127.0.0.2", cls.good_ca, good_ca_key
+        )
+        cls.dns_cert, cls.dns_key = cls._make_server_cert(
+            root, "dns-server", "DNS:jellii-acp.internal", cls.good_ca, good_ca_key
         )
 
     @classmethod
@@ -219,17 +223,26 @@ class WssProxyTests(unittest.IsolatedAsyncioTestCase):
         self.proxy_url = f"wss://127.0.0.1:{port}/acp"
         return self.proxy_url
 
-    def _executor(self, url: str, *, token: str = TOKEN, timeout: float = 1.0) -> OpenAbAcpExecutor:
-        return OpenAbAcpExecutor(
-            url=url,
-            auth_key=token,
-            cwd="/openab/work",
-            timeout_seconds=timeout,
-        )
-
-    async def _run_with_test_ca(self, executor: OpenAbAcpExecutor, ca_file: str):
-        with patch.dict(os.environ, {"SSL_CERT_FILE": ca_file}):
-            return await executor.execute(_task())
+    def _executor(
+        self,
+        url: str,
+        *,
+        token: str = TOKEN,
+        timeout: float = 1.0,
+        ca_file: str | None = None,
+    ) -> OpenAbAcpExecutor:
+        environ = {
+            "AMUSANT_ACP_URL": url,
+            "AMUSANT_ACP_AUTH_KEY": token,
+            "AMUSANT_ACP_CWD": "/openab/work",
+            "AMUSANT_ACP_TIMEOUT_SECONDS": str(timeout),
+        }
+        if ca_file is not None:
+            environ["AMUSANT_ACP_CA_PEM"] = Path(ca_file).read_text(encoding="ascii")
+        executor = load_acp_executor(environ)
+        if executor is None:
+            raise AssertionError("ACP executor unexpectedly disabled")
+        return executor
 
     async def test_debug_root_never_logs_bearer_prompt_or_result(self):
         url = await self._start_proxy()
@@ -240,7 +253,7 @@ class WssProxyTests(unittest.IsolatedAsyncioTestCase):
         root.addHandler(handler)
         root.setLevel(logging.DEBUG)
         try:
-            outcome = await self._run_with_test_ca(self._executor(url), self.good_ca)
+            outcome = await self._executor(url, ca_file=self.good_ca).execute(_task())
         finally:
             root.removeHandler(handler)
             root.setLevel(previous_level)
@@ -257,30 +270,106 @@ class WssProxyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_verified_wss_proxy_completes_authenticated_acp(self):
         url = await self._start_proxy()
-        outcome = await self._run_with_test_ca(self._executor(url), self.good_ca)
+        outcome = await self._executor(url, ca_file=self.good_ca).execute(_task())
         self.assertEqual(outcome.status, "completed")
         self.assertEqual(outcome.code, "ok")
         self.assertEqual(outcome.result.speak, "Local verified WSS result.")
         self.assertEqual(self.agent.methods, ["initialize", "session/new", "session/prompt"])
         self.assertEqual(self.agent.prompt_count, 1)
 
+    async def test_private_ca_is_added_without_replacing_default_roots(self):
+        url = await self._start_proxy()
+        system_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        system_context.load_verify_locations(cafile=self.other_ca)
+        captured = {}
+
+        def inspect_connect(_url, **kwargs):
+            captured["context"] = kwargs["ssl"]
+            raise OSError("offline test")
+
+        executor = OpenAbAcpExecutor(
+            url=url,
+            auth_key=TOKEN,
+            cwd="/openab/work",
+            ca_pem=Path(self.good_ca).read_text(encoding="ascii"),
+            connect_factory=inspect_connect,
+        )
+        with patch("relay.acp_client.ssl.create_default_context", return_value=system_context):
+            outcome = await executor.execute(_task())
+        self.assertEqual((outcome.status, outcome.code), ("failed", "acp_connect"))
+        context = captured["context"]
+        self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+        self.assertTrue(context.check_hostname)
+        self.assertEqual(len(context.get_ca_certs()), 2)
+
+    async def test_private_dns_wss_pins_ip_and_verifies_original_hostname(self):
+        ip_url = await self._start_proxy(self.dns_cert, self.dns_key)
+        port = urlsplit(ip_url).port
+        self.assertIsNotNone(port)
+        url = f"wss://jellii-acp.internal:{port}/acp"
+        loop = asyncio.get_running_loop()
+        system_getaddrinfo = loop.getaddrinfo
+        dns_calls = []
+
+        async def cloud_map_lookup(host, port, **kwargs):
+            dns_calls.append((host, port))
+            if host == "jellii-acp.internal":
+                return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("127.0.0.1", port))]
+            return await system_getaddrinfo(host, port, **kwargs)
+
+        executor = self._executor(url, timeout=5.0, ca_file=self.good_ca)
+        captured = {}
+        base_connect = executor._connect
+
+        def capture_connect(uri, **kwargs):
+            captured.update({k: kwargs.get(k) for k in ("host", "port", "server_hostname", "proxy")})
+            return base_connect(uri, **kwargs)
+
+        executor._connect = capture_connect
+        with patch.object(loop, "getaddrinfo", new=cloud_map_lookup):
+            outcome = await executor.execute(_task())
+        self.assertEqual(
+            (outcome.status, outcome.code),
+            ("completed", "ok"),
+            msg=f"methods={self.agent.methods}; prompts={self.agent.prompt_count}; dns={dns_calls}; dial={captured}",
+        )
+        self.assertEqual(dns_calls, [("jellii-acp.internal", port)])
+        self.assertEqual(captured["host"], "127.0.0.1")
+        self.assertEqual(captured["port"], port)
+        self.assertEqual(captured["server_hostname"], "jellii-acp.internal")
+        self.assertIsNone(captured["proxy"])
+        self.assertEqual(self.agent.prompt_count, 1)
+
     async def test_untrusted_ca_fails_before_acp_initialize(self):
         url = await self._start_proxy()
-        outcome = await self._run_with_test_ca(self._executor(url), self.other_ca)
+        outcome = await self._executor(url, ca_file=self.other_ca).execute(_task())
+        self.assertEqual((outcome.status, outcome.code), ("failed", "acp_connect"))
+        self.assertEqual(self.agent.methods, [])
+        self.assertEqual(self.agent.prompt_count, 0)
+
+    async def test_malformed_ca_bundle_fails_before_acp_initialize(self):
+        url = await self._start_proxy()
+        executor = OpenAbAcpExecutor(
+            url=url,
+            auth_key=TOKEN,
+            cwd="/openab/work",
+            ca_pem="-----BEGIN CERTIFICATE-----\nnot-a-certificate\n-----END CERTIFICATE-----",
+        )
+        outcome = await executor.execute(_task())
         self.assertEqual((outcome.status, outcome.code), ("failed", "acp_connect"))
         self.assertEqual(self.agent.methods, [])
         self.assertEqual(self.agent.prompt_count, 0)
 
     async def test_hostname_mismatch_fails_closed(self):
         url = await self._start_proxy(self.wrong_host_cert, self.wrong_host_key)
-        outcome = await self._run_with_test_ca(self._executor(url), self.good_ca)
+        outcome = await self._executor(url, ca_file=self.good_ca).execute(_task())
         self.assertEqual((outcome.status, outcome.code), ("failed", "acp_connect"))
         self.assertEqual(self.agent.methods, [])
         self.assertEqual(self.agent.prompt_count, 0)
 
     async def test_bad_bearer_is_forwarded_and_rejected_before_prompt(self):
         url = await self._start_proxy()
-        outcome = await self._run_with_test_ca(self._executor(url, token="wrong-bearer-token"), self.good_ca)
+        outcome = await self._executor(url, token="wrong-bearer-token", ca_file=self.good_ca).execute(_task())
         self.assertEqual((outcome.status, outcome.code), ("failed", "acp_connect"))
         self.assertEqual(self.agent.prompt_count, 0)
         self.assertNotIn("session/prompt", self.agent.methods)
@@ -297,17 +386,15 @@ class WssProxyTests(unittest.IsolatedAsyncioTestCase):
     async def test_timeout_after_prompt_is_uncertain(self):
         self.agent.mode = "hang"
         url = await self._start_proxy()
-        with patch.dict(os.environ, {"SSL_CERT_FILE": self.good_ca}):
-            with self.assertRaises(AcpUncertainError):
-                await self._executor(url, timeout=0.03).execute(_task())
+        with self.assertRaises(AcpUncertainError):
+            await self._executor(url, timeout=1.0, ca_file=self.good_ca).execute(_task())
         self.assertEqual(self.agent.prompt_count, 1)
 
     async def test_disconnect_after_prompt_is_uncertain(self):
         self.agent.mode = "drop"
         url = await self._start_proxy()
-        with patch.dict(os.environ, {"SSL_CERT_FILE": self.good_ca}):
-            with self.assertRaises(AcpUncertainError):
-                await self._executor(url).execute(_task())
+        with self.assertRaises(AcpUncertainError):
+            await self._executor(url, ca_file=self.good_ca).execute(_task())
         self.assertEqual(self.agent.prompt_count, 1)
 
     async def test_proxy_rejects_non_acp_path(self):
