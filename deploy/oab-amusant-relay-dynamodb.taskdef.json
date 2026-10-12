@@ -1,0 +1,39 @@
+{
+  "family": "oab-amusant-relay",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::REPLACE_ACCOUNT_ID:role/oab-task-execution",
+  "taskRoleArn": "arn:aws:iam::REPLACE_ACCOUNT_ID:role/REPLACE_RELAY_TASK_ROLE",
+  "containerDefinitions": [
+    {
+      "name": "amusant-relay",
+      "image": "REPLACE_ECR_IMAGE_URI",
+      "essential": true,
+      "environment": [
+        { "name": "AMUSANT_CLIENT_ID", "value": "amusant-a1" },
+        { "name": "AMUSANT_BACKEND_ID", "value": "openab" },
+        { "name": "AMUSANT_TASK_STORE", "value": "dynamodb" },
+        { "name": "AMUSANT_DDB_TABLE", "value": "REPLACE_TABLE_NAME" },
+        { "name": "AMUSANT_DDB_REGION", "value": "us-east-1" },
+        { "name": "AMUSANT_ACP_CWD", "value": "/home/agent/workspace" },
+        { "name": "AMUSANT_ACP_URL", "value": "REPLACE_ACP_WSS_URL" }
+      ],
+      "secrets": [
+        {
+          "name": "AMUSANT_ACP_AUTH_KEY",
+          "valueFrom": "REPLACE_SECRET_ARN"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/openab",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "amusant-relay"
+        }
+      }
+    }
+  ]
+}
