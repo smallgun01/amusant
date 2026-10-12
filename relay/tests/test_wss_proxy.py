@@ -4,11 +4,13 @@ import json
 import logging
 from pathlib import Path
 import shutil
+import socket
 import ssl
 import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
+from urllib.parse import urlsplit
 
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
@@ -109,6 +111,9 @@ class WssProxyTests(unittest.IsolatedAsyncioTestCase):
         )
         cls.wrong_host_cert, cls.wrong_host_key = cls._make_server_cert(
             root, "wrong-host", "IP:127.0.0.2", cls.good_ca, good_ca_key
+        )
+        cls.dns_cert, cls.dns_key = cls._make_server_cert(
+            root, "dns-server", "DNS:jellii-acp.internal", cls.good_ca, good_ca_key
         )
 
     @classmethod
@@ -296,6 +301,44 @@ class WssProxyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
         self.assertTrue(context.check_hostname)
         self.assertEqual(len(context.get_ca_certs()), 2)
+
+    async def test_private_dns_wss_pins_ip_and_verifies_original_hostname(self):
+        ip_url = await self._start_proxy(self.dns_cert, self.dns_key)
+        port = urlsplit(ip_url).port
+        self.assertIsNotNone(port)
+        url = f"wss://jellii-acp.internal:{port}/acp"
+        loop = asyncio.get_running_loop()
+        system_getaddrinfo = loop.getaddrinfo
+        dns_calls = []
+
+        async def cloud_map_lookup(host, port, **kwargs):
+            dns_calls.append((host, port))
+            if host == "jellii-acp.internal":
+                return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("127.0.0.1", port))]
+            return await system_getaddrinfo(host, port, **kwargs)
+
+        executor = self._executor(url, timeout=5.0, ca_file=self.good_ca)
+        captured = {}
+        base_connect = executor._connect
+
+        def capture_connect(uri, **kwargs):
+            captured.update({k: kwargs.get(k) for k in ("host", "port", "server_hostname", "proxy")})
+            return base_connect(uri, **kwargs)
+
+        executor._connect = capture_connect
+        with patch.object(loop, "getaddrinfo", new=cloud_map_lookup):
+            outcome = await executor.execute(_task())
+        self.assertEqual(
+            (outcome.status, outcome.code),
+            ("completed", "ok"),
+            msg=f"methods={self.agent.methods}; prompts={self.agent.prompt_count}; dns={dns_calls}; dial={captured}",
+        )
+        self.assertEqual(dns_calls, [("jellii-acp.internal", port)])
+        self.assertEqual(captured["host"], "127.0.0.1")
+        self.assertEqual(captured["port"], port)
+        self.assertEqual(captured["server_hostname"], "jellii-acp.internal")
+        self.assertIsNone(captured["proxy"])
+        self.assertEqual(self.agent.prompt_count, 1)
 
     async def test_untrusted_ca_fails_before_acp_initialize(self):
         url = await self._start_proxy()

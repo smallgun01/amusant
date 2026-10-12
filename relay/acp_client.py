@@ -64,24 +64,54 @@ def _require_timeout(timeout_seconds: object) -> float:
 
 
 def _require_private_host(host: str) -> None:
-    if host in {"localhost"}:
-        return
+    """Validate literal IPs at config time; resolve DNS only when dispatching."""
     try:
         address = ipaddress.ip_address(host)
     except ValueError:
-        try:
-            infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
-        except OSError as exc:
-            raise ValueError("AMUSANT_ACP_URL host must resolve to a loopback or private IP") from exc
-        if not infos:
-            raise ValueError("AMUSANT_ACP_URL host must resolve to a loopback or private IP")
-        for info in infos:
-            address = ipaddress.ip_address(info[4][0])
-            if not _is_allowed_destination(address):
-                raise ValueError("AMUSANT_ACP_URL host must resolve only to loopback or RFC1918 IPs")
+        # Cloud Map may have no records while the Agent service is stopped.
+        # The name is validated against private addresses immediately before dial.
         return
     if not _is_allowed_destination(address):
         raise ValueError("AMUSANT_ACP_URL may target only loopback or an RFC1918 address")
+
+
+async def _resolve_private_target(url: str, deadline: float) -> tuple[str, int, str]:
+    """Resolve once, reject public answers, and pin the socket to one private IP.
+
+    Return (dial_ip, port, tls_hostname). The URL hostname remains the TLS
+    server_hostname, preserving SNI and certificate validation while preventing
+    a second DNS lookup between the allowlist check and connect.
+    """
+    parsed = urlparse(url)
+    host = parsed.hostname
+    if not host:
+        raise ValueError("AMUSANT_ACP_URL must include a host")
+    port = parsed.port or (443 if parsed.scheme == "wss" else 80)
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            raise asyncio.TimeoutError
+        infos = await asyncio.wait_for(
+            asyncio.get_running_loop().getaddrinfo(host, port, type=socket.SOCK_STREAM),
+            timeout=remaining,
+        )
+        addresses: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
+        for info in infos:
+            resolved = ipaddress.ip_address(info[4][0])
+            if not _is_allowed_destination(resolved):
+                raise ValueError("AMUSANT_ACP_URL DNS resolved outside loopback/RFC1918")
+            if resolved not in addresses:
+                addresses.append(resolved)
+        if not addresses:
+            raise ValueError("AMUSANT_ACP_URL host has no loopback/RFC1918 addresses")
+        # Prefer IPv4 for ECS Cloud Map A records; all returned answers must pass.
+        selected = next((address for address in addresses if address.version == 4), addresses[0])
+        return selected.compressed, port, host
+    if not _is_allowed_destination(address):
+        raise ValueError("AMUSANT_ACP_URL may target only loopback or an RFC1918 address")
+    return address.compressed, port, host
 
 
 def _require_private_ws_url(url: str, *, allow_plaintext: bool) -> str:
@@ -90,6 +120,12 @@ def _require_private_ws_url(url: str, *, allow_plaintext: bool) -> str:
     parsed = urlparse(url.strip())
     if parsed.scheme not in {"ws", "wss"} or parsed.path != "/acp" or parsed.query or parsed.fragment:
         raise ValueError("AMUSANT_ACP_URL must be ws:// or wss:// host/acp with no query")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("AMUSANT_ACP_URL must use a valid port") from exc
+    if port is not None and not 1 <= port <= 65535:
+        raise ValueError("AMUSANT_ACP_URL must use a valid port")
     if parsed.scheme == "ws" and not allow_plaintext:
         host = parsed.hostname or ""
         try:
@@ -176,12 +212,17 @@ class OpenAbAcpExecutor:
         loop = asyncio.get_running_loop()
         self._deadline = loop.time() + self._timeout_seconds
         try:
+            dial_host, dial_port, tls_hostname = await _resolve_private_target(self._url, self._deadline)
             remaining = max(0.01, self._deadline - loop.time())
             connect_kwargs: dict[str, Any] = {
                 "additional_headers": {"Authorization": f"Bearer {self._auth_key}"},
                 "open_timeout": min(5.0, remaining),
                 "max_size": 64 * 1024,
                 "logger": _ACP_WEBSOCKETS_LOGGER,
+                # Pin the TCP dial to the address that passed the private-IP check.
+                "host": dial_host,
+                "port": dial_port,
+                "proxy": None,
             }
             if urlparse(self._url).scheme == "wss":
                 tls = ssl.create_default_context()
@@ -190,6 +231,7 @@ class OpenAbAcpExecutor:
                 if tls.verify_mode != ssl.CERT_REQUIRED or not tls.check_hostname:
                     raise ValueError("ACP wss:// must verify TLS certificates and hostnames")
                 connect_kwargs["ssl"] = tls
+                connect_kwargs["server_hostname"] = tls_hostname
             async with self._connect(self._url, **connect_kwargs) as ws:
                 await self._rpc(ws, 1, "initialize", {"protocolVersion": ACP_PROTOCOL_VERSION})
                 session = await self._rpc(ws, 2, "session/new", {"cwd": self._cwd, "mcpServers": []})

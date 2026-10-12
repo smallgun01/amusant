@@ -19,7 +19,7 @@ PYTHONPATH=.:relay uv run --locked \
   --image amusant-acp-nginx-sidecar:offline-test
 ~~~
 
-The smoke harness runs the built NGINX image and a fake ACP server on a local Linux host network. Its temporary config binds the test listener to 127.0.0.1 and targets the fake server; it opens no LAN/public listener. It generates short-lived CA/leaf material in a temporary directory, performs one fake ACP prompt, checks wrong-CA rejection, and asserts no bearer/prompt/result sentinel appears in captured logs. It is not a live Jellii/AWS result and sends no paid model request.
+The smoke harness runs the pinned NGINX image and fake ACP server on a local Linux host network. Its temporary config binds the test listener to 127.0.0.1 and targets the fake server; it opens no LAN/public listener. With disposable certificates, it completes one valid fake ACP prompt, then checks bad and missing Bearer rejection, a non-/acp 404, a wrong leaf SAN/hostname, and an untrusted CA; no negative probe may produce another fake ACP prompt. While the container is running, it captures `nginx -T` output and asserts the inherited /tmp PID/temp paths, exact ACP route, and absence of any 8080 listener. It also checks captured logs for bearer, prompt, and result sentinels. This is not a live Jellii/AWS result and sends no paid model request.
 
 ## Runtime contract
 

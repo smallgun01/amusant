@@ -42,7 +42,12 @@ class NginxSidecarPackagingTests(unittest.TestCase):
         self.assertIn("--network", smoke)
         self.assertIn("127.0.0.1:{listen_port}", smoke)
         self.assertIn("AMUSANT_ACP_CA_PEM", smoke)
-        self.assertIn("untrusted_ca", smoke)
+        for probe in ("bad_bearer", "missing_bearer", "non_acp_path", "wrong_hostname", "untrusted_ca"):
+            self.assertIn(probe, smoke)
+        self.assertIn('"nginx", "-T"', smoke)
+        self.assertIn('"client_body_temp_path"', smoke)
+        self.assertIn('"scgi_temp_path"', smoke)
+        self.assertIn("no_8080_listener", smoke)
         self.assertNotIn("boto3", smoke)
         self.assertNotIn('subprocess.run(["aws"', smoke)
         self.assertNotIn('subprocess.Popen(["aws"', smoke)

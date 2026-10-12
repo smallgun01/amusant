@@ -7,6 +7,8 @@ import io
 import json
 import logging
 import os
+import re
+import ssl
 from pathlib import Path
 import shutil
 import socket
@@ -15,13 +17,45 @@ import sys
 import tempfile
 import time
 import uuid
+from unittest.mock import patch
 
+from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
+from websockets.exceptions import ConnectionClosed, InvalidStatus
 
 from relay.acp_client import load_acp_executor
 from relay.tests.test_wss_proxy import FakeAcpServer, TOKEN, WssProxyTests, _task
 
 RESULT_SENTINEL = "Local verified WSS result."
+_RAW_CLIENT_LOGGER = logging.getLogger("amusant.nginx.smoke.raw-client")
+_RAW_CLIENT_LOGGER.setLevel(logging.INFO)
+WRONG_TOKEN = "invalid-sidecar-bearer-12"
+
+
+def _verify_running_nginx_config(container_name: str) -> None:
+    result = subprocess.run(
+        ["docker", "exec", container_name, "nginx", "-T"],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    config = result.stdout + result.stderr
+    for directive in (
+        "pid",
+        "client_body_temp_path",
+        "proxy_temp_path",
+        "fastcgi_temp_path",
+        "uwsgi_temp_path",
+        "scgi_temp_path",
+    ):
+        if not re.search(rf"(?m)^\s*{directive}\s+/tmp(?:/[^;\s]+)?;", config):
+            raise RuntimeError("running NGINX config lacks an expected /tmp runtime path")
+    listens = re.findall(r"(?m)^\s*listen\s+([^;]+);", config)
+    if any(re.search(r"(?:^|[^0-9])8080(?:$|[^0-9])", listener) for listener in listens):
+        raise RuntimeError("running NGINX config still has a listener on port 8080")
+    if "location = /acp" not in config:
+        raise RuntimeError("running NGINX config lacks the exact ACP route")
 
 
 def _free_loopback_port() -> int:
@@ -129,6 +163,61 @@ async def run_smoke(image: str, *, repo_root: Path) -> dict[str, object]:
                     if agent.prompt_count != 1 or agent.methods != ["initialize", "session/new", "session/prompt"]:
                         raise RuntimeError("fake ACP exchange did not execute exactly one prompt")
 
+                    _verify_running_nginx_config(container_name)
+
+                    bad_bearer = await _executor(url, ca_pem, token=WRONG_TOKEN).execute(_task())
+                    if (bad_bearer.status, bad_bearer.code) != ("failed", "acp_connect"):
+                        raise RuntimeError("NGINX WSS did not fail closed for a bad Bearer")
+                    if agent.prompt_count != 1:
+                        raise RuntimeError("bad Bearer reached the fake ACP prompt")
+
+                    tls_context = ssl.create_default_context(cafile=ca_cert)
+                    try:
+                        async with connect(
+                            url, ssl=tls_context, open_timeout=3, logger=_RAW_CLIENT_LOGGER
+                        ) as websocket:
+                            try:
+                                await asyncio.wait_for(websocket.recv(), timeout=3)
+                            except ConnectionClosed:
+                                pass
+                            else:
+                                raise RuntimeError("fake ACP did not close a missing-Bearer connection")
+                    except ConnectionClosed:
+                        pass
+                    if agent.prompt_count != 1:
+                        raise RuntimeError("missing Bearer reached the fake ACP prompt")
+
+                    wrong_path = url.rsplit("/", 1)[0] + "/not-acp"
+                    try:
+                        async with connect(
+                            wrong_path,
+                            ssl=ssl.create_default_context(cafile=ca_cert),
+                            open_timeout=3,
+                            logger=_RAW_CLIENT_LOGGER,
+                        ):
+                            raise RuntimeError("NGINX accepted a non-/acp path")
+                    except InvalidStatus as error:
+                        if error.response.status_code != 404:
+                            raise RuntimeError("NGINX returned an unexpected status for non-/acp path") from None
+                    if agent.prompt_count != 1:
+                        raise RuntimeError("non-/acp path reached the fake ACP prompt")
+
+                    dns_url = f"wss://jellii-acp.internal:{listen_port}/acp"
+                    loop = asyncio.get_running_loop()
+                    system_getaddrinfo = loop.getaddrinfo
+
+                    async def test_dns_to_proxy(host, port, **kwargs):
+                        if host == "jellii-acp.internal":
+                            return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("127.0.0.1", port))]
+                        return await system_getaddrinfo(host, port, **kwargs)
+
+                    with patch.object(loop, "getaddrinfo", new=test_dns_to_proxy):
+                        wrong_hostname = await _executor(dns_url, ca_pem).execute(_task())
+                    if (wrong_hostname.status, wrong_hostname.code) != ("failed", "acp_connect"):
+                        raise RuntimeError("NGINX WSS did not reject a wrong leaf SAN/hostname")
+                    if agent.prompt_count != 1:
+                        raise RuntimeError("wrong leaf SAN/hostname reached the fake ACP prompt")
+
                     rejected = await _executor(
                         url, Path(wrong_ca).read_text(encoding="ascii")
                     ).execute(_task())
@@ -155,16 +244,29 @@ async def run_smoke(image: str, *, repo_root: Path) -> dict[str, object]:
 
             nginx_logs = log_path.read_text(encoding="utf-8", errors="replace")
             app_logs = capture.getvalue()
-            for sentinel in (TOKEN, _task().task, RESULT_SENTINEL):
-                if sentinel in nginx_logs or sentinel in app_logs:
-                    raise RuntimeError("a credential or ACP-content sentinel appeared in captured logs")
+            leaks = {
+                "bearer": TOKEN in nginx_logs or TOKEN in app_logs,
+                "bad_bearer": WRONG_TOKEN in nginx_logs or WRONG_TOKEN in app_logs,
+                "prompt": _task().task in nginx_logs or _task().task in app_logs,
+                "result": RESULT_SENTINEL in nginx_logs or RESULT_SENTINEL in app_logs,
+            }
+            if any(leaks.values()):
+                names = ",".join(name for name, present in leaks.items() if present)
+                raise RuntimeError("captured logs contain sentinel categories: " + names)
 
             return {
                 "status": "PASS",
                 "transport": "local WSS through pinned NGINX container",
                 "acp_methods": agent.methods,
                 "prompt_count": agent.prompt_count,
-                "untrusted_ca": rejected.code,
+                "security_probes": {
+                    "bad_bearer": bad_bearer.code,
+                    "missing_bearer": "rejected",
+                    "non_acp_path": "http_404",
+                    "wrong_hostname": wrong_hostname.code,
+                    "untrusted_ca": rejected.code,
+                },
+                "nginx_config_verified": {"tmp_paths": True, "no_8080_listener": True},
                 "secret_content_in_logs": False,
                 "live_jellii_or_aws": False,
             }
