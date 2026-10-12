@@ -1,9 +1,10 @@
 """One-task, no-model WSS/SG preflight before the ACP smoke admission.
 
 This is for the explicitly authorized P4-T4b one-off path only. It validates
-DNS pinning, TLS/hostname, auth rejection, route isolation, TCP/8080 denial,
-and an empty per-client DynamoDB TASK# partition before calling acp_smoke
-exactly once. It does not provision AWS resources.
+DNS pinning, TLS/hostname, auth rejection, route isolation, a Relay-side
+TCP/8080 reachability defense-in-depth probe, and an empty per-client DynamoDB
+TASK# partition before calling acp_smoke exactly once. A separate controller-side
+read-only SG gate verifies actual Jellii ingress; the Relay probe is not SG evidence.
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ import logging
 import os
 import socket
 import ssl
+import threading
 from typing import Callable, Mapping
 from urllib.parse import urlsplit, urlunsplit
 
@@ -39,7 +41,7 @@ NETWORK_PROBE_NAMES = (
     "missing_bearer",
     "invalid_bearer",
     "non_acp_path",
-    "relay_8080_unreachable",
+    "relay_8080_unreachable_from_relay",
 )
 PROBE_NAMES = ("client_partition_empty", *NETWORK_PROBE_NAMES)
 
@@ -304,6 +306,7 @@ async def _probe_non_acp_path(
 
 
 async def _probe_relay_port_8080_unreachable(dial_ip: str) -> None:
+    """Defense-in-depth reachability check; this cannot prove Jellii SG ingress."""
     writer = None
     try:
         reader, writer = await asyncio.wait_for(
@@ -322,7 +325,7 @@ async def _probe_relay_port_8080_unreachable(dial_ip: str) -> None:
             errno.EACCES,
         }:
             return
-        raise WssPreflightFailed("relay_8080_probe_inconclusive", "relay_8080_unreachable") from None
+        raise WssPreflightFailed("relay_8080_probe_inconclusive", "relay_8080_unreachable_from_relay") from None
     finally:
         if writer is not None:
             writer.close()
@@ -330,7 +333,7 @@ async def _probe_relay_port_8080_unreachable(dial_ip: str) -> None:
                 await writer.wait_closed()
             except OSError:
                 pass
-    raise WssPreflightFailed("relay_8080_reachable", "relay_8080_unreachable")
+    raise WssPreflightFailed("relay_8080_reachable", "relay_8080_unreachable_from_relay")
 
 
 async def run_network_probes(
@@ -402,8 +405,42 @@ async def run_network_probes(
     await _probe_non_acp_path(hostname, dial_ip, port, trusted)
     results["non_acp_path"] = "pass"
     await _probe_relay_port_8080_unreachable(dial_ip)
-    results["relay_8080_unreachable"] = "pass"
+    results["relay_8080_unreachable_from_relay"] = "pass"
     return results
+
+
+async def _await_bounded_blocking(function: Callable[[], object], timeout: float) -> object:
+    """Await blocking SDK work without letting a stuck worker hold process shutdown."""
+    loop = asyncio.get_running_loop()
+    result: asyncio.Future[object] = loop.create_future()
+
+    def resolve(value: object = None, error: Exception | None = None) -> None:
+        if result.done():
+            return
+        if error is None:
+            result.set_result(value)
+        else:
+            result.set_exception(error)
+
+    def publish(value: object = None, error: Exception | None = None) -> None:
+        try:
+            loop.call_soon_threadsafe(resolve, value, error)
+        except RuntimeError:
+            # The fail-closed caller may already have exited after the deadline.
+            pass
+
+    def worker() -> None:
+        try:
+            value = function()
+        except Exception as error:
+            publish(None, error)
+        else:
+            publish(value, None)
+
+    # A daemon worker may outlive a timed-out wait, but cannot hold the Relay
+    # process open. The preflight boto client also has finite socket/retry bounds.
+    threading.Thread(target=worker, name="t4b-ddb-guard", daemon=True).start()
+    return await asyncio.wait_for(result, timeout=timeout)
 
 
 async def run_preflight_smoke(
@@ -413,37 +450,54 @@ async def run_preflight_smoke(
     probe_runner: Callable[..., object] | None = None,
     smoke_runner: Callable[..., object] | None = None,
 ) -> WssPreflightReport:
-    """Run read-only network/queue probes, then the existing one-prompt ACP smoke once."""
+    """Run bounded read-only queue/network probes, then one ACP smoke."""
     try:
         url, hostname, port, expected_ip, ca_pem, client_id = _validate_configuration(environ)
-        smoke_environ = dict(environ)
-        smoke_environ["AMUSANT_CLIENT_ID"] = client_id
-        builder = store_builder or build_task_store
-        store = builder(smoke_environ, max_pending_tasks=1)
+    except WssPreflightFailed as error:
+        return WssPreflightReport(EXIT_CONFIG, {}, None, error.code)
+    except Exception:
+        return WssPreflightReport(EXIT_CONFIG, {}, None, "preflight_config_unavailable")
+
+    smoke_environ = dict(environ)
+    smoke_environ["AMUSANT_CLIENT_ID"] = client_id
+    builder = store_builder or build_task_store
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + PREFLIGHT_TIMEOUT_SECONDS
+    probes: dict[str, str] = {}
+
+    def check_client_partition() -> bool:
+        store = builder(smoke_environ, max_pending_tasks=1, preflight=True)
         has_client_tasks = getattr(store, "has_client_tasks", None)
         if not callable(has_client_tasks):
             raise WssPreflightFailed("task_store_queue_guard_unavailable")
-        if has_client_tasks(client_id):
+        return bool(has_client_tasks(client_id))
+
+    try:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise asyncio.TimeoutError
+        occupied = await _await_bounded_blocking(check_client_partition, remaining)
+        if occupied:
             return WssPreflightReport(
                 EXIT_FAILED, {"client_partition_empty": "failed"}, None, "client_partition_not_empty"
             )
+        probes["client_partition_empty"] = "pass"
     except WssPreflightFailed as error:
-        exit_code = EXIT_PREFLIGHT_FAILED if error.probe else EXIT_CONFIG
-        probes = {}
-        if error.code == "task_store_queue_guard_unavailable":
-            probes["client_partition_empty"] = "unknown"
-            exit_code = EXIT_FAILED
+        probes["client_partition_empty"] = "unknown"
+        exit_code = EXIT_FAILED if error.code == "task_store_queue_guard_unavailable" else EXIT_CONFIG
         return WssPreflightReport(exit_code, probes, None, error.code)
+    except asyncio.TimeoutError:
+        probes["client_partition_empty"] = "unknown"
+        return WssPreflightReport(EXIT_PREFLIGHT_FAILED, probes, None, "task_store_timeout")
     except Exception:
-        return WssPreflightReport(
-            EXIT_CONFIG, {"client_partition_empty": "unknown"}, None, "task_store_or_config_unavailable"
-        )
+        probes["client_partition_empty"] = "unknown"
+        return WssPreflightReport(EXIT_FAILED, probes, None, "task_store_or_config_unavailable")
 
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + PREFLIGHT_TIMEOUT_SECONDS
-    probes = {"client_partition_empty": "pass"}
     runner = probe_runner or run_network_probes
     try:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise asyncio.TimeoutError
         network_probes = await asyncio.wait_for(
             runner(
                 url=url,
@@ -453,7 +507,7 @@ async def run_preflight_smoke(
                 ca_pem=ca_pem,
                 deadline=deadline,
             ),
-            timeout=PREFLIGHT_TIMEOUT_SECONDS,
+            timeout=remaining,
         )
         probes.update(network_probes)
         if set(network_probes) != set(NETWORK_PROBE_NAMES) or any(

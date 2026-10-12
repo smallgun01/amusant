@@ -121,10 +121,12 @@ class Boto3DynamoLedgerTests(unittest.TestCase):
             self.assertFalse(store.has_client_tasks(CLIENT))
             self.assertEqual(len(capture.query_calls), 1)
             self.assertTrue(capture.query_calls[-1]["ConsistentRead"])
+            self.assertEqual(capture.query_calls[-1]["Limit"], 1)
 
             store.admit(_admit_request(str(uuid4())))
             self.assertTrue(store.has_client_tasks(CLIENT))
             self.assertTrue(capture.query_calls[-1]["ConsistentRead"])
+            self.assertEqual(capture.query_calls[-1]["Limit"], 1)
 
     def test_completed_item_round_trip_through_moto(self):
         try:

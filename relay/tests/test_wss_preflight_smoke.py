@@ -11,6 +11,7 @@ import shutil
 import socket
 import ssl
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -124,6 +125,35 @@ class WssPreflightSmokeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(probe_calls, [])
             self.assertEqual(smoke_calls, [])
             self.assertNotIn("hidden detail", json.dumps(asdict(report)))
+
+    async def test_slow_task_store_guard_times_out_before_network_or_smoke(self):
+        store = FakeStore()
+        release = threading.Event()
+        store.has_client_tasks = lambda client_id: (release.wait(0.2) or False)
+        probe_calls = []
+        smoke_calls = []
+
+        async def probes(**kwargs):
+            probe_calls.append(True)
+            return {name: "pass" for name in NETWORK_PROBE_NAMES}
+
+        async def smoke(environ):
+            smoke_calls.append(True)
+            return SmokeReport(EXIT_PASS, "task-id", "completed", "pending", None, True)
+
+        with patch("relay.wss_preflight_smoke.PREFLIGHT_TIMEOUT_SECONDS", 0.02):
+            report = await run_preflight_smoke(
+                self.environ(),
+                store_builder=lambda environ, **kwargs: store,
+                probe_runner=probes,
+                smoke_runner=smoke,
+            )
+        self.assertEqual(report.error, "task_store_timeout")
+        self.assertEqual(report.probes["client_partition_empty"], "unknown")
+        self.assertEqual(probe_calls, [])
+        self.assertEqual(smoke_calls, [])
+        # Let the bounded fake worker finish while its event loop is still alive.
+        await asyncio.sleep(0.22)
 
     async def test_network_probe_matrix_pins_tls_and_never_sends_prompt(self):
         loop = asyncio.get_running_loop()

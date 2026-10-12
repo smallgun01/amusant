@@ -45,6 +45,8 @@ class DynamoLedger(Protocol):
 
     def query_prefix(self, pk: str, sk_prefix: str) -> tuple[list[dict[str, object]], bool]: ...
 
+    def has_prefix(self, pk: str, sk_prefix: str) -> bool: ...
+
     def transact_put(
         self,
         puts: list[dict[str, object]],
@@ -113,6 +115,9 @@ class InMemoryDynamoLedger:
         ]
         truncated = len(rows) > QUERY_ITEM_BOUND
         return rows[:QUERY_ITEM_BOUND], truncated
+
+    def has_prefix(self, pk: str, sk_prefix: str) -> bool:
+        return any(part == pk and sort.startswith(sk_prefix) for part, sort in self.items)
 
     def transact_put(
         self,
@@ -587,10 +592,16 @@ class DynamoDbTaskStore:
             return sum(1 for row in self._task_rows() if row.get("outbox_state") == "pending")
 
     def has_client_tasks(self, client_id: str) -> bool:
-        """Strongly query this owner's complete TASK# partition, failing closed on truncation."""
+        """Strongly test whether this owner partition has any TASK# row."""
         if not isinstance(client_id, str) or not _ID_RE.fullmatch(client_id):
             raise AdmissionUnavailable("invalid_identity")
         if client_id != self._client_id:
             raise AdmissionUnavailable("invalid_identity")
         with self._lock:
-            return bool(self._task_rows())
+            has_prefix = getattr(self._ledger, "has_prefix", None)
+            if callable(has_prefix):
+                return bool(has_prefix(self._client_id, TASK_SK_PREFIX))
+            rows, truncated = self._ledger.query_prefix(self._client_id, TASK_SK_PREFIX)
+            if truncated:
+                raise AdmissionCapacity("task_capacity")
+            return bool(rows)

@@ -38,6 +38,7 @@ def build_task_store(
     environ: Mapping[str, str],
     *,
     max_pending_tasks: int | None = None,
+    preflight: bool = False,
 ) -> TaskStore:
     kind = (environ.get(TASK_STORE_ENV) or "sqlite").strip().lower()
     if max_pending_tasks is None:
@@ -61,6 +62,8 @@ def build_task_store(
     if not region:
         raise ValueError("AMUSANT_DDB_REGION or AWS_REGION must be set for DynamoDB")
     endpoint = (environ.get(DDB_ENDPOINT_ENV) or "").strip() or None
+    if preflight and endpoint:
+        raise ValueError("custom DynamoDB endpoints are forbidden for preflight")
     try:
         import boto3
     except ImportError as exc:
@@ -70,6 +73,15 @@ def build_task_store(
     kwargs: dict[str, object] = {"region_name": region}
     if endpoint:
         kwargs["endpoint_url"] = endpoint
+    if preflight:
+        from botocore.config import Config
+
+        kwargs["config"] = Config(
+            connect_timeout=2,
+            read_timeout=2,
+            retries={"total_max_attempts": 1, "mode": "standard"},
+            ignore_configured_endpoint_urls=True,
+        )
     client = boto3.client("dynamodb", **kwargs)
     return DynamoDbTaskStore(
         Boto3DynamoLedger(client, table),
