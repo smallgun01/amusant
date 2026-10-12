@@ -48,10 +48,11 @@ class AcpUncertainError(RuntimeError):
 
 def _is_allowed_destination(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """Allow loopback and RFC1918 only. Not a substitute for Security Group egress."""
-    if address.is_unspecified or address.is_link_local or address.is_multicast or address.is_reserved:
-        return False
+    # ipaddress classifies IPv6 ::1 as reserved; explicit loopback policy wins.
     if address.is_loopback:
         return True
+    if address.is_unspecified or address.is_link_local or address.is_multicast or address.is_reserved:
+        return False
     if address.version == 4:
         return any(address in network for network in _RFC1918)
     return False

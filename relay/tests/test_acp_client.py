@@ -237,6 +237,42 @@ class AcpClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured["server_hostname"], "jellii-acp.internal")
         self.assertIsNone(captured["proxy"])
 
+    async def test_dual_stack_localhost_answers_allow_ipv6_loopback(self):
+        agent = FakeAcpAgent()
+        server, ipv4_url = await self._serve(agent)
+        port = server.sockets[0].getsockname()[1]
+        url = ipv4_url.replace("127.0.0.1", "localhost")
+        executor = OpenAbAcpExecutor(
+            url=url,
+            auth_key=ACP_KEY,
+            cwd="/openab/work",
+            timeout_seconds=2,
+        )
+        loop = asyncio.get_running_loop()
+        system_getaddrinfo = loop.getaddrinfo
+        lookups = []
+
+        async def dual_stack_localhost(host, lookup_port, **kwargs):
+            if host == "localhost":
+                lookups.append((host, lookup_port))
+                return [
+                    (socket.AF_INET6, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("::1", lookup_port, 0, 0)),
+                    (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("127.0.0.1", lookup_port)),
+                ]
+            return await system_getaddrinfo(host, lookup_port, **kwargs)
+
+        try:
+            with patch.object(loop, "getaddrinfo", new=dual_stack_localhost):
+                outcome = await executor.execute(claimed_task())
+        finally:
+            server.close()
+            await server.wait_closed()
+
+        self.assertEqual((outcome.status, outcome.code), ("completed", "ok"))
+        self.assertEqual(lookups, [("localhost", port)])
+        self.assertEqual(agent.methods[:3], ["initialize", "session/new", "session/prompt"])
+        self.assertEqual(len(agent.prompts), 1)
+
     async def test_dns_timeout_fails_before_connect(self):
         dial_called = False
 
