@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
+import logging
 import math
 import socket
 import ssl
@@ -33,6 +34,11 @@ MAX_DETAILS_CHARS = 4096
 MAX_CARD_LINES = 4
 MAX_CARD_TITLE = 80
 MAX_PROMPT_CHARS = 4096
+
+# websockets DEBUG logs handshake headers and, depending on version, frame data.
+# Keep the transport logger at INFO even when the application's root is DEBUG.
+_ACP_WEBSOCKETS_LOGGER = logging.getLogger("amusant.acp.websocket")
+_ACP_WEBSOCKETS_LOGGER.setLevel(logging.INFO)
 
 
 class AcpUncertainError(RuntimeError):
@@ -164,6 +170,7 @@ class OpenAbAcpExecutor:
                 "additional_headers": {"Authorization": f"Bearer {self._auth_key}"},
                 "open_timeout": min(5.0, remaining),
                 "max_size": 64 * 1024,
+                "logger": _ACP_WEBSOCKETS_LOGGER,
             }
             if urlparse(self._url).scheme == "wss":
                 tls = ssl.create_default_context()
