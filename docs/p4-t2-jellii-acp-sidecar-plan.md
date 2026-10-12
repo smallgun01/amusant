@@ -38,48 +38,44 @@ AWS documents that containers in an awsvpc task share the task network namespace
 
 ## NGINX configuration proposal
 
-The custom sidecar image will use the official NGINX unprivileged image, pinned to a reviewed digest and mirrored to private ECR before any execute. The tag below is intentionally not a floating production pin. The unprivileged image's default site listens on 8080; the build must remove/replace that default site so it cannot collide with OpenAB's 8080 listener. The only NGINX listener in the image is 8443.
+Use the official NGINX unprivileged image, pinned by digest and mirrored to private ECR before any execute. The unprivileged image's default site listens on 8080; remove that default site to avoid colliding with OpenAB. Keep the vendor main nginx.conf, including pid /tmp/nginx.pid, client_body_temp_path /tmp/client_temp, proxy_temp_path /tmp/proxy_temp, and its other writable temp-path directives. Install the following **HTTP-context fragment** as /etc/nginx/conf.d/acp.conf. Do not put this fragment in nginx.conf because it has no top-level worker_processes/events/http sections. Before accepting a pinned image, run nginx -T to verify the main config includes conf.d inside http and retains the /tmp pid/temp paths. Then run nginx -t against the rendered config using only a disposable generated certificate/key in a local test container; do not commit or use the AWS secret for this offline check.
 
 ~~~nginx
-worker_processes auto;
-events {}
-http {
-    map $http_upgrade $connection_upgrade {
-        default upgrade;
-        ''      close;
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    listen 8443 ssl;
+    server_name REPLACE_PRIVATE_ACP_FQDN;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_certificate     /tmp/amusant-acp/server.crt;
+    ssl_certificate_key /tmp/amusant-acp/server.key;
+    access_log off;
+    error_log stderr warn;
+
+    location = /acp {
+        proxy_pass http://127.0.0.1:8080/acp;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Authorization $http_authorization;
+        proxy_read_timeout 130s;
+        proxy_send_timeout 130s;
+        proxy_buffering off;
     }
 
-    server {
-        listen 8443 ssl;
-        server_name REPLACE_PRIVATE_ACP_FQDN;
-        ssl_protocols TLSv1.2 TLSv1.3;
-        ssl_certificate     /tmp/amusant-acp/server.crt;
-        ssl_certificate_key /tmp/amusant-acp/server.key;
-        access_log off;
-        error_log stderr warn;
-
-        location = /acp {
-            proxy_pass http://127.0.0.1:8080/acp;
-            proxy_http_version 1.1;
-            proxy_set_header Host $host;
-            proxy_set_header Upgrade $http_upgrade;
-            proxy_set_header Connection $connection_upgrade;
-            proxy_set_header Authorization $http_authorization;
-            proxy_read_timeout 130s;
-            proxy_send_timeout 130s;
-            proxy_buffering off;
-        }
-
-        location / { return 404; }
-    }
+    location / { return 404; }
 }
 ~~~
 
-The startup wrapper will write the certificate and key from NGINX-container-only secret environment variables to a task-local directory with umask 077, unset those variables, then exec NGINX. Do not put certificate or private-key values in the image, command line, repository, access logs, or OpenAB container. The unprivileged NGINX UID must own/read those files. Fargate ephemeral storage encryption is available on platform 1.4.0+; the execution envelope must pin/verify a compatible platform. The image/config is not yet built or validated with nginx -t; that is a pre-deployment offline gate.
+The startup wrapper will write the certificate and key from NGINX-container-only secret environment variables to a task-local directory with umask 077, unset those variables, then run nginx -t and exec nginx -g 'daemon off;'. Do not put certificate or private-key values in the image, command line, repository, access logs, or OpenAB container. The unprivileged NGINX UID must own/read those files. Fargate ephemeral storage encryption is available on platform 1.4.0+; the execution envelope must pin/verify a compatible platform. The image/config is not yet built or validated against the pinned NGINX image; that remains a pre-deployment offline gate.
 
 ## Private DNS and certificates
 
-1. **DNS:** Register the NGINX container port 8443 with ECS service discovery (Cloud Map) in an owner-approved existing private DNS namespace. Proposed label: jellii-acp; final FQDN/SAN stays a placeholder until the namespace is selected. Do not create another Route 53 private hosted zone by default. No Service Connect proxy is needed for this direct DNS path.
+1. **DNS:** Create the Cloud Map private service with DnsConfig.DnsRecords = [{Type: A, TTL: 10}] in an owner-approved existing private DNS namespace. Use the task's private ENI IPv4; Relay uses the fixed port 8443 in wss://REPLACE_PRIVATE_ACP_FQDN:8443/acp, so it performs normal A/AAAA lookup, not SRV. The ECS serviceRegistries entry should contain only registryArn; omit containerName/containerPort because those are for SRV-style discovery. Do not create another Route 53 private hosted zone by default. No Service Connect proxy is needed for this direct DNS path. Before any prompt, wait until DiscoverInstances returns the current task and DNS from the Relay task resolves to its private IPv4. At cleanup, verify deregistration and allow the 10-second DNS TTL/cache window to expire; desiredCount 0 alone is not DNS cleanup evidence.
 2. **Certificate:** For the bounded one-off, use a short-lived, operator-controlled private CA; keep the CA private key off AWS and out of GitHub. Issue a leaf certificate whose SAN exactly matches the selected private DNS name. Store only the leaf certificate/key in a dedicated Secrets Manager secret and inject them into the NGINX container. Expire within the agreed short window; delete the leaf secret after the test unless the execute envelope explicitly chooses to keep it.
 3. **Relay trust prerequisite:** Current OpenAbAcpExecutor builds the system default TLS context; it has no explicit private-CA configuration. Before AWS execution, a separate code change must add an optional PEM trust anchor (proposed AMUSANT_ACP_CA_PEM) using SSLContext.load_verify_locations(cadata=...) so system roots remain intact. Root CA PEM is public trust material, not a private key. Add tests for valid CA/SAN and wrong CA/name; never replace the system bundle with a private-only bundle or disable hostname verification.
 4. **Rotation:** ECS Secrets Manager environment injection is a task-start snapshot; changing a secret does not update a running task. For this one-off, rotate by replacing the task and use short-lived credentials. Automated renewal/rotation for an always-on service is out of scope and requires a separate design.
@@ -116,18 +112,15 @@ This is a **patch design**, not a registrable task definition. Preserve the curr
     }
   },
   "serviceChanges": {
-    "serviceRegistries": [{
-      "registryArn": "REPLACE_CLOUD_MAP_SERVICE_ARN",
-      "containerName": "acp-wss-proxy",
-      "containerPort": 8443
-    }],
+    "cloudMapDnsConfig": {"DnsRecords": [{"Type": "A", "TTL": 10}]},
+    "serviceRegistries": [{"registryArn": "REPLACE_CLOUD_MAP_SERVICE_ARN"}],
     "securityGroups": ["REPLACE_DEDICATED_JELLII_SG"],
     "desiredCountOutsideTest": 0
   }
 }
 ~~~
 
-The proxy’s 64 CPU / 64 MiB reservation and 128 MiB limit are starting design values, not measured capacity evidence; validate during the bounded test and keep the task within its existing 512/1024 Fargate size unless evidence requires a separately costed change. The dedicated task execution role must preserve the existing Jellii ECR/log/secret reads and add only the one certificate secret; do not widen a shared execution policy. Keep taskRoleArn omitted, ECS Exec disabled, and the OpenAB agent’s tool/egress boundary unchanged.
+Read-only task-definition baseline: the OpenAB container has cpu=0 and no explicit memory or memoryReservation; task-level CPU/memory are 512/1024. The proposed proxy cpu=64, memoryReservation=64 MiB, memory=128 MiB fits nominally, but before RegisterTaskDefinition re-read the exact values and validate ECS/Fargate reservation arithmetic. If invalid, get a separately costed task-size approval before registration. The dedicated task execution role must preserve existing Jellii ECR/log/secret reads and add only the certificate secret; do not widen a shared execution policy. Keep taskRoleArn omitted, ECS Exec disabled, and the OpenAB agent’s tool/egress boundary unchanged.
 
 ## 8080 isolation and network rules
 
@@ -160,7 +153,7 @@ On failure: stop A, set Jellii desiredCount to its preflight value (0), restore 
 ## References
 
 - [AWS ECS awsvpc networking](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-networking-awsvpc.html) — same-task localhost and per-task ENI.
-- [AWS ECS service discovery](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/service-discovery.html) — Cloud Map DNS registration.
+- [AWS ECS service discovery](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/service-discovery.html), [Cloud Map DnsRecord](https://docs.aws.amazon.com/cloud-map/latest/api/API_DnsRecord.html), and [ECS ServiceRegistry](https://docs.aws.amazon.com/AmazonECS/latest/APIReference/API_ServiceRegistry.html) — private A-record registration, TTL, and SRV fields.
 - [ECS Secrets Manager environment injection](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/secrets-envvar-secrets-manager.html) — task execution role and task replacement required after rotation.
 - [Fargate task storage](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/fargate-task-storage.html) — ephemeral storage encryption behavior.
 - [NGINX WebSocket proxying](https://nginx.org/en/docs/http/websocket.html) and [NGINX unprivileged image](https://github.com/nginx/docker-nginx-unprivileged).
