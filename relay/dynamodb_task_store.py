@@ -98,6 +98,7 @@ class InMemoryDynamoLedger:
     def __init__(self) -> None:
         self.items: dict[tuple[str, str], dict[str, object]] = {}
         self.ambiguous_next = False
+        self.ambiguous_after_commit = False
 
     def get_item(self, pk: str, sk: str, *, consistent: bool = True) -> dict[str, object] | None:
         del consistent
@@ -128,6 +129,9 @@ class InMemoryDynamoLedger:
         for item in puts:
             key = (str(item["pk"]), str(item["sk"]))
             self.items[key] = {k: v for k, v in item.items() if v is not None}
+        if self.ambiguous_after_commit:
+            self.ambiguous_after_commit = False
+            raise LedgerAmbiguous()
 
     def update_item(
         self,
@@ -258,7 +262,10 @@ class DynamoDbTaskStore:
                 raise AdmissionConflict("call_id_conflict") from exc
             raise AdmissionUnavailable("task_store_unavailable") from exc
         except LedgerAmbiguous as exc:
-            again = self._ledger.get_item(request.client_id, dedup_sk, consistent=True)
+            try:
+                again = self._ledger.get_item(request.client_id, dedup_sk, consistent=True)
+            except (AdmissionUnavailable, LedgerAmbiguous):
+                raise AdmissionUnknown("acceptance_unconfirmed") from exc
             if again is not None and again.get("payload_sha256") == fingerprint:
                 return AdmissionReceipt(task_id=str(again["task_id"]), duplicate=True)
             raise AdmissionUnknown("acceptance_unconfirmed") from exc
@@ -277,7 +284,7 @@ class DynamoDbTaskStore:
             pk = str(row["pk"])
             sk = str(row["sk"])
             if row.get("dispatch_started_at"):
-                self._ledger.update_item(
+                updated = self._ledger.update_item(
                     pk,
                     sk,
                     {
@@ -288,6 +295,7 @@ class DynamoDbTaskStore:
                     },
                     condition="claimed_started",
                 )
+                self._align_dedup_ttl(updated)
                 uncertain += 1
             else:
                 self._ledger.update_item(

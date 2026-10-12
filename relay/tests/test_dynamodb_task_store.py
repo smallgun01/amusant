@@ -10,6 +10,7 @@ from relay.dynamodb_task_store import DynamoDbTaskStore, InMemoryDynamoLedger
 from relay.task_store import (
     AdmissionCapacity,
     AdmissionConflict,
+    AdmissionUnavailable,
     AdmissionUnknown,
     BoundedTaskResult,
     TaskAdmissionRequest,
@@ -90,6 +91,41 @@ class DynamoDbTaskStoreTests(unittest.TestCase):
         ledger.ambiguous_next = True
         with self.assertRaises(AdmissionUnknown):
             store.admit(_request(str(uuid4())))
+        self.assertEqual(store.pending_dispatch_count(), 0)
+
+    def test_ambiguous_after_commit_returns_matching_receipt(self):
+        ledger, store = _store()
+        task_id = str(uuid4())
+        ledger.ambiguous_after_commit = True
+        receipt = store.admit(_request(task_id))
+        self.assertEqual(receipt.task_id, task_id)
+        self.assertTrue(receipt.duplicate)
+        self.assertEqual(store.pending_dispatch_count(), 1)
+        again = store.admit(_request(task_id))
+        self.assertTrue(again.duplicate)
+        self.assertEqual(again.task_id, task_id)
+        self.assertEqual(store.pending_dispatch_count(), 1)
+
+    def test_ambiguous_reconcile_read_failure_stays_unknown(self):
+        ledger, store = _store()
+        task_id = str(uuid4())
+        ledger.ambiguous_after_commit = True
+        original = ledger.get_item
+        calls = {"n": 0}
+
+        def selective(pk, sk, *, consistent=True):
+            calls["n"] += 1
+            if calls["n"] >= 2:
+                raise AdmissionUnavailable("task_store_unavailable")
+            return original(pk, sk, consistent=consistent)
+
+        ledger.get_item = selective  # type: ignore[method-assign]
+        try:
+            with self.assertRaises(AdmissionUnknown):
+                store.admit(_request(task_id))
+        finally:
+            ledger.get_item = original  # type: ignore[method-assign]
+        self.assertEqual(store.pending_dispatch_count(), 1)
 
     def test_recovery_requeues_unsent_and_uncertains_started(self):
         ledger, store = _store()
@@ -107,6 +143,10 @@ class DynamoDbTaskStoreTests(unittest.TestCase):
         self.assertEqual(store.get_by_task_id(unsent)["status"], "queued")
         self.assertEqual(store.get_by_task_id(started)["status"], "uncertain")
         self.assertTrue(store.get_by_task_id(started)["dispatch_started"])
+        task = ledger.get_item(CLIENT, f"TASK#{started}")
+        dedup = ledger.get_item(CLIENT, f"DEDUP#{CONVERSATION}#2#started")
+        self.assertEqual(task["retain_until"], dedup["retain_until"])
+        self.assertGreater(task["retain_until"], int(NOW.timestamp()) + 86400)
 
     def test_expired_lease_does_not_resend_after_dispatch_started(self):
         ledger, store = _store()

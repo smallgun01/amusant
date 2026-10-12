@@ -1,16 +1,24 @@
 """boto3 DynamoDB ledger. Does not create tables."""
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
 from .dynamodb_task_store import (
+    DEDUP_SK_PREFIX,
     QUERY_ITEM_BOUND,
     LedgerAmbiguous,
     LedgerConditionFailed,
 )
 from .task_store import AdmissionUnavailable
+
+_AMBIGUOUS_WRITE_CODES = {
+    "InternalServerError",
+    "ServiceUnavailable",
+    "TransactionConflictException",
+}
 
 _CONDITIONS = {
     "exists": "attribute_exists(pk)",
@@ -24,6 +32,41 @@ _CONDITIONS = {
         "OR delivery_state = :ds_notified"
     ),
 }
+
+
+def _error_code(exc: ClientError) -> str | None:
+    return (exc.response.get("Error") or {}).get("Code")
+
+
+def _http_status(exc: ClientError) -> int | None:
+    status = (exc.response.get("ResponseMetadata") or {}).get("HTTPStatusCode")
+    return status if isinstance(status, int) else None
+
+
+def _client_request_token(puts: list[dict[str, object]]) -> str:
+    if not puts:
+        return ""
+    target = next(
+        (item for item in puts if str(item.get("sk") or "").startswith(DEDUP_SK_PREFIX)),
+        puts[0],
+    )
+    raw = f"{target.get('pk')}|{target.get('sk')}|{target.get('payload_sha256')}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
+def _raise_transact_error(exc: ClientError) -> None:
+    code = _error_code(exc)
+    if code == "TransactionCanceledException":
+        reasons = exc.response.get("CancellationReasons") or []
+        if any((reason or {}).get("Code") == "ConditionalCheckFailed" for reason in reasons):
+            raise LedgerConditionFailed() from exc
+        raise LedgerAmbiguous() from exc
+    if code in _AMBIGUOUS_WRITE_CODES:
+        raise LedgerAmbiguous() from exc
+    status = _http_status(exc)
+    if status is not None and status >= 500:
+        raise LedgerAmbiguous() from exc
+    raise AdmissionUnavailable("task_store_unavailable") from exc
 
 
 class Boto3DynamoLedger:
@@ -49,7 +92,7 @@ class Boto3DynamoLedger:
         try:
             return getattr(self._client, method)(**kwargs)
         except ClientError as exc:
-            code = (exc.response.get("Error") or {}).get("Code")
+            code = _error_code(exc)
             if code in {"ConditionalCheckFailedException", "TransactionCanceledException"}:
                 raise LedgerConditionFailed() from exc
             if code in {"TransactionConflictException"}:
@@ -105,18 +148,16 @@ class Boto3DynamoLedger:
                     }
                 }
             )
+        kwargs: dict[str, object] = {"TransactItems": items}
+        token = _client_request_token(puts)
+        if token:
+            kwargs["ClientRequestToken"] = token
         try:
-            self._client.transact_write_items(TransactItems=items)
+            self._client.transact_write_items(**kwargs)
         except ClientError as exc:
-            code = (exc.response.get("Error") or {}).get("Code")
-            if code == "TransactionCanceledException":
-                reasons = exc.response.get("CancellationReasons") or []
-                if any((reason or {}).get("Code") == "ConditionalCheckFailed" for reason in reasons):
-                    raise LedgerConditionFailed() from exc
-                raise LedgerAmbiguous() from exc
-            if code == "TransactionConflictException":
-                raise LedgerAmbiguous() from exc
-            raise AdmissionUnavailable("task_store_unavailable") from exc
+            _raise_transact_error(exc)
+        except BotoCoreError as exc:
+            raise LedgerAmbiguous() from exc
 
     def update_item(
         self,

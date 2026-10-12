@@ -7,7 +7,7 @@
 
 ## 目前狀態
 
-**P0 — Foundation：完成。P1 — Kai-sim mock 音訊 smoke：PASS。P2 — Fast Voice：PASS（2026-10-09 runtime gate）。P3.0 — authenticated OpenAB ACP/model + one-off Worker feasibility smoke：PASS only under explicitly accepted, task-bounded risk; not production acceptance. P3.1–P3.4 squash-merged. P4-A1 live one-off PASS（2026-10-12）. ADR-0002 accepted. Store-ready Relay (PR #19): TaskStore protocol, fake ledger + boto3 ledger, CLI sqlite/dynamodb switch, Dockerfile + taskdef template. Offline Relay 80/80, Fast Voice 52/52. No table, no IAM create, no live DynamoDB write. Not TLS, not 24/7, not device ingress。
+**P0 — Foundation：完成。P1 — Kai-sim mock 音訊 smoke：PASS。P2 — Fast Voice：PASS（2026-10-09 runtime gate）。P3.0 — authenticated OpenAB ACP/model + one-off Worker feasibility smoke：PASS only under explicitly accepted, task-bounded risk; not production acceptance. P3.1–P3.4 squash-merged. P4-A1 live one-off PASS（2026-10-12）. ADR-0002 accepted. Store-ready Relay (PR #19): TaskStore protocol, fake ledger + boto3 ledger, CLI sqlite/dynamodb switch, Dockerfile + taskdef template. Offline Relay 86/86, Fast Voice 52/52. No table, no IAM create, no live DynamoDB write. Not TLS, not 24/7, not device ingress。
 
 ## 已確認決策
 
