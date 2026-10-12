@@ -39,6 +39,11 @@ def run_get(environ) -> GetReport:
     try:
         if environ.get("AMUSANT_LIVE_PROVIDER") == "gemini":
             raise ValueError("store get must not enable Gemini Live")
+        kind = (environ.get("AMUSANT_TASK_STORE") or "").strip().lower()
+        if kind != "dynamodb":
+            raise ValueError("AMUSANT_TASK_STORE must be dynamodb")
+        if (environ.get("AMUSANT_DDB_ENDPOINT") or "").strip():
+            raise ValueError("AMUSANT_DDB_ENDPOINT is not allowed for store_get proof")
         task_id = _task_id(environ)
         store = build_task_store(environ)
     except (ValueError, TypeError, AttributeError):

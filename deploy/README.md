@@ -21,11 +21,11 @@ The taskdef defaults to fail-closed `wss://` via `AMUSANT_ACP_URL=REPLACE_ACP_WS
 
 See `../docs/p4-durability-one-off.md`. These files do not create AWS resources:
 
-- `amusant-task-ledger.table.json`
-- `amusant-relay-task-role.iam.json`
-- `amusant-store-reader.iam.json`
+- `amusant-task-ledger.table.json` (PAY_PER_REQUEST + `REPLACE_MAX_*` on-demand caps)
+- `amusant-relay-task-role.iam.json` and `.trust.json`
+- `amusant-store-reader.iam.json` and `.trust.json`
 - `oab-amusant-relay-dynamodb.taskdef.json`
-- After-stop reader: `python -m relay.store_get`
+- After-stop reader: `python -m relay.store_get` (DynamoDB only; no custom endpoint)
 
 ## Not in this package
 
