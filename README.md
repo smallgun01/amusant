@@ -28,5 +28,6 @@ Amusant respects [zbruceli/kai](https://github.com/zbruceli/kai) as the source f
 ## Current stage
 
 - **P0–P2 complete.** Historical Live/Kai-sim counts and billing caveats live in `STATUS.md`.
-- **P3.1–P3.4 squash-merged.** Offline Fast Voice 52/52, Relay 54/54. Spoken Gemini tool-disabled delivery remains unproven.
-- **P4-A1 live one-off PASS (2026-10-12).** Real Dispatcher/Inbox against Jellii, one ACP `session/prompt`, then Jellii returned to 0/0/0. Same-SG plaintext `ws://` `/acp` is a one-off risk exception, not TLS or production transport. Not replacement-safe storage, not 24/7 Relay, not device ingress. An external Task Store remains unapproved. Evidence: `STATUS.md`.
+- **P3.1–P3.4 squash-merged.** Offline Fast Voice 52/52. Spoken Gemini tool-disabled delivery remains unproven.
+- **P4-A1 live one-off PASS (2026-10-12).** Real Dispatcher/Inbox against Jellii, one ACP `session/prompt`, then Jellii returned to 0/0/0. Same-SG plaintext `ws://` `/acp` is a one-off risk exception, not TLS. Evidence: `STATUS.md`.
+- **ADR-0002 accepted.** Store-ready Relay: `TaskStore`, fake ledger + boto3 ledger, `AMUSANT_TASK_STORE=sqlite|dynamodb`, Dockerfile + taskdef template. Offline Relay 86/86. No table. CLI default remains SQLite.

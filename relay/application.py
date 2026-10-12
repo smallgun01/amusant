@@ -29,12 +29,15 @@ from .slow_path import (
 )
 from .acp_client import load_acp_executor
 from .dispatcher import AsyncDispatcher
-from .task_store import SQLiteTaskStore, TASK_KINDS
+from .store_factory import build_task_store
+from .task_store import TASK_KINDS
 
 ProviderClientFactory = Callable[..., Any]
 CLIENT_ID_ENV = "AMUSANT_CLIENT_ID"
 BACKEND_ID_ENV = "AMUSANT_BACKEND_ID"
 TASK_DB_ENV = "AMUSANT_TASK_DB"
+TASK_STORE_ENV = "AMUSANT_TASK_STORE"
+DDB_TABLE_ENV = "AMUSANT_DDB_TABLE"
 DEFAULT_TASK_KIND_ENV = "AMUSANT_DEFAULT_TASK_KIND"
 MAX_TASK_TTL_ENV = "AMUSANT_MAX_TASK_TTL_SECONDS"
 MAX_PENDING_TASKS_ENV = "AMUSANT_MAX_PENDING_TASKS"
@@ -50,7 +53,8 @@ _PROCESS_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 class RelayProcessConfig:
     expected_device_token: str
     authenticated_client_id: str
-    database_path: Path
+    task_store_kind: str
+    database_path: Path | None
     backend_id: str
     default_task_kind: str
     max_task_ttl_seconds: int
@@ -94,7 +98,7 @@ def load_relay_process_config(
     *,
     expected_device_token: str,
 ) -> RelayProcessConfig:
-    """Fail closed unless server-owned identity, backend, and SQLite path are explicit."""
+    """Fail closed unless server-owned identity, backend, and store config are explicit."""
     if not isinstance(expected_device_token, str) or len(expected_device_token) < 12:
         raise ValueError("AMUSANT_DEVICE_TOKEN must contain at least 12 characters")
     client_id = _require_env(environ, CLIENT_ID_ENV)
@@ -109,10 +113,21 @@ def load_relay_process_config(
     default_task_kind = default_task_kind.strip()
     if default_task_kind not in TASK_KINDS:
         raise ValueError("AMUSANT_DEFAULT_TASK_KIND must be research, compare, or summarize")
+    store_kind = (environ.get(TASK_STORE_ENV) or "sqlite").strip().lower() or "sqlite"
+    if store_kind not in {"sqlite", "dynamodb"}:
+        raise ValueError("AMUSANT_TASK_STORE must be sqlite or dynamodb")
+    database_path: Path | None
+    if store_kind == "sqlite":
+        database_path = Path(_require_env(environ, TASK_DB_ENV))
+    else:
+        database_path = None
+        if not isinstance(environ.get(DDB_TABLE_ENV), str) or not str(environ.get(DDB_TABLE_ENV)).strip():
+            raise ValueError("AMUSANT_DDB_TABLE must be set for DynamoDB")
     return RelayProcessConfig(
         expected_device_token=expected_device_token,
         authenticated_client_id=client_id,
-        database_path=Path(_require_env(environ, TASK_DB_ENV)),
+        task_store_kind=store_kind,
+        database_path=database_path,
         backend_id=backend_id,
         default_task_kind=default_task_kind,
         max_task_ttl_seconds=_optional_positive_int(
@@ -208,10 +223,7 @@ def build_supported_relay_runtime(
 ):
     """Build handler plus optional ACP dispatcher. Missing ACP config skips ACP."""
     config = load_relay_process_config(environ, expected_device_token=expected_device_token)
-    store = SQLiteTaskStore(
-        database_path=config.database_path,
-        max_pending_tasks=config.max_pending_tasks,
-    )
+    store = build_task_store(environ, max_pending_tasks=config.max_pending_tasks)
     store.recover_after_restart()
     handler = build_relay_handler(
         expected_device_token=config.expected_device_token,

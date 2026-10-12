@@ -101,6 +101,52 @@ class AcpSmokeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(second.exit_code, EXIT_PASS)
             self.assertNotEqual(first.task_id, second.task_id)
 
+    async def test_dynamodb_run_smoke_pass_keeps_pending_inbox(self):
+        try:
+            import boto3
+            from moto import mock_aws
+        except ImportError:
+            self.skipTest("moto/boto3 not installed")
+        with mock_aws():
+            client = boto3.client("dynamodb", region_name="us-east-1")
+            client.create_table(
+                TableName="amusant-task-ledger",
+                AttributeDefinitions=[
+                    {"AttributeName": "pk", "AttributeType": "S"},
+                    {"AttributeName": "sk", "AttributeType": "S"},
+                ],
+                KeySchema=[
+                    {"AttributeName": "pk", "KeyType": "HASH"},
+                    {"AttributeName": "sk", "KeyType": "RANGE"},
+                ],
+                BillingMode="PAY_PER_REQUEST",
+            )
+            client.get_waiter("table_exists").wait(TableName="amusant-task-ledger")
+            agent = FakeAcpAgent()
+            server, url = await self._serve(agent)
+            env = {
+                "AMUSANT_CLIENT_ID": "authenticated-client-1",
+                "AMUSANT_BACKEND_ID": "openab",
+                "AMUSANT_TASK_STORE": "dynamodb",
+                "AMUSANT_DDB_TABLE": "amusant-task-ledger",
+                "AMUSANT_DDB_REGION": "us-east-1",
+                "AMUSANT_ACP_URL": url,
+                "AMUSANT_ACP_AUTH_KEY": ACP_KEY,
+                "AMUSANT_ACP_CWD": "/openab/work",
+                "AMUSANT_SMOKE_TASK": "Compare two local laptop options.",
+            }
+            try:
+                report = await run_smoke(env)
+            finally:
+                server.close()
+                await server.wait_closed()
+            self.assertEqual(report.exit_code, EXIT_PASS)
+            self.assertEqual(report.status, "completed")
+            self.assertEqual(report.delivery_state, "pending")
+            self.assertTrue(report.has_result)
+            self.assertEqual(agent.methods[:3], ["initialize", "session/new", "session/prompt"])
+            self.assertEqual(agent.methods.count("session/prompt"), 1)
+
     async def test_invalid_db_path_is_config_error(self):
         report = await run_smoke(self._env("ws://127.0.0.1:9/acp", "relative.sqlite3"))
         self.assertEqual(report.exit_code, EXIT_CONFIG)

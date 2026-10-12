@@ -40,7 +40,7 @@
 | P1 | kai-sim software smoke | 3–5 工作日 | LAN 主機列舉麥克風／喇叭並以 Kai kai-sim 連到 private host mock probe，完成 PTT PCM 收音、文字卡片及 tone/echo 播放。無需 M5、Live provider、OpenClaw 或 AWS。此 probe 是測試工具，不是完整 Kai relay／正式 Amusant Relay；4 個單元測試、真實跨 LAN 音訊閉環與一次重連 smoke PASS。使用者回報 release-to-first-audio 及重連均 <1 s（手動估計、樣本數未記）；正式 p50/p95 latency 留待 P4。 |
 | P2 | Fast voice | 1–2 工程週 | Gemini Live baseline、手動 provider selection、adapter contract 通過；local Kai `/ws`/PTT→Live bridge、fake-provider tests、TTS smoke 均 PASS。**2026-10-09 P2 runtime exit PASS**：same-LAN Kai-sim 收到真實 PTT PCM、Live turn 完成、輸出 PCM，使用者確認喇叭完整播放。此 gate 不含 AWS deployment、OpenClaw slow lane 或硬體。第二 Live provider 可選，只作 abstraction validation。 |
 | P3 | OpenAB ACP slow path（local） | 待重新估時 | P3.1–P3.4 squash-merged. Offline Fast Voice 52/52 and Relay 54/54 PASS. Spoken Gemini tool-disabled delivery remains unproven. |
-| P4 | Two-ECS software integration / AWS staging | 待重估 | P4-A1 live one-off PASS (2026-10-12). Continue one-off. ADR-0002 proposes a DynamoDB Task Ledger/Inbox (design only, no table). A2 24/7 Relay is not automatic. Device ingress remains separate. |
+| P4 | Two-ECS software integration / AWS staging | 待重估 | P4-A1 live one-off PASS (2026-10-12). ADR-0002 accepted. Store-ready Relay code (sqlite/dynamodb switch, boto3, Dockerfile/taskdef) is offline; no table. Next live envelope is write/read-after-stop. A2 24/7 is not automatic. |
 | H0 | Hardware UX Gate | P4 後估算 | 比較專用裝置與最佳化手機流程；只有明顯降低摩擦才繼續。 |
 | H1 | Hardware integration | H0 通過後估算 | 使用 Kai-derived M5StickS3 firmware 驗證裝置音訊、PTT、網路與可靠性；不修改 Kai 上游，除非另行核准。 |
 

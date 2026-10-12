@@ -1,6 +1,6 @@
 # ADR 0002 — External Task Store (design, unapproved)
 
-**Status:** Proposed. Documentation only. This ADR does **not** create a DynamoDB table, IAM role, VPC endpoint, or paid AWS resource.
+**Status:** Accepted as design (PR #18). Offline adapter code may follow without creating a DynamoDB table, IAM role, VPC endpoint, or paid AWS resource.
 
 **Date:** 2026-10-12
 
@@ -134,6 +134,6 @@ On-demand DynamoDB for a handful of items is typically cents, not the model bill
 
 ## 9. Consequences
 
-- Next *code* slice (after this ADR is accepted as design, still before table): a `TaskStore` protocol implemented by SQLite and a DynamoDB adapter, with fake-endpoint tests covering latest-by-`created_at`, `claim_due` oldest-queued, `max_pending_tasks`, `dispatch_started_at` recovery, DEDUP ambiguous commit, and TTL epoch type. No AWS create in that PR unless Arthur's envelope says so.
+- *Code slice:* `TaskStore` protocol + `DynamoDbTaskStore` over a fake ledger or boto3 client. CLI selects sqlite/dynamodb by env. Dockerfile and taskdef templates are versioned. Default remains SQLite. No CreateTable unless Arthur's envelope says so.
 - Next *AWS* slice: explicit envelope for table + task role + one-off write/read-after-stop.
 - Reject expanding the table into chat memory, artifacts, or audio.

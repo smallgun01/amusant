@@ -10,12 +10,12 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
 import os
-from pathlib import Path
 import re
 from uuid import uuid4
 
 from .acp_client import load_acp_executor
 from .dispatcher import AsyncDispatcher
+from .store_factory import build_task_store
 from .task_store import (
     MAX_TASK_CHARS,
     TASK_KINDS,
@@ -23,7 +23,6 @@ from .task_store import (
     AdmissionConflict,
     AdmissionUnavailable,
     AdmissionUnknown,
-    SQLiteTaskStore,
     TaskAdmissionRequest,
 )
 
@@ -71,19 +70,16 @@ async def run_smoke(environ) -> SmokeReport:
         backend_id = environ.get("AMUSANT_BACKEND_ID")
         if not isinstance(backend_id, str) or not backend_id.strip() or len(backend_id.strip()) > 64:
             raise ValueError("AMUSANT_BACKEND_ID must be set")
-        db_raw = environ.get("AMUSANT_TASK_DB")
-        if not isinstance(db_raw, str) or not db_raw.strip():
-            raise ValueError("AMUSANT_TASK_DB must be an absolute SQLite path")
         task_text, task_kind = _smoke_task(environ)
         executor = load_acp_executor(environ)
         if executor is None:
             raise ValueError("ACP executor requires AMUSANT_ACP_URL, AMUSANT_ACP_AUTH_KEY, and AMUSANT_ACP_CWD")
+        store = build_task_store(environ, max_pending_tasks=1)
     except ValueError:
         return SmokeReport(EXIT_CONFIG, None, None, None, "invalid_config", False)
 
     task_id = str(uuid4())
     try:
-        store = SQLiteTaskStore(database_path=Path(db_raw.strip()), max_pending_tasks=1)
         store.recover_after_restart()
         now = datetime.now(timezone.utc)
         receipt = store.admit(
