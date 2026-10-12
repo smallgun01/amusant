@@ -135,5 +135,5 @@ On-demand DynamoDB for a handful of items is typically cents, not the model bill
 ## 9. Consequences
 
 - *Code slice:* Store-ready Relay is on main (PR #19). Default remains SQLite. Application code never calls CreateTable.
-- *Durability envelope:* `docs/p4-durability-one-off.md` plus table/IAM/taskdef templates and `python -m relay.store_get`. Filling the envelope is not execute. Execute still requires Arthur to name spend caps and say to run.
+- *Durability one-off:* executed 2026-10-12. Functional PASS is recorded in `STATUS.md`. Table kept. 24/7 Relay is not authorized by that proof.
 - Reject expanding the table into chat memory, artifacts, or audio.

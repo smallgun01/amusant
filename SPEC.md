@@ -275,7 +275,7 @@ This is **Task History**, not general chat memory. Agent memory and scratchpad r
 ### Storage implementation
 
 - **Local/offline P3:** Existing SQLite atomic admission/outbox implementation is preserved. P3.2–P3.4 will add state transitions, recovery and result records. SQLite can remain the automated-test backend.
-- **Target AWS:** Use **external durable storage** to survive ECS task replacement. **DynamoDB is the recommended candidate** for a small single-owner ledger and Inbox. ADR-0002 is the design proposal; it does **not** approve provisioning. A table, task role, and write/read-after-stop proof remain separately gated.
+- **Target AWS:** Use **external durable storage** to survive ECS task replacement. **DynamoDB** is the ledger. ADR-0002 is accepted. The 2026-10-12 durability one-off PASS proved write → A STOPPED → strongly consistent `GetItem`/`store_get`. 24/7 Relay, TLS cutover, and device ingress remain separately gated.
 - **SQS is not required** for the initial one-Relay, low-volume Dispatcher. Wake the in-process Dispatcher on admission and recover eligible queued tasks on startup / bounded periodic scan.
 - Storing data in an external service does not make the Relay heavyweight: it performs a handful of small records per task, not model inference or agent execution.
 

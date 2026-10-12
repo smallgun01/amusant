@@ -1,6 +1,6 @@
 # P4 durability one-off envelope
 
-**Status:** templates + offline reader. Merging this document is **not** CreateTable, IAM, ECR, Fargate, or Jellii scale.
+**Status:** envelope executed 2026-10-12. Live write/stop/`store_get` PASS is in `STATUS.md`. This file remains the one-off contract; it is not 24/7, TLS, or device-ingress approval.
 
 This is ADR-0002 §6: write a completed bounded Inbox row through the real Dispatcher/ACP path, stop A, then strongly consistent `GetItem` still returns it.
 
