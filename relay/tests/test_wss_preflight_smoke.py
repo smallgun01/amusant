@@ -20,6 +20,7 @@ from websockets.http11 import Headers, Response
 
 from relay.acp_smoke import EXIT_PASS, SmokeReport
 from relay.devtools.nginx_sidecar_smoke import WssProxyTests
+from relay.task_store import AdmissionCapacity
 from relay.wss_preflight_smoke import (
     NETWORK_PROBE_NAMES,
     PROBE_NAMES,
@@ -97,7 +98,11 @@ class WssPreflightSmokeTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(store.checked[0].startswith("p4-t4b-"))
 
     async def test_nonempty_or_unreadable_client_partition_stops_before_probes(self):
-        for store in (FakeStore(occupied=True), FakeStore(error=RuntimeError("hidden detail"))):
+        for store in (
+            FakeStore(occupied=True),
+            FakeStore(error=AdmissionCapacity("task_capacity")),
+            FakeStore(error=RuntimeError("hidden detail")),
+        ):
             probe_calls = []
             smoke_calls = []
 
