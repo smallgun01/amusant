@@ -14,6 +14,8 @@ class NginxSidecarPackagingTests(unittest.TestCase):
             r"(?m)^FROM public\.ecr\.aws/nginx/nginx-unprivileged@sha256:[0-9a-f]{64}$",
         )
         self.assertIn("USER 101:101", dockerfile)
+        self.assertIn("ARG GIT_SHA", dockerfile)
+        self.assertIn("org.opencontainers.image.revision=$GIT_SHA", dockerfile)
         self.assertIn("rm -f /etc/nginx/conf.d/default.conf", dockerfile)
 
     def test_only_acp_tls_listener_and_loopback_backend_are_configured(self):
