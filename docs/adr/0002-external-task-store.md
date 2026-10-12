@@ -134,6 +134,6 @@ On-demand DynamoDB for a handful of items is typically cents, not the model bill
 
 ## 9. Consequences
 
-- *Code slice:* `TaskStore` protocol + `DynamoDbTaskStore` over a fake ledger or boto3 client. CLI selects sqlite/dynamodb by env. Dockerfile and taskdef templates are versioned. Default remains SQLite. No CreateTable unless Arthur's envelope says so.
-- Next *AWS* slice: explicit envelope for table + task role + one-off write/read-after-stop.
+- *Code slice:* Store-ready Relay is on main (PR #19). Default remains SQLite. Application code never calls CreateTable.
+- *Durability envelope:* `docs/p4-durability-one-off.md` plus table/IAM/taskdef templates and `python -m relay.store_get`. Filling the envelope is not execute. Execute still requires Arthur to name spend caps and say to run.
 - Reject expanding the table into chat memory, artifacts, or audio.
