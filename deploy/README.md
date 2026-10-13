@@ -2,14 +2,20 @@
 
 This directory is a **template**. It does not register a task definition or create a DynamoDB table.
 
-- `../Dockerfile` — Fargate image. `uv` from PyPI. Default command is `python -m relay.acp_smoke`.
+- `../Dockerfile` — Fargate image. `uv` from PyPI. Current default command is **`python -m relay.wss_preflight_smoke`** (P4-T4b bounded preflight + ACP one-off), **not** the long-running Relay Service entrypoint.
 - `oab-amusant-relay.taskdef.json` — replace `REPLACE_*` placeholders before `register-task-definition`.
+
+## Live evidence / template warning (2026-10-13)
+
+- P4-T4b actually deployed Jellii:10 (OpenAB+NGINX) and a standalone Relay Fargate task, passed private WSS/ACP + eight preflight checks + after-stop DynamoDB reader proof, then restored Jellii:9/0/0/0. See [T4b acceptance](../docs/p4-t4b-live-acceptance.md).
+- The actual registered task definitions used **rendered** task-role, secret, log group, immutable image, CA and per-run IP values. The checked-in JSON files remain incomplete templates (including old shared role/log references): **never register them verbatim.** Do not commit private ARNs, bearer keys or leaf key.
+- Retained T4b ECR/secret/log/role/task-definition assets do not establish that a short-lived TLS leaf certificate is still valid. No long-running Relay Service is deployed; further AWS writes need fresh Owner authorization.
 
 ## Store switch
 
 - Default: `AMUSANT_TASK_STORE=sqlite` and `AMUSANT_TASK_DB`.
 - DynamoDB: `AMUSANT_TASK_STORE=dynamodb`, `AMUSANT_DDB_TABLE`, `AMUSANT_DDB_REGION` or `AWS_REGION`. Do **not** set this until a table and task role exist under a separate envelope.
-- A DynamoDB-backed task **requires** a task role with `GetItem/PutItem/UpdateItem/Query/TransactWriteItems` on that table only. SQLite one-off may omit `taskRoleArn` (A1).
+- A DynamoDB-backed task requires the existing table-scoped `dynamodb:GetItem`, `PutItem`, `UpdateItem`, `Query` permissions. Do not add a fictional `dynamodb:TransactWriteItems` IAM action. SQLite A1 historically omitted `taskRoleArn`.
 
 ## ACP URL
 
@@ -29,7 +35,7 @@ See `../docs/p4-durability-one-off.md`. These files do not create AWS resources:
 
 ## P4-T4b controller pre-run gate
 
-Before any authorized one-off Relay RunTask, run the read-only controller-side actual-task SG check in [docs/p4-t4b-security-group-gate.md](../docs/p4-t4b-security-group-gate.md). The Relay TCP/8080 reachability probe is not proof of Jellii ingress isolation. A missing/failed/unknown SG check is a stop-before-prompt condition; the verifier has not been run against AWS.
+Before any authorized one-off Relay RunTask, run the read-only controller-side actual-task SG check in [docs/p4-t4b-security-group-gate.md](../docs/p4-t4b-security-group-gate.md). The Relay TCP/8080 reachability probe is not proof of Jellii ingress isolation. A missing/failed/unknown SG check is a stop-before-prompt condition. In the 2026-10-13 Live window the controller performed equivalent real ENI/SG checks and reported PASS, but **this standalone checker was not run against AWS**.
 
 ## Not in this package
 
@@ -37,4 +43,4 @@ Before any authorized one-off Relay RunTask, run the read-only controller-side a
 - IAM role creation
 - Public ALB
 - 24/7 desiredCount
-- TLS
+- The TLS sidecar **has source in this repo and a bounded AWS live smoke PASS**, but the templates are not a complete reusable TLS provisioning package.

@@ -2,8 +2,8 @@
 
 ## Voice Companion Architecture & MVP Specification v0.4 — Two-ECS Baseline
 
-- **Status:** Accepted requirements specification (PR #9); not deployed
-- **Updated:** 2026-10-11
+- **Status:** Accepted requirements specification (PR #9); persistent two-Service product configuration not yet deployed. Bounded P4-T4b live WSS/ACP proof PASS (2026-10-13).
+- **Updated:** 2026-10-14 (evidence refresh; normative requirements unchanged)
 - **Product model:** One-to-one personal, grab-to-talk voice companion
 - **Deployment baseline:** Exactly **two ECS Services**: Amusant Relay + OpenAB Agent Runtime
 - **Real-time baseline:** Gemini Live, manually selected provider
@@ -420,7 +420,9 @@ This section describes **repository-recorded status**, not tests rerun for this 
 | **P3.3** ACP execution | PR #13 merged. Authenticated JSON-RPC ACP client against a local fake `/acp` server | — |
 | **P3.4** Inbox | Authorized `check_task_status` lookup, independent delivery_state, bounded result on completion | Spoken Gemini tool-disabled turn, ECS-surviving store |
 | **P4-A1** ACP one-off | Live one-off PASS 2026-10-12: real Dispatcher/Inbox against Jellii, one ACP `session/prompt`, cleanup to scale 0. Same-SG plaintext `/acp` is a one-off risk exception, not TLS | External durable store, 24/7 Relay, device ingress, production sandbox, billed model-inference proof |
-| **P4** AWS integration | Accepted two-ECS architecture target (PR #9). Continue one-off until store/ingress are separately approved | Replacement-safe ledger, public/device ingress |
+| **P4 durability** | Live DynamoDB one-off PASS 2026-10-12: task result persisted after Relay stopped and read-only `store_get` succeeded | Persistent service and restart recovery |
+| **P4-T4b** Private WSS/ACP | Live bounded functional PASS 2026-10-13: Jellii:10/NGINX, Relay RunTask, 8/8 preflight, one successful ACP task, same-task after-stop durable reader, rollback; see [evidence](docs/p4-t4b-live-acceptance.md) | Persistent Relay Service A, device/voice E2E, full operational runbook conformance, independently measured spend |
+| **P4** AWS integration | Target two-ECS Services remain accepted; the above live integration segments have been validated | Persistent Relay Service A, production lifecycle and device ingress |
 
 P3.2 migrates the SQLite schema to `queued/running/completed/failed/uncertain` with outbox claim/recovery. A `sent` or `completed` row from the fake executor is **not** proof that OpenAB ACP ran. Do not interpret an outbox record as a real ACP result. Inbox lookup is P3.4 SQLite evidence, not ECS durability.
 
@@ -434,7 +436,7 @@ P3.2 migrates the SQLite schema to `queued/running/completed/failed/uncertain` w
 - **P3.2:** Relay-internal Async Dispatcher, queued recovery, execution state, and SQLite lifecycle migration — implemented offline with a fake executor; real ACP remains P3.3.
 - **P3.3:** Authenticated ACP client with bounded text prompts and honest timeout/uncertainty handling — implemented offline against a fake `/acp` server. Live ACP was exercised once in P4-A1, but authenticated TLS/WSS, restricted production agent sandbox, restart/persistence, and full device-to-agent runtime remain separately gated.
 - **P3.4:** Durable Result Inbox, authorized previous-task lookup, reconnect status and user-requested spoken result — implemented offline on SQLite; a new Gemini tool-disabled spoken session remains unproven.
-- **P4:** Two-ECS staging. P4-A1 live one-off is recorded PASS under a bounded envelope; it does not approve an external Task Store, 24/7 Relay, or device ingress.
+- **P4:** Two-ECS staging. P4-A1, DynamoDB durability, and bounded P4-T4b WSS/ACP functional Live have PASS evidence; this does not approve 24/7 Relay Service A or device/voice end-to-end.
 - **H0:** Hardware UX gate versus optimized phone workflow.
 - **H1:** M5StickS3 integration only after H0 success.
 
@@ -474,6 +476,6 @@ Potential future work may include additional Live providers, a policy-based rout
 
 ## 18. Repository implications of this spec revision
 
-This requirements revision was accepted for adoption through PR #9 as a documentation-only change. `SPEC.md`, ADR-0001, `PLAN.md`, `STATUS.md`, and `README.md` are aligned to the two-Service baseline. This amendment does not implement or deploy P3.2–P4; application-code changes, AWS resources, security changes, and paid integration calls remain subject to their separate gates.
+PR #9 accepted this spec as a documentation-only architecture change. **Subsequent** P3/P4 code and separately authorized bounded AWS live tests have since been delivered, including the 2026-10-13 T4b smoke. This evidence update does not deploy a persistent service, change the architecture, or authorize additional AWS/model operations.
 
 **Architecture acceptance rule:** No new ECS Service may be added merely because a logical Worker, session manager or queue is depicted. The default Amusant backend consists of **two** ECS Services, with a **thin Relay + lightweight Task Ledger/Inbox**, and an independently isolated OpenAB Agent Runtime.
