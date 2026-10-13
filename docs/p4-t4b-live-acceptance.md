@@ -7,6 +7,7 @@
 - [Actual Live run outcome](https://github.com/smallgun01/amusant/issues/26#issuecomment-6148650538)
 - [Read-only after-STOPPED durability proof and procedural receipts](https://github.com/smallgun01/amusant/issues/26#issuecomment-6149983722)
 - [Independent functional acceptance review](https://github.com/smallgun01/amusant/issues/26#issuecomment-6150189393)
+- [Final disposition and Owner monitoring-risk acknowledgement](https://github.com/smallgun01/amusant/issues/26#issuecomment-6150655257)
 
 These are operator-reported AWS results, not new AWS requests made by this documentation change. Preserve infrastructure identifiers, task IDs, secret ARNs/values, private model inputs/outputs and log-stream names outside the repository.
 
@@ -26,7 +27,7 @@ Delivery state `pending` means the completed result is still waiting in Inbox, *
 
 ## Exceptions and limits
 
-- Independent watchdog and backup operator **were not armed**. Owner reportedly accepted manual observation for this window, but all-window console presence was **not independently recorded**. Never claim original watchdog-gate PASS.
+- Independent watchdog and backup operator **were not armed**. Owner explicitly accepted full-window manual monitoring/no backup in direct Telegram at 2026-10-13 20:01 GMT+8 (“全程人工監看並接受無備援風險”; recorded in the linked final-disposition comment). Actual all-window console presence was **not independently recorded**. Never claim original watchdog-gate PASS.
 - `deploy/t4b_security_group_gate.py` was **not invoked**; equivalent live-controller revision/sidecar/ENI/SG checks were reported PASS.
 - The exact-task emergency StopTask fallback passed offline request-shape tests but was **not needed or exercised live** (run tag verified correct).
 - ECS Service registry and Cloud Map final instances were verified empty; deregistration OperationId and TTL/negative-cache wait were **not recorded**.

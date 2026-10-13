@@ -11,13 +11,13 @@
 
 ## P4-T4b — Live Private WSS/ACP 功能驗收（2026-10-13）
 
-**Functional Acceptance: PASS；Procedural Conformance: EXCEPTIONS RECORDED。** 根據 [Live record](https://github.com/smallgun01/amusant/issues/26#issuecomment-6148650538)、[after-STOPPED addendum](https://github.com/smallgun01/amusant/issues/26#issuecomment-6149983722) 與 [final review](https://github.com/smallgun01/amusant/issues/26#issuecomment-6150189393)。這是既有 AWS 測試證據整理，不是此次文件更新重新操作 AWS。詳見 [acceptance report](docs/p4-t4b-live-acceptance.md)。
+**Functional Acceptance: PASS；Procedural Conformance: EXCEPTIONS RECORDED。** 根據 [Live record](https://github.com/smallgun01/amusant/issues/26#issuecomment-6148650538)、[after-STOPPED addendum](https://github.com/smallgun01/amusant/issues/26#issuecomment-6149983722) 與 [final review](https://github.com/smallgun01/amusant/issues/26#issuecomment-6150189393)、[Owner monitoring-risk acknowledgement](https://github.com/smallgun01/amusant/issues/26#issuecomment-6150655257)。這是既有 AWS 測試證據整理，不是此次文件更新重新操作 AWS。詳見 [acceptance report](docs/p4-t4b-live-acceptance.md)。
 
 - **Runtime:** Jellii Service 暫時 Revision 10（OpenAB + NGINX），單一 Relay Fargate 1.4.0 RunTask，實際 Jellii ENI/專用 SG TCP 8443 和 Cloud Map current IP 檢查 PASS。
 - **Preflight／ACP：** fresh client TASK# partition + DNS/TLS/SAN/Bearer/Path/8080 共 8/8 assertions PASS；一次 ACP prompt 返回完成，Relay STOPPED exit 0、Inbox `status=completed`／`has_result=true`／`delivery_state=pending`。沒有重跑 Task 或 Prompt。
 - **Stop 後 Reader：** 由既有 `amusant-store-reader` role 針對同一 task_id 執行 strongly consistent DynamoDB GetItem，得到 exit 0/completed/has_result=true/pending；pending 指 Inbox 尚未被領取，不是失敗。
 - **Rollback：** Jellii Revision 9、desired/running/pending `0/0/0`、原 SG／空 service registry，Cloud Map ListInstances 0、無執行中 Relay；Window 2/2 尚未使用、臨時資源保留。
-- **程序例外：** 獨立 watchdog 和 backup 未啟動；人工全程監看沒有獨立紀錄；`deploy/t4b_security_group_gate.py` 本身未跑（controller equivalent check PASS）；exact-task emergency StopTask 只作 offline 驗證；Cloud Map OperationId／TTL wait 無紀錄。AWS 和 Provider 實際 spend 未獨立量測。
+- **程序例外：** 獨立 watchdog/backup 未啟動；Owner 於 Telegram 2026-10-13 20:01 GMT+8 明確接受 manual/no-backup，實際連續 console attendance 未獨立留證。`deploy/t4b_security_group_gate.py` 未直接執行（controller equivalent actual gate PASS）；exact-task StopTask fallback 僅 offline 測試，live 未觸發；Cloud Map OperationId/TTL wait 未記錄。AWS/provider 實際 spend 未獨立量測。
 - **仍待驗證：** Persistent Relay ECS Service A、Device/Voice E2E、24/7 恢復與監控、持續 TLS secret lifecycle、完整 Production Acceptance。現有 `oabctl-admin` 仍是 Owner 採用的部署操作者；ECS Runtime Roles 另外以最小權限設定，不新建部署 IAM 管理平台。
 
 ## 已確認決策
