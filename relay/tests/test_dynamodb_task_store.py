@@ -76,6 +76,18 @@ class DynamoDbTaskStoreTests(unittest.TestCase):
         with self.assertRaises(AdmissionCapacity):
             store.admit(_request(str(uuid4()), call_id="two", turn_id=2))
 
+    def test_has_client_tasks_is_strongly_scoped_to_owner_partition(self):
+        ledger, store = _store()
+        isolated = DynamoDbTaskStore(ledger, client_id="isolated-run", max_pending_tasks=1)
+        self.assertFalse(store.has_client_tasks(CLIENT))
+        self.assertFalse(isolated.has_client_tasks("isolated-run"))
+
+        store.admit(_request(str(uuid4())))
+        self.assertTrue(store.has_client_tasks(CLIENT))
+        self.assertFalse(isolated.has_client_tasks("isolated-run"))
+        with self.assertRaises(AdmissionUnavailable):
+            store.has_client_tasks("different-owner")
+
     def test_duplicate_and_conflict(self):
         ledger, store = _store()
         task_id = str(uuid4())

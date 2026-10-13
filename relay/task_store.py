@@ -144,6 +144,8 @@ class TaskStore(Protocol):
 
     def pending_dispatch_count(self) -> int: ...
 
+    def has_client_tasks(self, client_id: str) -> bool: ...
+
 
 class SQLiteTaskStore:
     """SQLite system-of-record for accepted tasks and transactional dispatch intent.
@@ -784,6 +786,20 @@ class SQLiteTaskStore:
         try:
             row = connection.execute("SELECT COUNT(*) FROM dispatch_outbox WHERE state='pending'").fetchone()
             return int(row[0])
+        except sqlite3.Error:
+            raise AdmissionUnavailable("task_store_unavailable") from None
+        finally:
+            connection.close()
+
+    def has_client_tasks(self, client_id: str) -> bool:
+        if not isinstance(client_id, str) or not _ID_RE.fullmatch(client_id):
+            raise AdmissionUnavailable("invalid_identity")
+        connection = self._connect()
+        try:
+            row = connection.execute(
+                "SELECT 1 FROM slow_tasks WHERE client_id=? LIMIT 1", (client_id,)
+            ).fetchone()
+            return row is not None
         except sqlite3.Error:
             raise AdmissionUnavailable("task_store_unavailable") from None
         finally:

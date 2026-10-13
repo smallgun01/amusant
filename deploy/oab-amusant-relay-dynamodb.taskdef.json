@@ -12,7 +12,7 @@
       "image": "REPLACE_ECR_IMAGE_URI",
       "essential": true,
       "environment": [
-        { "name": "AMUSANT_CLIENT_ID", "value": "amusant-a1" },
+        { "name": "AMUSANT_CLIENT_ID", "value": "REPLACE_RUN_CLIENT_ID" },
         { "name": "AMUSANT_BACKEND_ID", "value": "openab" },
         { "name": "AMUSANT_TASK_STORE", "value": "dynamodb" },
         { "name": "AMUSANT_DDB_TABLE", "value": "REPLACE_TABLE_NAME" },

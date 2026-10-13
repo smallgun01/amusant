@@ -87,7 +87,47 @@ class _TransactFaultClient:
         return getattr(self._inner, name)
 
 
+class _QueryCaptureClient:
+    def __init__(self, inner):
+        self._inner = inner
+        self.query_calls = []
+
+    def query(self, **kwargs):
+        self.query_calls.append(dict(kwargs))
+        return self._inner.query(**kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
 class Boto3DynamoLedgerTests(unittest.TestCase):
+    def test_has_client_tasks_uses_strong_partition_query(self):
+        try:
+            import boto3
+            from moto import mock_aws
+        except ImportError:
+            self.skipTest("moto/boto3 not installed")
+        with mock_aws():
+            client = boto3.client("dynamodb", region_name="us-east-1")
+            _create_table(client)
+            from relay.boto3_dynamodb_ledger import Boto3DynamoLedger
+
+            capture = _QueryCaptureClient(client)
+            store = DynamoDbTaskStore(
+                Boto3DynamoLedger(capture, TABLE),
+                client_id=CLIENT,
+                max_pending_tasks=1,
+            )
+            self.assertFalse(store.has_client_tasks(CLIENT))
+            self.assertEqual(len(capture.query_calls), 1)
+            self.assertTrue(capture.query_calls[-1]["ConsistentRead"])
+            self.assertEqual(capture.query_calls[-1]["Limit"], 1)
+
+            store.admit(_admit_request(str(uuid4())))
+            self.assertTrue(store.has_client_tasks(CLIENT))
+            self.assertTrue(capture.query_calls[-1]["ConsistentRead"])
+            self.assertEqual(capture.query_calls[-1]["Limit"], 1)
+
     def test_completed_item_round_trip_through_moto(self):
         try:
             import boto3

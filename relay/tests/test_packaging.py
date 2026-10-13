@@ -13,7 +13,8 @@ class PackagingTests(unittest.TestCase):
         self.assertIn("FROM python:3.12-slim-bookworm", text)
         self.assertIn("uv==0.11.25", text)
         self.assertNotIn("ghcr.io/astral-sh/uv", text)
-        self.assertIn("relay.acp_smoke", text)
+        self.assertIn("relay.wss_preflight_smoke", text)
+        self.assertNotIn("relay.acp_smoke", text)
         self.assertIn("/app/.venv/bin/python", text)
         self.assertNotIn("uv run", text)
 
@@ -64,6 +65,8 @@ class PackagingTests(unittest.TestCase):
         self.assertNotIn("dynamodb:TransactWriteItems", reader)
         self.assertIn("REPLACE_RELAY_TASK_ROLE", taskdef)
         self.assertIn("AMUSANT_TASK_STORE", taskdef)
+        self.assertIn("REPLACE_RUN_CLIENT_ID", taskdef)
+        self.assertNotIn("amusant-a1", taskdef)
         self.assertIn("dynamodb", taskdef)
         self.assertNotIn("AMUSANT_ACP_ALLOW_PLAINTEXT", taskdef)
         self.assertIn("AMUSANT_TASK_STORE must be dynamodb", get_src)

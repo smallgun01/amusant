@@ -188,6 +188,7 @@ class OpenAbAcpExecutor:
         timeout_seconds: float = DEFAULT_ACP_TIMEOUT_SECONDS,
         allow_plaintext: bool = False,
         ca_pem: str | None = None,
+        expected_private_ip: str | None = None,
         connect_factory=connect,
     ) -> None:
         if not isinstance(auth_key, str) or len(auth_key) < 12:
@@ -202,6 +203,15 @@ class OpenAbAcpExecutor:
             if ca_pem is not None and urlparse(self._url).scheme != "wss":
                 raise ValueError("AMUSANT_ACP_CA_PEM requires a wss:// ACP URL")
         self._ca_pem = ca_pem
+        if expected_private_ip is not None:
+            try:
+                expected_address = ipaddress.ip_address(expected_private_ip)
+            except ValueError as exc:
+                raise ValueError("AMUSANT_ACP_EXPECTED_PRIVATE_IP must be an RFC1918 IPv4 address") from exc
+            if expected_address.version != 4 or expected_address.is_loopback or not _is_allowed_destination(expected_address):
+                raise ValueError("AMUSANT_ACP_EXPECTED_PRIVATE_IP must be an RFC1918 IPv4 address")
+            expected_private_ip = expected_address.compressed
+        self._expected_private_ip = expected_private_ip
         self._auth_key = auth_key
         self._cwd = _require_remote_cwd(cwd)
         self._timeout_seconds = _require_timeout(timeout_seconds)
@@ -214,6 +224,8 @@ class OpenAbAcpExecutor:
         self._deadline = loop.time() + self._timeout_seconds
         try:
             dial_host, dial_port, tls_hostname = await _resolve_private_target(self._url, self._deadline)
+            if self._expected_private_ip is not None and dial_host != self._expected_private_ip:
+                raise ValueError("ACP DNS answer differs from AMUSANT_ACP_EXPECTED_PRIVATE_IP")
             remaining = max(0.01, self._deadline - loop.time())
             connect_kwargs: dict[str, Any] = {
                 "additional_headers": {"Authorization": f"Bearer {self._auth_key}"},
@@ -362,4 +374,5 @@ def load_acp_executor(environ) -> OpenAbAcpExecutor | None:
         timeout_seconds=timeout,
         allow_plaintext=allow_plaintext,
         ca_pem=ca_pem,
+        expected_private_ip=environ.get("AMUSANT_ACP_EXPECTED_PRIVATE_IP"),
     )

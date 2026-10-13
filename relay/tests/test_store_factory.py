@@ -55,6 +55,41 @@ class StoreFactoryTests(unittest.TestCase):
         )
         self.assertIsInstance(store, DynamoDbTaskStore)
 
+    def test_preflight_dynamodb_client_is_bounded_and_ignores_configured_endpoints(self):
+        from unittest.mock import patch
+        import boto3
+
+        client = boto3.client("dynamodb", region_name="us-east-1")
+        with patch("boto3.client", return_value=client) as make_client:
+            build_task_store(
+                {
+                    "AMUSANT_TASK_STORE": "dynamodb",
+                    "AMUSANT_CLIENT_ID": "p4-t4b-run-01",
+                    "AMUSANT_DDB_TABLE": "amusant-task-ledger",
+                    "AMUSANT_DDB_REGION": "us-east-1",
+                },
+                max_pending_tasks=1,
+                preflight=True,
+            )
+        config = make_client.call_args.kwargs["config"]
+        self.assertEqual(config.connect_timeout, 2)
+        self.assertEqual(config.read_timeout, 2)
+        self.assertEqual(config.retries["total_max_attempts"], 1)
+        self.assertTrue(config.ignore_configured_endpoint_urls)
+
+    def test_preflight_rejects_explicit_custom_dynamodb_endpoint(self):
+        with self.assertRaisesRegex(ValueError, "custom DynamoDB endpoints"):
+            build_task_store(
+                {
+                    "AMUSANT_TASK_STORE": "dynamodb",
+                    "AMUSANT_CLIENT_ID": "p4-t4b-run-01",
+                    "AMUSANT_DDB_TABLE": "amusant-task-ledger",
+                    "AMUSANT_DDB_REGION": "us-east-1",
+                    "AMUSANT_DDB_ENDPOINT": "http://127.0.0.1:8000",
+                },
+                preflight=True,
+            )
+
     def test_unknown_store_kind_fails(self):
         with self.assertRaises(ValueError):
             build_task_store({"AMUSANT_TASK_STORE": "s3", "AMUSANT_CLIENT_ID": "owner"})

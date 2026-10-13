@@ -27,6 +27,10 @@ See `../docs/p4-durability-one-off.md`. These files do not create AWS resources:
 - `oab-amusant-relay-dynamodb.taskdef.json`
 - After-stop reader: `python -m relay.store_get` (DynamoDB only; no custom endpoint)
 
+## P4-T4b controller pre-run gate
+
+Before any authorized one-off Relay RunTask, run the read-only controller-side actual-task SG check in [docs/p4-t4b-security-group-gate.md](../docs/p4-t4b-security-group-gate.md). The Relay TCP/8080 reachability probe is not proof of Jellii ingress isolation. A missing/failed/unknown SG check is a stop-before-prompt condition; the verifier has not been run against AWS.
+
 ## Not in this package
 
 - CreateTable

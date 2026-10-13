@@ -109,6 +109,18 @@ class Boto3DynamoLedger:
         item = response.get("Item")
         return None if not item else self._load(item)
 
+    def has_prefix(self, pk: str, sk_prefix: str) -> bool:
+        """Strongly test for one matching row with a single bounded Query call."""
+        response = self._call(
+            "query",
+            TableName=self._table,
+            KeyConditionExpression="pk = :pk AND begins_with(sk, :prefix)",
+            ExpressionAttributeValues={":pk": {"S": pk}, ":prefix": {"S": sk_prefix}},
+            ConsistentRead=True,
+            Limit=1,
+        )
+        return bool(response.get("Items"))
+
     def query_prefix(self, pk: str, sk_prefix: str) -> tuple[list[dict[str, object]], bool]:
         rows: list[dict[str, object]] = []
         kwargs: dict[str, object] = {
