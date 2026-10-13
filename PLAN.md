@@ -1,6 +1,6 @@
 # Project Amusant — Execution Plan
 
-> 更新：2026-10-11
+> 更新：2026-10-14
 > GitHub：Private repository; remote is configured locally.
 > 本機目錄：projects/amusant
 
@@ -40,9 +40,16 @@
 | P1 | kai-sim software smoke | 3–5 工作日 | LAN 主機列舉麥克風／喇叭並以 Kai kai-sim 連到 private host mock probe，完成 PTT PCM 收音、文字卡片及 tone/echo 播放。無需 M5、Live provider、OpenClaw 或 AWS。此 probe 是測試工具，不是完整 Kai relay／正式 Amusant Relay；4 個單元測試、真實跨 LAN 音訊閉環與一次重連 smoke PASS。使用者回報 release-to-first-audio 及重連均 <1 s（手動估計、樣本數未記）；正式 p50/p95 latency 留待 P4。 |
 | P2 | Fast voice | 1–2 工程週 | Gemini Live baseline、手動 provider selection、adapter contract 通過；local Kai `/ws`/PTT→Live bridge、fake-provider tests、TTS smoke 均 PASS。**2026-10-09 P2 runtime exit PASS**：same-LAN Kai-sim 收到真實 PTT PCM、Live turn 完成、輸出 PCM，使用者確認喇叭完整播放。此 gate 不含 AWS deployment、OpenClaw slow lane 或硬體。第二 Live provider 可選，只作 abstraction validation。 |
 | P3 | OpenAB ACP slow path（local） | 待重新估時 | P3.1–P3.4 squash-merged. Offline Fast Voice 52/52 and Relay 54/54 PASS. Spoken Gemini tool-disabled delivery remains unproven. |
-| P4 | Two-ECS software integration / AWS staging | 待重估 | P4-A1 + durability live one-offs PASS (2026-10-12). P4-T1 offline WSS PoC merged (#23), not live WSS. P4-T2 NGINX sidecar plan is review-only; AWS one-off requires a separate execute envelope. A2 24/7 and device ingress remain separate. |
+| P4 | Two-ECS software integration / AWS staging | T4b 功能驗收 PASS；A2 另估 | A1 與 DynamoDB durability one-offs PASS（2026-10-12）。**P4-T4b 真實 AWS private WSS/ACP live smoke PASS（2026-10-13）**：8/8 preflight、單次 ACP 任務、停止後 DynamoDB Reader 驗證及回滾。程序例外與限制見 [T4b acceptance](docs/p4-t4b-live-acceptance.md)。Persistent Relay ECS Service A、Device/Voice E2E、24/7 尚未驗證。 |
 | H0 | Hardware UX Gate | P4 後估算 | 比較專用裝置與最佳化手機流程；只有明顯降低摩擦才繼續。 |
 | H1 | Hardware integration | H0 通過後估算 | 使用 Kai-derived M5StickS3 firmware 驗證裝置音訊、PTT、網路與可靠性；不修改 Kai 上游，除非另行核准。 |
+
+## P4 已完成與下一階段（2026-10-14）
+
+- **已驗證：** Relay 一次性 Fargate Task → Private WSS → Jellii/NGINX/OpenAB，任務完成後 DynamoDB Inbox 持久化，並回復原 Jellii 設定。參考 [Live evidence](docs/p4-t4b-live-acceptance.md) 與 [Issue #26](https://github.com/smallgun01/amusant/issues/26)。
+- **下一步 P4-A2：** 將 Relay 配置為可長期運作的 ECS Service A，驗證單一 active task、重啟/恢復、監測/費用、憑證/密鑰更新；**不得**直接把 T4b 測試用 `relay.wss_preflight_smoke` 當成永久服務主迴圈。
+- **產品 E2E：** Kai-sim/Device PTT → Gemini Live → `delegate_task` → durable Dispatcher/ACP → Inbox → 新 Live 回合領取／語音回覆，尚未整條一起驗證。
+- **Edge/HW：** Issues #27、#11、#14；Device→Relay Transport 不等於 Relay→Jellii WSS。
 
 ## P1 連線方案
 

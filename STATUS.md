@@ -1,6 +1,6 @@
 # Project Amusant — Status
 
-> 最後更新：2026-10-12
+> 最後更新：2026-10-14
 > 規格權威：SPEC.md
 > 執行計畫：PLAN.md
 > Repo：Private repository; remote is configured locally.
@@ -9,12 +9,23 @@
 
 **P0 — Foundation：完成。P1 — Kai-sim mock 音訊 smoke：PASS。P2 — Fast Voice：PASS（2026-10-09 runtime gate）。P3.0 — authenticated OpenAB ACP/model + one-off Worker feasibility smoke：PASS only under explicitly accepted, task-bounded risk; not production acceptance. P3.1–P3.4 squash-merged. P4-A1 live one-off PASS（2026-10-12）. ADR-0002 accepted. Store-ready Relay squash-merged PR #19 (`69bd7ed6cadaba68176f8fa706c5d8ca880f7376`). Durability envelope squash-merged PR #20 (`ff5868a3bc4e3453e419f97e0ea06f3f5a3b5a9c`). P4 durability live one-off PASS（2026-10-12）：write via Dispatcher/ACP, A STOPPED, then `store_get` still reads completed Inbox. Table kept. Not TLS, not 24/7, not device ingress。
 
+## P4-T4b — Live Private WSS/ACP 功能驗收（2026-10-13）
+
+**Functional Acceptance: PASS；Procedural Conformance: EXCEPTIONS RECORDED。** 根據 [Live record](https://github.com/smallgun01/amusant/issues/26#issuecomment-6148650538)、[after-STOPPED addendum](https://github.com/smallgun01/amusant/issues/26#issuecomment-6149983722) 與 [final review](https://github.com/smallgun01/amusant/issues/26#issuecomment-6150189393)、[Owner monitoring-risk acknowledgement](https://github.com/smallgun01/amusant/issues/26#issuecomment-6150655257)。這是既有 AWS 測試證據整理，不是此次文件更新重新操作 AWS。詳見 [acceptance report](docs/p4-t4b-live-acceptance.md)。
+
+- **Runtime:** Jellii Service 暫時 Revision 10（OpenAB + NGINX），單一 Relay Fargate 1.4.0 RunTask，實際 Jellii ENI/專用 SG TCP 8443 和 Cloud Map current IP 檢查 PASS。
+- **Preflight／ACP：** fresh client TASK# partition + DNS/TLS/SAN/Bearer/Path/8080 共 8/8 assertions PASS；一次 ACP prompt 返回完成，Relay STOPPED exit 0、Inbox `status=completed`／`has_result=true`／`delivery_state=pending`。沒有重跑 Task 或 Prompt。
+- **Stop 後 Reader：** 由既有 `amusant-store-reader` role 針對同一 task_id 執行 strongly consistent DynamoDB GetItem，得到 exit 0/completed/has_result=true/pending；pending 指 Inbox 尚未被領取，不是失敗。
+- **Rollback：** Jellii Revision 9、desired/running/pending `0/0/0`、原 SG／空 service registry，Cloud Map ListInstances 0、無執行中 Relay；Window 2/2 尚未使用、臨時資源保留。
+- **程序例外：** 獨立 watchdog/backup 未啟動；Owner 於 Telegram 2026-10-13 20:01 GMT+8 明確接受 manual/no-backup，實際連續 console attendance 未獨立留證。`deploy/t4b_security_group_gate.py` 未直接執行（controller equivalent actual gate PASS）；exact-task StopTask fallback 僅 offline 測試，live 未觸發；Cloud Map OperationId/TTL wait 未記錄。AWS/provider 實際 spend 未獨立量測。
+- **仍待驗證：** Persistent Relay ECS Service A、Device/Voice E2E、24/7 恢復與監控、持續 TLS secret lifecycle、完整 Production Acceptance。現有 `oabctl-admin` 仍是 Owner 採用的部署操作者；ECS Runtime Roles 另外以最小權限設定，不新建部署 IAM 管理平台。
+
 ## 已確認決策
 
 - Amusant 為獨立維護的 Kai-compatible monorepo；Kai 保持架構與韌體上游。
 - 產品範圍只含語音溝通、語音／文字回覆；不含位置、感測器或實體控制。
 - 快語音 provider 手動選擇；Gemini Live 為首個 baseline；第二真實 provider 為 optional validation，不是 MVP gate。
-- **Architecture history:** PR #5 accepted the earlier ADR-0001 topology; PR #9 adopts exactly two ECS Services (Relay with in-process Async Dispatcher + OpenAB Agent Runtime), superseding the former three-service topology. The change is documentation-only, not deployment; no AWS operation or spending is authorized by these documents.
+- **Architecture history:** PR #5 accepted earlier ADR-0001; PR #9 adopted exactly two target ECS Services (Relay with in-process Dispatcher + OpenAB/Jellii), superseding the previous three-service topology. **PR #9 itself was documentation only**; the bounded P4-T4b live test was separately deployed on 2026-10-13. Persistent Relay Service A is still pending.
 - **P3.0 feasibility and risk acceptance:** authenticated ACP/model and a one-off Worker-to-Agent smoke passed under Arthur's explicitly accepted task-boundary risk for that test only. This is not proof of production sandbox restrictions or P4 readiness; Jellii remains scale 0. No N100 main Gateway access.
 - **P3.1 implementation status:** PR #8 merged (`e354b92626813267d2b448a6ff340f8bd297f1b6`). PR #10 squash-merged (`39a4b5e0f1820cf0b7a8a5a36cb7a500fd3bf219`) with container-neutral Live composition, BLOCKING admission, refreshable post-tool timeout, and fail-closed CLI wiring. Fast Voice 52/52 offline PASS. Local paced-PTT Live evidence remains handler-level, not ECS deployment.
 - **P3.2 implementation status:** PR #12 squash-merged (`44e15ed39f2c860cf45de2b019152cabd06f4451`). In-process Dispatcher claim/recovery is on main.
@@ -36,7 +47,7 @@
   - After A STOPPED, `python -m relay.store_get` via `amusant-store-reader` reported the same `exit_code=0` / `completed` / `has_result=true` / `delivery_state=pending`.
   - Jellii taskdef `:9`. Preflight and post-cleanup desired/running/pending `0/0/0`. Table retained for later P4.
   - Cost Explorer and provider invoices were not pulled; spend is **not independently verified**.
-- **P4-T1 offline WSS PoC (2026-10-12):** PR #23 squash-merged (`bd0b250cd147fa2ff94a0eacffe18007ebd7d97a`). Local fake ACP only; Relay 105/105 and Fast Voice 52/52. This does **not** prove live Jellii WSS, deployed sidecar, or AWS TLS. P4-T2 NGINX sidecar deployment design is review-only; no AWS resources changed.
+- **P4-T1 offline WSS PoC (historical phase, 2026-10-12):** PR #23 squash-merged (`bd0b250cd147fa2ff94a0eacffe18007ebd7d97a`). Local fake ACP only; Relay 105/105 and Fast Voice 52/52. This does **not** prove live Jellii WSS, deployed sidecar, or AWS TLS. P4-T2 NGINX sidecar deployment design is review-only; no AWS resources changed.
 - **P3.1 Live validation (2026-10-11):** Official Gemini 3.8 Live docs show function behavior `BLOCKING` pauses generation until tool response and cancels a pending blocking call on new user input. The SDK schema now sets `Behavior.BLOCKING` for `delegate_task` only; OpenAB remains asynchronous. Under separate authorization, a local loopback Relay PTT test with paced Flite PCM, the verified project key, `gemini-3.8-live`, and 128 output tokens produced one `delegate_task`, same-call-ID `accepted`, durable SQLite task+pending outbox, 64,322 output-audio bytes, captions whose in-memory check matched `accepted`, and `turn_complete`. This verifies a local tool-call/voice-ack path, not physical Kai-sim or ECS startup. No audio/transcript was saved; no OpenAB/AWS mutation. The subsequent inactivity-refresh/absolute-timeout change has offline coverage only and was not Live-rerun. Usage metadata/billing was unavailable, so exact spend is unverified.
 - P0 = Foundation；H0 = Hardware UX Gate。先完成軟體 gate，再進 H0/H1。
 - Kai 上游核查基準：v0.12.0，commit 1681fb3c11acd28525d8987bba4b9bf4bc2a288f；MIT License。

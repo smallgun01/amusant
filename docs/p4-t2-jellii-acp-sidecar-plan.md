@@ -1,6 +1,8 @@
 # P4-T2 — Private ACP NGINX Sidecar Deployment Plan
 
-**Status:** review-only design proposal. No AWS resource, task, certificate, secret, DNS record, or security-group change is authorized by this document. A live WSS smoke requires a separate bounded execute envelope.
+**Status at original proposal:** review-only; this document itself never authorized AWS changes.
+
+**Subsequent outcome (2026-10-13):** The separately approved bounded Live window exercised this NGINX sidecar in Jellii Revision 10, with a Relay RunTask, and passed WSS/ACP functional acceptance. Jellii was restored to Revision 9/0/0/0; this is **not** persistent sidecar or production acceptance. Evidence: [T4b acceptance](p4-t4b-live-acceptance.md). The original plan below remains historical design context.
 
 **Scope:** Encrypt the private ECS A Relay → ECS B OpenAB/Jellii ACP hop. This is not public device ingress, Kai TLS-PSK termination, a permanent service, or a 24/7 Relay decision.
 

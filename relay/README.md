@@ -64,13 +64,13 @@ uv run kai-sim --host $relayHost --port 8765
 
 This is a local PTT-to-Live test harness, not production relay deployment; do not expose it publicly or add firewall/port-forward rules. Fake-provider tests do not call Gemini; a real Kai-sim turn does incur provider usage and must stay within the separately approved budget.
 
-## P4-T4b one-off image entrypoint (not yet AWS-authorized)
+## P4-T4b WSS preflight image entrypoint (bounded live PASS 2026-10-13)
 
 The root Relay Dockerfile's one-off command is `python -m relay.wss_preflight_smoke`: it requires `AMUSANT_TASK_STORE=dynamodb`, an owner-approved fresh `AMUSANT_CLIENT_ID` in the `p4-t4b-<unique-run-id>` namespace supplied as a RunTask override (the task-definition template deliberately contains `REPLACE_RUN_CLIENT_ID`), the current Jellii private IPv4 as a runtime-only `AMUSANT_ACP_EXPECTED_PRIVATE_IP` override, `wss://...:8443/acp`, the ACP bearer secret, and the public private-CA certificate in `AMUSANT_ACP_CA_PEM`. The wrapper verifies the expected client partition is empty using a strong TASK# query and rejects custom DynamoDB endpoints and plaintext mode.
 
 Before the existing `relay.acp_smoke` flow admits anything, this wrapper strongly checks that the fresh client partition has no TASK rows, verifies the Cloud Map A answer matches the expected current Jellii task address, then runs bounded no-prompt TLS/SAN, missing/invalid Bearer, non-`/acp` 404, and TCP/8080-unreachable probes. It passes `AMUSANT_ACP_EXPECTED_PRIVATE_IP` to the production executor, which verifies the dispatch-time DNS result still matches that IP before dialing, then pins that IP while keeping the original hostname for TLS/SNI. Any failed or indeterminate check exits without admission or dispatch. Only a complete probe pass calls `relay.acp_smoke` once, which can send at most one `session/prompt`. The wrapper emits sanitized probe names/results and never logs the expected IP, credentials, raw prompt, or result body.
 
-This entrypoint is for a separately authorized one-off task only. It is not an AWS deployment or live acceptance result. The code PR and offline tests do not authorize ECR push, ECS changes, Jellii scale-up, or a model call. Local tests continue to invoke `relay.acp_smoke` directly with fake ACP/store fixtures.
+This bounded entrypoint ran **once in a separately authorized AWS Fargate Live window**: 8/8 preflight PASS, one ACP smoke completed, Relay STOPPED, then same-task independently read-only strongly consistent DynamoDB `store_get` PASS. Jellii was rolled back to Revision 9/0/0/0. [Acceptance evidence](../docs/p4-t4b-live-acceptance.md). This does **not** mean it is the correct persistent Relay Service A loop or that Device/Voice E2E passed. The code PR itself authorizes no future AWS mutation or model call; offline tests still use fake fixtures.
 
 ## Slow Path adapter test command (offline only)
 

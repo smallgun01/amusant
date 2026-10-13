@@ -1,6 +1,6 @@
 # Amusant ACP WSS sidecar image
 
-This is a deployable image source for the P4-T2 proposal; it is not deployed and does not authorize AWS changes. It uses the verified NGINX unprivileged linux/amd64 base image digest pinned in the Dockerfile, removes the base image's default 8080 site, and exposes only the /acp WSS listener on 8443.
+This NGINX sidecar image **was deployed during the bounded P4-T4b Live WSS smoke on 2026-10-13**. Jellii was then rolled back to Revision 9/0/0/0; the sidecar is **not now a continuously running service**, and the test does not authorize new AWS changes. It uses the verified NGINX unprivileged linux/amd64 base image digest pinned in the Dockerfile, removes the base image's default 8080 site, and exposes only the /acp WSS listener on 8443.
 
 ## Local build and checks (no AWS)
 
@@ -29,4 +29,4 @@ The smoke harness runs the pinned NGINX image and fake ACP server on a local Lin
 - In AWS, a dedicated Jellii SG must permit 8443 only from the dedicated Relay SG and deny 8080 ingress. Keep the shared oab-agents SG untouched.
 - Use a private Cloud Map A record with a DNS name matching the server certificate SAN. Relay's AMUSANT_ACP_CA_PEM adds the private root to its default trust context; hostname verification remains enabled.
 
-A separate review/execute envelope is required for ECR mirroring, task-definition registration, Cloud Map, security groups, secrets/certificates, or a live one-off WSS test.
+The bounded ECR/registration/network/TLS/live window already ran under separate approvals; see [T4b acceptance](../../docs/p4-t4b-live-acceptance.md). Any **future** AWS mutation, model invocation or persistent service rollout still needs its own approval, including certificate validity checks.
