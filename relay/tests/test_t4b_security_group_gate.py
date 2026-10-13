@@ -107,6 +107,46 @@ class T4bSecurityGroupGateTests(unittest.TestCase):
         self.assertFalse(report.passed)
         self.assertEqual(report.error, "jellii_service_mismatch")
 
+    def test_rejects_every_non_8443_ingress_across_attached_groups(self):
+        allowed = {
+            "GroupId": "sg-jellii-a",
+            "IsEgress": False,
+            "IpProtocol": "6",
+            "FromPort": 8443,
+            "ToPort": 8443,
+            "ReferencedGroupInfo": {"GroupId": "sg-relay"},
+        }
+        unexpected_rules = [
+            {"GroupId": "sg-jellii-b", "IsEgress": False, "IpProtocol": "6", "FromPort": 22, "ToPort": 22, "CidrIpv4": "0.0.0.0/0"},
+            {"GroupId": "sg-jellii-b", "IsEgress": False, "IpProtocol": "6", "FromPort": 9000, "ToPort": 9000, "CidrIpv4": "10.0.0.0/8"},
+            {"GroupId": "sg-jellii-b", "IsEgress": False, "IpProtocol": "17", "FromPort": 53, "ToPort": 53, "CidrIpv4": "0.0.0.0/0"},
+            {"GroupId": "sg-jellii-b", "IsEgress": False, "IpProtocol": "-1", "CidrIpv4": "10.0.0.0/8"},
+            {"GroupId": "sg-jellii-b", "IsEgress": False, "IpProtocol": "6", "FromPort": 9000, "ToPort": 9000, "ReferencedGroupInfo": {"GroupId": "sg-other"}},
+            {"GroupId": "sg-jellii-b", "IsEgress": False, "IpProtocol": "6", "FromPort": 9000, "ToPort": 9000, "CidrIpv6": "::/0"},
+            {"GroupId": "sg-jellii-b", "IsEgress": False, "IpProtocol": "6", "FromPort": 9000, "ToPort": 9000, "PrefixListId": "pl-private"},
+        ]
+        for stray in unexpected_rules:
+            with self.subTest(stray=stray):
+                report = _verify(ec2=FakeEc2([allowed, stray]))
+                self.assertFalse(report.passed)
+                if stray.get("FromPort") == 8080 or stray.get("IpProtocol") == "-1":
+                    self.assertEqual(report.error, "jellii_tcp_8080_ingress_present")
+                else:
+                    self.assertEqual(report.error, "jellii_unexpected_ingress_rule")
+
+    def test_egress_is_not_rejected_as_ingress(self):
+        allowed = {
+            "GroupId": "sg-jellii-a",
+            "IsEgress": False,
+            "IpProtocol": "6",
+            "FromPort": 8443,
+            "ToPort": 8443,
+            "ReferencedGroupInfo": {"GroupId": "sg-relay"},
+        }
+        egress = {"GroupId": "sg-jellii-a", "IsEgress": True, "IpProtocol": "-1"}
+        report = _verify(ec2=FakeEc2([allowed, egress]))
+        self.assertTrue(report.passed)
+
     def test_pagination_is_followed_for_all_attached_groups(self):
         class PaginatedEc2(FakeEc2):
             def __init__(self):

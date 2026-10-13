@@ -83,12 +83,20 @@ def _validate_ingress_rules(rules: Sequence[Mapping[str, Any]], relay_sg_id: str
         if rule["IsEgress"] is False:
             ingress.append(rule)
 
-    if any(_allows_tcp_port(rule, 8080) for rule in ingress):
-        raise GateFailure("jellii_tcp_8080_ingress_present")
-
-    grants_8443 = [rule for rule in ingress if _allows_tcp_port(rule, 8443)]
-    if not grants_8443 or any(not _is_exact_relay_8443_rule(rule, relay_sg_id) for rule in grants_8443):
+    if not ingress:
         raise GateFailure("jellii_tcp_8443_source_not_exclusive")
+
+    # SG permissions are additive. The T4b invariant allows exactly one class of
+    # ingress: TCP/8443 sourced from the approved Relay SG. Any other protocol,
+    # port, CIDR, prefix list, broad rule, or SG source is a hard failure.
+    for rule in ingress:
+        if _allows_tcp_port(rule, 8080):
+            raise GateFailure("jellii_tcp_8080_ingress_present")
+        if _is_exact_relay_8443_rule(rule, relay_sg_id):
+            continue
+        if _allows_tcp_port(rule, 8443):
+            raise GateFailure("jellii_tcp_8443_source_not_exclusive")
+        raise GateFailure("jellii_unexpected_ingress_rule")
 
 
 def verify_t4b_security_groups(
