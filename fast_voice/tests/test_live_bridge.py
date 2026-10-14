@@ -4,6 +4,7 @@ import secrets
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from websockets.asyncio.client import connect
@@ -13,7 +14,7 @@ from websockets.exceptions import ConnectionClosedError
 from fast_voice.contracts import AudioFrame, ProviderCapabilities, ToolCallEvent, TranscriptEvent, TurnCompleteEvent
 from relay.application import build_relay_handler, build_supported_relay_handler, load_relay_process_config
 from relay.device_opus import DeviceProtocolError
-from relay.device_protocol import adapt_device_handler
+from relay.device_protocol import DeviceWebSocketAdapter, adapt_device_handler
 from relay.live_bridge import MIN_UTTERANCE_BYTES, make_handler, run as run_live_bridge
 from relay.slow_path import SlowPathToolRouter
 from relay.task_store import SQLiteTaskStore
@@ -109,7 +110,20 @@ class BufferingFakeDeviceCodec:
         self.pending.clear()
         return [b"OPUS-FINAL"]
     def discard_downlink(self): self.pending.clear()
+    def reset_uplink(self): pass
     def reset_turn(self): self.pending.clear()
+
+
+class ImmediateFakeDeviceCodec(BufferingFakeDeviceCodec):
+    def __init__(self):
+        super().__init__()
+        self.generation = 0
+    def reset_uplink(self): pass
+    def encode_downlink(self, _pcm): return [f"PACKET-{self.generation}".encode()]
+    def finish_downlink(self): return []
+    def discard_downlink(self):
+        super().discard_downlink()
+        self.generation += 1
 
 
 class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
@@ -387,6 +401,86 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(audio_bytes, 0)
         self.assertEqual(sum(item.get("type") == "turn_complete" for item in controls), 0)
         self.assertTrue(any(item.get("type") == "card" and item.get("title") == "Live unavailable" for item in controls))
+
+    async def test_concurrent_old_on_audio_and_new_ptt_keep_encoder_turn_owner(self):
+        fake = FakeProvider(auto_complete=False)
+
+        class BlockingRawWebSocket:
+            def __init__(self):
+                self.request = SimpleNamespace(
+                    path="/ws",
+                    headers={"Authorization": f"Bearer {TOKEN}"},
+                )
+                self.incoming = asyncio.Queue()
+                self.sent = []
+                self.binary_send_entered = asyncio.Event()
+                self.release_binary_send = asyncio.Event()
+                self.block_first_binary = True
+
+            async def recv(self):
+                return await self.incoming.get()
+
+            async def send(self, message):
+                if isinstance(message, bytes) and self.block_first_binary:
+                    self.block_first_binary = False
+                    self.binary_send_entered.set()
+                    await self.release_binary_send.wait()
+                self.sent.append(message)
+
+            async def close(self, code=1000, reason=""):
+                return None
+
+        raw = BlockingRawWebSocket()
+        adapter = DeviceWebSocketAdapter(
+            raw,
+            require_hello=True,
+            require_opus=True,
+            hardware_mode=True,
+            codec_factory=ImmediateFakeDeviceCodec,
+        )
+        handler = make_handler(TOKEN, lambda: fake)
+        handler_task = asyncio.create_task(handler(adapter))
+        try:
+            await raw.incoming.put(json.dumps({"type": "hello", "codecs": ["opus"]}))
+            await raw.incoming.put(json.dumps({"type": "ptt_start"}))
+            await raw.incoming.put(b"OPUS-IN")
+            await raw.incoming.put(json.dumps({"type": "ptt_end"}))
+            for _ in range(100):
+                if any(isinstance(item, str) and json.loads(item).get("state") == "thinking" for item in raw.sent):
+                    break
+                await asyncio.sleep(0.001)
+            self.assertTrue(any(isinstance(item, str) and json.loads(item).get("state") == "thinking" for item in raw.sent))
+            old_callbacks = dict(fake.callbacks)
+
+            with self.assertLogs("amusant.p2.live_bridge", level="INFO") as captured:
+                old_audio = asyncio.create_task(old_callbacks["audio"](AudioFrame(bytes([1, 0]) * 1000, 24_000)))
+                await asyncio.wait_for(raw.binary_send_entered.wait(), timeout=1)
+                await raw.incoming.put(json.dumps({"type": "ptt_start"}))
+                for _ in range(100):
+                    if adapter._turn_id == 2:
+                        break
+                    await asyncio.sleep(0.001)
+                self.assertEqual(adapter._turn_id, 2)
+                self.assertEqual(adapter._active_output_turn_id, 1)
+                raw.release_binary_send.set()
+                await asyncio.wait_for(old_audio, timeout=1)
+
+                for _ in range(100):
+                    if adapter._active_output_turn_id == 2:
+                        break
+                    await asyncio.sleep(0.001)
+                self.assertEqual(adapter._active_output_turn_id, 2)
+                old_send_count = len(raw.sent)
+                await old_callbacks["audio"](AudioFrame(bytes([9, 0]) * 1000, 24_000))
+                self.assertEqual(len(raw.sent), old_send_count)
+
+            audio_logs = [line for line in captured.output if "event=first_outgoing_audio" in line]
+            self.assertEqual(len(audio_logs), 1)
+            self.assertIn("turn_id=1", audio_logs[0])
+        finally:
+            handler_task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await handler_task
 
     async def test_streaming_post_tool_audio_refreshes_inactivity_timeout(self):
         fake = FakeProvider(auto_complete=False)

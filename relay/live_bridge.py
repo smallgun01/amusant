@@ -568,6 +568,14 @@ def make_handler(
                         await retire_provider(previous.provider_epoch)
                     next_turn_id += 1
                     active_turn = Turn(turn_id=next_turn_id)
+                    begin_device_turn = getattr(ws, "begin_device_turn", None)
+                    if callable(begin_device_turn):
+                        try:
+                            # Downlink codec ownership changes only after any prior provider epoch is fenced.
+                            await begin_device_turn(active_turn.turn_id)
+                        except DeviceProtocolError:
+                            await fail_turn(active_turn, "device_codec_reset_failed")
+                            continue
                 elif kind == "ptt_end":
                     if turn is None or not turn.ptt_open:
                         continue

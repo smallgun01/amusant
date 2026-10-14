@@ -139,9 +139,13 @@ class DeviceOpusCodec:
         self._pending_pcm = bytearray()
         self._frame_bytes = self.downlink_rate * FRAME_MS // 1000 * 2
 
-    def reset_turn(self) -> None:
-        """Drop decoder/encoder history at each new PTT turn."""
+    def reset_uplink(self) -> None:
+        """Reset mic decoder eagerly when a new device PTT begins."""
         self._create_decoder()
+
+    def reset_turn(self) -> None:
+        """Reset both directions when the owning bridge confirms a new turn."""
+        self.reset_uplink()
         self._create_encoder()
 
     def discard_downlink(self) -> None:

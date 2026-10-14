@@ -8,6 +8,7 @@ import math
 import ssl
 import struct
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 from websockets.asyncio.client import connect
@@ -17,7 +18,8 @@ from websockets.exceptions import ConnectionClosed
 if sys.version_info < (3, 13):
     raise RuntimeError("Run this mandatory TLS-PSK integration with Python 3.13+")
 
-from fast_voice.contracts import AudioFrame, ProviderCapabilities, TranscriptEvent, TurnCompleteEvent
+from fast_voice.contracts import AudioFrame, ProviderCapabilities, ToolCallEvent, TranscriptEvent, TurnCompleteEvent
+from relay.application import build_supported_relay_runtime
 from relay.device_opus import DeviceOpusCodec, unpack_opus_bundle
 from relay.device_protocol import adapt_device_handler
 from relay.device_tls_psk import PSK_CIPHERS, build_server_context
@@ -32,12 +34,14 @@ class FakeProvider:
     provider_id = "gemini"
     capabilities = ProviderCapabilities(True, True, True, True, False, True)
 
-    def __init__(self):
+    def __init__(self, auto_complete=True):
         self.callbacks = {}
+        self.auto_complete = auto_complete
         self.connected = False
         self.connect_calls = 0
         self.end_turn_calls = 0
         self.audio_input = bytearray()
+        self.tool_results = []
 
     def on_audio(self, callback): self.callbacks["audio"] = callback
     def on_transcript(self, callback): self.callbacks["transcript"] = callback
@@ -60,11 +64,16 @@ class FakeProvider:
 
     async def end_turn(self):
         self.end_turn_calls += 1
+        if self.auto_complete:
+            await self.emit_response()
+
+    async def emit_response(self):
         await self.callbacks["audio"](AudioFrame(bytes([0x34, 0x12]) * 12_000, 24_000))
         await self.callbacks["transcript"](TranscriptEvent("Offline test response", "output", True))
         await self.callbacks["complete"](TurnCompleteEvent(cancelled=False))
 
-    async def send_tool_result(self, call_id, result): pass
+    async def send_tool_result(self, call_id, result):
+        self.tool_results.append((call_id, dict(result)))
     async def cancel_response(self): pass
     async def inject_text(self, text): pass
 
@@ -289,6 +298,127 @@ class PskWssIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bytes(received_audio), output_pcm)
         self.assertEqual(self.provider.connect_calls, 1)
         self.assertTrue(any(item.get("type") == "state" and item.get("state") == "thinking" for item in received_controls))
+
+    async def _read_controls_until(self, websocket, collected, state):
+        while True:
+            message = await asyncio.wait_for(websocket.recv(), timeout=2)
+            self.assertIsInstance(message, str)
+            control = json.loads(message)
+            collected.append(control)
+            if control.get("type") == "state" and control.get("state") == state:
+                return
+
+    async def test_supported_runtime_wss_admits_one_server_owned_slow_task(self):
+        from google.genai import types as sdk_types
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            environ = {
+                "AMUSANT_CLIENT_ID": "h03-owner",
+                "AMUSANT_BACKEND_ID": "openab",
+                "AMUSANT_TASK_DB": f"{temp_dir}/task-ledger.sqlite3",
+                "AMUSANT_TASK_STORE": "sqlite",
+                "AMUSANT_DEFAULT_TASK_KIND": "research",
+                "AMUSANT_MAX_TASK_TTL_SECONDS": "600",
+                "AMUSANT_MAX_PENDING_TASKS": "8",
+                "AMUSANT_ACCEPTANCE_TIMEOUT_SECONDS": "1",
+                "AMUSANT_LIVE_PROVIDER": "gemini",
+                "GEMINI_API_KEY": "offline-test-key",
+            }
+            fake = FakeProvider(auto_complete=False)
+            with patch("relay.application.build_live_provider", return_value=fake):
+                handler, dispatcher, store = build_supported_relay_runtime(
+                    expected_device_token=TOKEN,
+                    environ=environ,
+                    sdk_types=sdk_types,
+                    conversation_id_factory=lambda: "h03-server-conversation",
+                    post_tool_ack_timeout_seconds=0.2,
+                    post_tool_ack_max_duration_seconds=1.0,
+                )
+                self.assertIsNone(dispatcher)  # local ledger admission only; no ACP/AWS call.
+                server = await serve(
+                    adapt_device_handler(handler, hardware_mode=True),
+                    "127.0.0.1",
+                    0,
+                    ssl=build_server_context({IDENTITY: PSK}),
+                    max_size=64 * 1024,
+                    ping_interval=None,
+                )
+                port = server.sockets[0].getsockname()[1]
+                client_codec = DeviceOpusCodec(uplink_rate=24_000, downlink_rate=16_000)
+                source = make_pcm16(16_000, 400)
+                uplink_bundles = []
+                for start in range(0, len(source), 640):
+                    uplink_bundles.extend(client_codec.encode_downlink(source[start : start + 640]))
+                uplink_bundles.extend(client_codec.finish_downlink())
+                controls = []
+                downlink_bundles = []
+                try:
+                    async with connect(
+                        f"wss://127.0.0.1:{port}/ws",
+                        ssl=make_client_context(IDENTITY, PSK, "ECDHE-PSK-AES128-CBC-SHA256"),
+                        additional_headers={"Authorization": f"Bearer {TOKEN}"},
+                    ) as websocket:
+                        await websocket.send(json.dumps({
+                            "type": "hello",
+                            "device": "untrusted-device-label",
+                            "codecs": ["opus"],
+                        }))
+                        await websocket.send(json.dumps({"type": "ptt_start"}))
+                        for bundle in uplink_bundles:
+                            await websocket.send(bundle)
+                        await websocket.send(json.dumps({"type": "ptt_end"}))
+                        await self._read_controls_until(websocket, controls, "thinking")
+
+                        await fake.callbacks["tool"](ToolCallEvent(
+                            "call-h03-slow",
+                            "delegate_task",
+                            {"task": "Research a bounded topic", "task_kind": "research"},
+                        ))
+                        await fake.callbacks["complete"](TurnCompleteEvent(cancelled=False))
+                        with self.assertRaises(asyncio.TimeoutError):
+                            await asyncio.wait_for(websocket.recv(), timeout=0.05)
+                        await fake.emit_response()
+
+                        while True:
+                            message = await asyncio.wait_for(websocket.recv(), timeout=3)
+                            if isinstance(message, bytes):
+                                downlink_bundles.append(message)
+                            else:
+                                control = json.loads(message)
+                                controls.append(control)
+                                if control.get("type") == "turn_complete":
+                                    break
+                finally:
+                    server.close()
+                    await server.wait_closed()
+
+            self.assertEqual(len(fake.tool_results), 1)
+            call_id, receipt = fake.tool_results[0]
+            row = store.get_by_call(
+                client_id="h03-owner",
+                conversation_id="h03-server-conversation",
+                turn_id=1,
+                call_id="call-h03-slow",
+            )
+            self.assertEqual(call_id, "call-h03-slow")
+            self.assertEqual(receipt["status"], "accepted")
+            self.assertIsNotNone(row)
+            self.assertEqual(receipt["task_id"], row["task_id"])
+            self.assertEqual(row["status"], "queued")
+            self.assertEqual(row["task_kind"], "research")
+            self.assertEqual(row["backend"], "openab")
+            self.assertEqual(row["dispatch_state"], "pending")
+            self.assertIsNone(store.get_by_call(
+                client_id="untrusted-device-label",
+                conversation_id="h03-server-conversation",
+                turn_id=1,
+                call_id="call-h03-slow",
+            ))
+            self.assertEqual(fake.connect_calls, 1)
+            self.assertEqual(fake.end_turn_calls, 1)
+            self.assertTrue(downlink_bundles)
+            self.assertTrue(all(bundle[0] == 0x02 and len(bundle) <= 4096 for bundle in downlink_bundles))
+            self.assertEqual(sum(item.get("type") == "turn_complete" for item in controls), 1)
 
     async def test_wrong_identity_or_psk_fails_before_websocket_handler(self):
         for identity, key in ((IDENTITY, bytes([99]) * 32), ("unknown-stick", PSK)):

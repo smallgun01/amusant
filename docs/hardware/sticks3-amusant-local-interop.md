@@ -29,7 +29,7 @@ Keep actual secrets in the owner's private runtime environment; never put them i
 
 The actual owner-run command, after separate approval for a paid Live turn and physical test, is:
 
-<pre><code>python -m relay.live_bridge --device-mode sticks3 --host &lt;PRIVATE_LAN_IP&gt;</code></pre>
+<pre><code>uv run --locked --python 3.13 --extra hardware-opus python -m relay.live_bridge --device-mode sticks3 --host &lt;PRIVATE_LAN_IP&gt;</code></pre>
 
 The device and Relay must use the same local host/port and matching owner-held credentials. Never run the upstream Kai Relay and Amusant on the same host:port at the same time.
 

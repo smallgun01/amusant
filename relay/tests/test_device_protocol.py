@@ -11,6 +11,7 @@ class FakeCodec:
     def __init__(self):
         self.pending = bytearray()
         self.reset_calls = 0
+        self.uplink_reset_calls = 0
         self.discard_calls = 0
         self.finish_calls = 0
 
@@ -34,9 +35,18 @@ class FakeCodec:
         self.discard_calls += 1
         self.pending.clear()
 
+    def reset_uplink(self):
+        self.uplink_reset_calls += 1
+
     def reset_turn(self):
         self.reset_calls += 1
         self.pending.clear()
+
+
+class OverlapCodec(FakeCodec):
+    def encode_downlink(self, pcm):
+        self.pending.extend(pcm)
+        return [b"OLD-PACKET"]
 
 
 class FakeWebSocket:
@@ -71,7 +81,7 @@ class DeviceProtocolAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await adapter.__anext__(), hello)
         self.assertEqual(json.loads(await adapter.__anext__())["type"], "ptt_start")
         self.assertEqual(len(await adapter.__anext__()), 9600)
-        self.assertEqual(fake_codec.reset_calls, 1)
+        self.assertEqual(fake_codec.uplink_reset_calls, 1)
         self.assertEqual(raw.sent, [])  # hello must not trigger premature state:idle
 
     async def test_unadvertised_codec_stays_pcm_and_hardware_mode_rejects_downgrade(self):
@@ -153,9 +163,53 @@ class DeviceProtocolAdapterTests(unittest.IsolatedAsyncioTestCase):
         await adapters[0].__anext__()
         await first_raw.incoming.put(json.dumps({"type": "ptt_start"}))
         await adapters[0].__anext__()
-        self.assertEqual(created[0].reset_calls, 2)
+        self.assertEqual(created[0].uplink_reset_calls, 2)
+        self.assertTrue(created[0].pending)  # PTT observation must not reset the old downlink encoder.
+        await adapters[0].begin_device_turn(2)  # live_bridge invokes this after fencing/superseding turn 1.
         self.assertEqual(created[0].pending, bytearray())
         self.assertEqual(created[1].pending, bytearray())
+
+    async def test_inflight_old_audio_keeps_old_turn_owner_until_bridge_fence(self):
+        raw = FakeWebSocket()
+        codec = OverlapCodec()
+        adapter = DeviceWebSocketAdapter(raw, hardware_mode=True, codec_factory=lambda: codec)
+        await raw.incoming.put(json.dumps({"type": "hello", "codecs": ["opus"]}))
+        await adapter.__anext__()
+        await raw.incoming.put(json.dumps({"type": "ptt_start"}))
+        await adapter.__anext__()
+        await adapter.begin_device_turn(1)
+        await raw.incoming.put(json.dumps({"type": "ptt_end"}))
+        await adapter.__anext__()
+
+        send_entered = asyncio.Event()
+        release_send = asyncio.Event()
+
+        async def blocking_send(message):
+            if message == b"OLD-PACKET":
+                send_entered.set()
+                await release_send.wait()
+            raw.sent.append(message)
+
+        raw.send = blocking_send
+        with self.assertLogs("amusant.p2.live_bridge", level="INFO") as captured:
+            old_audio = asyncio.create_task(adapter.send(bytes(20)))
+            await asyncio.wait_for(send_entered.wait(), timeout=1)
+            await raw.incoming.put(json.dumps({"type": "ptt_start"}))
+            new_ptt = asyncio.create_task(adapter.__anext__())
+            await asyncio.sleep(0.01)
+            self.assertFalse(new_ptt.done())  # decoder reset waits behind the in-flight send lock
+            self.assertEqual(adapter._active_output_turn_id, 1)
+            release_send.set()
+            await old_audio
+            self.assertEqual(json.loads(await new_ptt), {"type": "ptt_start"})
+
+            # live_bridge calls this only after superseding/fencing the old provider epoch.
+            await adapter.begin_device_turn(2)
+            self.assertEqual(adapter._active_output_turn_id, 2)
+
+        audio_logs = [line for line in captured.output if "event=first_outgoing_audio" in line]
+        self.assertEqual(len(audio_logs), 1)
+        self.assertIn("turn_id=1", audio_logs[0])
 
     async def test_hardware_handler_rejects_plaintext_before_application_handler(self):
         raw = FakeWebSocket(tls=False)
