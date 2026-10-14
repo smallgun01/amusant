@@ -39,7 +39,7 @@ Only after the focused code PR has been reviewed and the owner separately author
 
 1. Verify the private bind, TLS-PSK handshake, Bearer validation, and service dependencies locally; ensure no AWS, public DNS, or port-forwarding is involved.
 2. Stop the temporary upstream Kai Relay before binding Amusant to the same port. Use the already-working, pinned, unmodified StickS3 firmware; no reflashing is required for this interop proof.
-3. The owner performs PTT, wake-and-talk, interruption, reconnect, and audible-playback checks. Record sanitized PTT-start, decoded-300ms threshold/provider-connect, release, and first-wire-audio timings; do not log audio, transcript text, MAC, PSK, Bearer, or API key.
+3. The owner performs PTT, wake-and-talk, interruption, reconnect, and audible-playback checks. Record sanitized PTT-start, decoded-300ms threshold/provider-connect, release, and first-wire-audio timings; the adapter retains only constant-size current-turn timing state, not per-turn history. Do not log audio, transcript text, MAC, PSK, Bearer, or API key.
 4. If Amusant fails, stop its local process and restart the known-good upstream Kai Relay on the same host/port. Confirm listener teardown before handing the device back.
 
 Offline fake-provider PASS is only protocol/software evidence. It is not real-device functional PASS, paid Gemini runtime proof, or H0 latency acceptance.

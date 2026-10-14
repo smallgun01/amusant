@@ -43,11 +43,11 @@ class DeviceWebSocketAdapter:
         self._ptt_open = False
         self._ptt_started_at: float | None = None
         self._ptt_released_at: float | None = None
-        self._turn_started_at: dict[int, float] = {}
-        self._turn_released_at: dict[int, float] = {}
+        self._active_output_started_at: float | None = None
+        self._active_output_released_at: float | None = None
         self._decoded_input_bytes = 0
         self._threshold_logged = False
-        self._first_wire_audio_turns: set[int] = set()
+        self._first_wire_audio_logged = False
 
     def _note_decoded_input(self, byte_count: int) -> None:
         if not self._hardware_mode or not self._ptt_open:
@@ -65,12 +65,12 @@ class DeviceWebSocketAdapter:
 
     def _note_wire_audio(self) -> None:
         turn_id = self._active_output_turn_id
-        if not self._hardware_mode or turn_id < 1 or turn_id in self._first_wire_audio_turns:
+        if not self._hardware_mode or turn_id < 1 or self._first_wire_audio_logged:
             return
-        self._first_wire_audio_turns.add(turn_id)
+        self._first_wire_audio_logged = True
         now = time.monotonic()
-        release_at = self._turn_released_at.get(turn_id)
-        start_at = self._turn_started_at.get(turn_id)
+        release_at = self._active_output_released_at
+        start_at = self._active_output_started_at
         release_ms = None if release_at is None else round((now - release_at) * 1000)
         ptt_ms = None if start_at is None else round((now - start_at) * 1000)
         LOG.info(
@@ -86,7 +86,9 @@ class DeviceWebSocketAdapter:
             raise DeviceProtocolError("invalid_bridge_turn_id")
         async with self._codec_lock:
             self._active_output_turn_id = turn_id
-            self._first_wire_audio_turns.discard(turn_id)
+            self._active_output_started_at = self._ptt_started_at
+            self._active_output_released_at = self._ptt_released_at
+            self._first_wire_audio_logged = False
             if self._codec is not None:
                 self._codec.discard_downlink()
 
@@ -160,7 +162,6 @@ class DeviceWebSocketAdapter:
                     self._ptt_open = True
                     self._turn_id += 1
                     self._ptt_started_at = time.monotonic()
-                    self._turn_started_at[self._turn_id] = self._ptt_started_at
                     self._ptt_released_at = None
                     self._decoded_input_bytes = 0
                     self._threshold_logged = False
@@ -172,7 +173,8 @@ class DeviceWebSocketAdapter:
             elif kind == "ptt_end" and self._ptt_open:
                 self._ptt_open = False
                 self._ptt_released_at = time.monotonic()
-                self._turn_released_at[self._turn_id] = self._ptt_released_at
+                if self._active_output_turn_id == self._turn_id:
+                    self._active_output_released_at = self._ptt_released_at
                 if self._hardware_mode and self._ptt_started_at is not None:
                     LOG.info(
                         "device latency turn_id=%d event=ptt_release ptt_hold_ms=%d decoded_pcm_bytes=%d",

@@ -211,6 +211,22 @@ class DeviceProtocolAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(audio_logs), 1)
         self.assertIn("turn_id=1", audio_logs[0])
 
+    async def test_latency_bookkeeping_stays_constant_space_across_many_turns(self):
+        raw = FakeWebSocket()
+        adapter = DeviceWebSocketAdapter(raw, hardware_mode=True, codec_factory=FakeCodec)
+        await raw.incoming.put(json.dumps({"type": "hello", "codecs": ["opus"]}))
+        await adapter.__anext__()
+        for turn_id in range(1, 257):
+            await raw.incoming.put(json.dumps({"type": "ptt_start"}))
+            await adapter.__anext__()
+            await adapter.begin_device_turn(turn_id)
+            await raw.incoming.put(json.dumps({"type": "ptt_end"}))
+            await adapter.__anext__()
+        self.assertEqual(adapter._turn_id, 256)
+        self.assertFalse(hasattr(adapter, "_turn_started_at"))
+        self.assertFalse(hasattr(adapter, "_turn_released_at"))
+        self.assertFalse(hasattr(adapter, "_first_wire_audio_turns"))
+
     async def test_hardware_handler_rejects_plaintext_before_application_handler(self):
         raw = FakeWebSocket(tls=False)
         called = []
