@@ -12,6 +12,8 @@ from websockets.exceptions import ConnectionClosedError
 
 from fast_voice.contracts import AudioFrame, ProviderCapabilities, ToolCallEvent, TranscriptEvent, TurnCompleteEvent
 from relay.application import build_relay_handler, build_supported_relay_handler, load_relay_process_config
+from relay.device_opus import DeviceProtocolError
+from relay.device_protocol import adapt_device_handler
 from relay.live_bridge import MIN_UTTERANCE_BYTES, make_handler, run as run_live_bridge
 from relay.slow_path import SlowPathToolRouter
 from relay.task_store import SQLiteTaskStore
@@ -91,6 +93,23 @@ class FakeSchemaTypes:
         def __init__(self, **kwargs): self.__dict__.update(kwargs)
     class Tool:
         def __init__(self, **kwargs): self.__dict__.update(kwargs)
+
+
+class BufferingFakeDeviceCodec:
+    """Retain a partial encoded frame until terminal flush, without PyAV."""
+    def __init__(self): self.pending = bytearray()
+    def decode_uplink(self, message):
+        if message != b"OPUS-IN": raise DeviceProtocolError("invalid_opus_packet")
+        return bytes(MIN_UTTERANCE_BYTES)
+    def encode_downlink(self, pcm):
+        self.pending.extend(pcm)
+        return []
+    def finish_downlink(self):
+        if not self.pending: return []
+        self.pending.clear()
+        return [b"OPUS-FINAL"]
+    def discard_downlink(self): self.pending.clear()
+    def reset_turn(self): self.pending.clear()
 
 
 class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
@@ -272,6 +291,102 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
             cards = [item for item in controls if item.get("type") == "card"]
             self.assertEqual(cards[0]["title"], "Voice response incomplete")
             self.assertNotIn("accepted", " ".join(cards[0]["lines"]).lower())
+
+    async def test_opus_adapter_flushes_before_local_post_tool_timeout_marker(self):
+        fake = FakeProvider(auto_complete=False)
+        dispatches = []
+
+        async def slow_handler(_event, _turn_id):
+            dispatches.append("accepted")
+            return {"status": "accepted", "task_id": "offline-task"}
+
+        base = make_handler(
+            TOKEN,
+            lambda: fake,
+            slow_path_tool_handler=slow_handler,
+            post_tool_ack_timeout_seconds=0.05,
+            post_tool_ack_max_duration_seconds=0.2,
+        )
+        handler = adapt_device_handler(base, codec_factory=BufferingFakeDeviceCodec)
+        server = await serve(handler, "127.0.0.1", 0, max_size=64 * 1024)
+        port = server.sockets[0].getsockname()[1]
+        ws = await connect(
+            f"ws://127.0.0.1:{port}/ws",
+            additional_headers={"Authorization": f"Bearer {TOKEN}"},
+        )
+        try:
+            await ws.send(json.dumps({"type": "hello", "codecs": ["opus"]}))
+            await ws.send(json.dumps({"type": "ptt_start"}))
+            await ws.send(b"OPUS-IN")
+            await ws.send(json.dumps({"type": "ptt_end"}))
+            await self._controls_until(
+                ws, lambda item, _items: item.get("type") == "state" and item.get("state") == "thinking"
+            )
+            await fake.callbacks["tool"](
+                ToolCallEvent("call-opus-timeout", "delegate_task", {"task": "Research this"})
+            )
+            # This provider turn_complete is internal to the tool phase, not the device terminal marker.
+            await fake.callbacks["complete"](TurnCompleteEvent(cancelled=False))
+            await fake.callbacks["audio"](AudioFrame(bytes([1, 0]) * 1000, 24_000))
+            await fake.callbacks["transcript"](TranscriptEvent("Acknowledgement started", "output", True))
+
+            received = []
+            while True:
+                message = await asyncio.wait_for(ws.recv(), timeout=2)
+                if isinstance(message, bytes):
+                    received.append(("binary", message))
+                    continue
+                control = json.loads(message)
+                received.append(("control", control))
+                if control.get("type") == "turn_complete":
+                    break
+        finally:
+            await ws.close()
+            server.close()
+            await server.wait_closed()
+
+        terminal_index = next(i for i, item in enumerate(received) if item == ("control", {"type": "turn_complete"}))
+        final_audio_index = next(i for i, item in enumerate(received) if item == ("binary", b"OPUS-FINAL"))
+        self.assertLess(final_audio_index, terminal_index)
+        self.assertEqual(dispatches, ["accepted"])
+        self.assertEqual(sum(item == ("control", {"type": "turn_complete"}) for item in received), 1)
+        self.assertTrue(any(item[0] == "control" and item[1].get("title") == "Voice response incomplete" for item in received))
+
+    async def test_malformed_opus_fails_before_provider_or_slow_task_dispatch(self):
+        created = []
+        dispatches = []
+        base = make_handler(
+            TOKEN,
+            lambda: created.append(FakeProvider()) or created[-1],
+            slow_path_tool_handler=lambda *_: asyncio.sleep(0, result=dispatches.append(True)),
+        )
+        server = await serve(
+            adapt_device_handler(base, codec_factory=BufferingFakeDeviceCodec),
+            "127.0.0.1",
+            0,
+            max_size=64 * 1024,
+        )
+        port = server.sockets[0].getsockname()[1]
+        ws = await connect(
+            f"ws://127.0.0.1:{port}/ws",
+            additional_headers={"Authorization": f"Bearer {TOKEN}"},
+        )
+        try:
+            await ws.send(json.dumps({"type": "hello", "codecs": ["opus"]}))
+            await ws.send(json.dumps({"type": "ptt_start"}))
+            await ws.send(b"malformed-opus")
+            controls, audio_bytes = await self._controls_until(
+                ws, lambda item, _items: item.get("type") == "state" and item.get("state") == "idle"
+            )
+        finally:
+            await ws.close()
+            server.close()
+            await server.wait_closed()
+        self.assertEqual(created, [])
+        self.assertEqual(dispatches, [])
+        self.assertEqual(audio_bytes, 0)
+        self.assertEqual(sum(item.get("type") == "turn_complete" for item in controls), 0)
+        self.assertTrue(any(item.get("type") == "card" and item.get("title") == "Live unavailable" for item in controls))
 
     async def test_streaming_post_tool_audio_refreshes_inactivity_timeout(self):
         fake = FakeProvider(auto_complete=False)
@@ -1053,6 +1168,53 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(builder.call_args.args[0], token)
         self.assertIs(served["handler"], sentinel)
         self.assertEqual((served["host"], served["port"]), ("127.0.0.1", 8765))
+
+    async def test_run_sticks3_mode_wraps_supported_handler_with_psk_tls(self):
+        served = {}
+        sentinel = object()
+        tls_context = object()
+
+        class FakeServer:
+            async def __aenter__(self): return self
+            async def __aexit__(self, exc_type, exc, tb): return False
+            async def serve_forever(self): return None
+
+        def fake_serve(handler, host, port, **kwargs):
+            served.update(handler=handler, host=host, port=port, kwargs=kwargs)
+            return FakeServer()
+
+        with (
+            patch("relay.live_bridge.build_process_runtime", return_value=(sentinel, None)) as builder,
+            patch("relay.live_bridge.server_context_from_environ", return_value=tls_context),
+            patch("relay.live_bridge.DeviceOpusCodec", return_value=object()),
+            patch("relay.live_bridge.validate_hardware_bind_host"),
+            patch("relay.live_bridge.serve", side_effect=fake_serve),
+            patch.dict(
+                "os.environ",
+                {"AMUSANT_LIVE_PROVIDER": "gemini", "GEMINI_API_KEY": "offline-test-key"},
+                clear=False,
+            ),
+        ):
+            await run_live_bridge("127.0.0.1", 8443, "device-token-12", device_mode="sticks3")
+        builder.assert_called_once()
+        self.assertIsNot(served["handler"], sentinel)
+        self.assertIs(served["kwargs"]["ssl"], tls_context)
+        self.assertEqual((served["host"], served["port"]), ("127.0.0.1", 8443))
+
+    async def test_sticks3_startup_fails_before_composition_without_tls_config(self):
+        with (
+            patch("relay.live_bridge.server_context_from_environ", side_effect=ValueError("missing psk")),
+            patch("relay.live_bridge.validate_hardware_bind_host"),
+            patch("relay.live_bridge.build_process_runtime") as builder,
+            patch.dict(
+                "os.environ",
+                {"AMUSANT_LIVE_PROVIDER": "gemini", "GEMINI_API_KEY": "offline-test-key"},
+                clear=False,
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "missing psk"):
+                await run_live_bridge("127.0.0.1", 8443, "device-token-12", device_mode="sticks3")
+        builder.assert_not_called()
 
 
 if __name__ == "__main__":

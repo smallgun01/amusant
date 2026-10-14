@@ -11,6 +11,7 @@ import json
 import logging
 import math
 import os
+import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
@@ -21,11 +22,16 @@ from websockets.exceptions import ConnectionClosed
 
 from fast_voice import AudioFrame, LiveProvider, ProviderError
 from fast_voice.contracts import JSONValue, ToolCallEvent
+from relay.device_opus import DeviceOpusCodec, DeviceProtocolError
+from relay.device_protocol import adapt_device_handler
+from relay.device_tls_psk import server_context_from_environ, validate_hardware_bind_host
 from relay.mock_relay import INPUT_RATE, MAX_FRAME_BYTES, OUTPUT_CHUNK_BYTES, OUTPUT_RATE, validate_bind_host
 
 DEVICE_TOKEN_ENV = "AMUSANT_DEVICE_TOKEN"
 MAX_UTTERANCE_BYTES = 1_000_000
 MAX_TOOL_RESULT_BYTES = 8 * 1024
+# Intentional short-tap/cost guard: connect only after 300 ms of decoded PCM.
+# Kai eagerly ensures its Live session on ptt_start; this Amusant behavior is not equivalent.
 MIN_UTTERANCE_BYTES = INPUT_RATE * 2 * 300 // 1000
 POST_TOOL_ACK_TIMEOUT_SECONDS = 3.0
 POST_TOOL_ACK_MAX_DURATION_SECONDS = 15.0
@@ -74,6 +80,9 @@ class Turn:
     output_bytes: int = 0
     provider_epoch: int | None = None
     pending_audio: bytearray = field(default_factory=bytearray)
+    ptt_started_at: float = field(default_factory=time.monotonic)
+    provider_connect_started_at: float | None = None
+    provider_connected_at: float | None = None
 
 
 def _safe_device(value: Any) -> str:
@@ -228,6 +237,7 @@ def make_handler(
 
         async def finish_from_provider(turn: Turn, epoch: int) -> bool:
             nonlocal response_turn
+            device_send_failed = False
             async with send_lock:
                 if not owns_response(turn, epoch):
                     return False
@@ -239,8 +249,26 @@ def make_handler(
                 response_turn = None
                 try:
                     await ws.send(json.dumps({"type": "turn_complete"}))
+                except DeviceProtocolError:
+                    # A failed final Opus flush must never be reported as a completed voice turn.
+                    turn.state = TurnState.FAILED
+                    turn.completion_sent = False
+                    device_send_failed = True
+                    try:
+                        await ws.send(json.dumps({
+                            "type": "card",
+                            "title": "Audio unavailable",
+                            "lines": ["The final audio frame could not be encoded.", "No completion was reported."],
+                            "icon": "mic",
+                        }))
+                        await ws.send(json.dumps({"type": "state", "state": "idle"}))
+                    except (ConnectionClosed, DeviceProtocolError):
+                        pass
                 except ConnectionClosed:
                     return False
+            if device_send_failed:
+                await retire_provider(epoch)
+                return False
             LOG.info(
                 "Live turn complete turn_id=%d device=%s input_bytes=%d output_bytes=%d; audio not persisted",
                 turn.turn_id, device, turn.input_bytes, turn.output_bytes,
@@ -262,11 +290,25 @@ def make_handler(
                 turn.response_pending = False
                 if response_turn is turn:
                     response_turn = None
+                device_send_failed = False
                 for payload in controls:
                     try:
                         await ws.send(json.dumps(payload))
+                    except DeviceProtocolError:
+                        # A locally generated terminal marker is also conditional on a successful flush.
+                        turn.state = TurnState.FAILED
+                        turn.completion_sent = False
+                        device_send_failed = True
+                        try:
+                            await ws.send(json.dumps({"type": "state", "state": "idle"}))
+                        except (ConnectionClosed, DeviceProtocolError):
+                            pass
+                        break
                     except ConnectionClosed:
                         return False
+            if device_send_failed:
+                await retire_provider(turn.provider_epoch)
+                return False
             return True
 
         async def retire_provider(expected_epoch: int | None = None) -> None:
@@ -310,16 +352,20 @@ def make_handler(
                     await fail_turn(turn, "invalid_audio_frame")
                     return
                 turn.state = TurnState.PLAYING
-                for start in range(0, len(frame.data), OUTPUT_CHUNK_BYTES):
-                    chunk = frame.data[start : start + OUTPUT_CHUNK_BYTES]
-                    async with send_lock:
-                        if not owns_response(turn, epoch):
-                            return
-                        try:
-                            await ws.send(chunk)
-                        except ConnectionClosed:
-                            return
-                        turn.output_bytes += len(chunk)
+                try:
+                    for start in range(0, len(frame.data), OUTPUT_CHUNK_BYTES):
+                        chunk = frame.data[start : start + OUTPUT_CHUNK_BYTES]
+                        async with send_lock:
+                            if not owns_response(turn, epoch):
+                                return
+                            try:
+                                await ws.send(chunk)
+                            except ConnectionClosed:
+                                return
+                            turn.output_bytes += len(chunk)
+                except DeviceProtocolError:
+                    await fail_turn(turn, "device_audio_encode_failed")
+                    await retire_provider(epoch)
 
             async def on_transcript(event: Any) -> None:
                 turn = response_turn
@@ -410,8 +456,21 @@ def make_handler(
             turn.provider_epoch = epoch
             response_turn = turn
             if not provider_connected:
+                turn.provider_connect_started_at = time.monotonic()
+                LOG.info(
+                    "Live connect milestone turn_id=%d event=provider_connect_start ptt_to_connect_start_ms=%d",
+                    turn.turn_id,
+                    round((turn.provider_connect_started_at - turn.ptt_started_at) * 1000),
+                )
                 await provider.connect()
+                turn.provider_connected_at = time.monotonic()
                 provider_connected = True
+                LOG.info(
+                    "Live connect milestone turn_id=%d ptt_to_connect_ms=%d connect_ms=%d",
+                    turn.turn_id,
+                    round((turn.provider_connected_at - turn.ptt_started_at) * 1000),
+                    round((turn.provider_connected_at - turn.provider_connect_started_at) * 1000),
+                )
             return provider, epoch
 
         async def reject_turn(turn: Turn, title: str, reason: str) -> None:
@@ -535,6 +594,18 @@ def make_handler(
                         turn.invalidated = True
                         turn.state = TurnState.CLOSED
                         await send_json({"type": "state", "state": "idle"})
+        except DeviceProtocolError:
+            LOG.warning("client session rejected device protocol device=%s", device)
+            if active_turn is not None:
+                await fail_turn(active_turn, "invalid_device_audio")
+            else:
+                await send_json({
+                    "type": "card",
+                    "title": "Invalid device audio",
+                    "lines": ["The device audio frame was not accepted.", "No audio or task was processed."],
+                    "icon": "mic",
+                })
+                await send_json({"type": "state", "state": "idle"})
         except ConnectionClosed:
             pass
         except ProviderError as error:
@@ -573,23 +644,36 @@ def build_process_handler(token: str, environ: Mapping[str, str], **kwargs):
     return handler
 
 
-async def run(host: str, port: int, token: str) -> None:
+async def run(host: str, port: int, token: str, *, device_mode: str = "pcm") -> None:
     validate_bind_host(host)
+    if device_mode not in {"pcm", "sticks3"}:
+        raise ValueError("device_mode must be pcm or sticks3")
     if len(token) < 12:
         raise ValueError("AMUSANT_DEVICE_TOKEN must contain at least 12 characters")
     if os.environ.get("AMUSANT_LIVE_PROVIDER") != "gemini" or not os.environ.get("GEMINI_API_KEY"):
         raise ValueError("Set AMUSANT_LIVE_PROVIDER=gemini and inject GEMINI_API_KEY at runtime")
+    ssl_context = None
+    if device_mode == "sticks3":
+        validate_hardware_bind_host(host)
+        ssl_context = server_context_from_environ(os.environ)
+        # Fail before opening the listener or starting the Slow Task dispatcher if Opus is unavailable.
+        DeviceOpusCodec()
     handler, dispatcher = build_process_runtime(token, os.environ)
+    if device_mode == "sticks3":
+        handler = adapt_device_handler(handler, hardware_mode=True)
     if dispatcher is not None:
         await dispatcher.start()
-    LOG.info(
-        "starting private Live bridge host=%s port=%d admission=on acp=%s",
-        host,
-        port,
-        "on" if dispatcher is not None else "off",
-    )
+    if device_mode == "sticks3":
+        LOG.info("starting private Live bridge transport=sticks3-tls-psk port=%d admission=on acp=%s", port,
+                 "on" if dispatcher is not None else "off")
+    else:
+        LOG.info("starting private Live bridge host=%s port=%d admission=on acp=%s", host, port,
+                 "on" if dispatcher is not None else "off")
+    serve_options = {"max_size": MAX_FRAME_BYTES, "ping_interval": 20, "ping_timeout": 20}
+    if ssl_context is not None:
+        serve_options["ssl"] = ssl_context
     try:
-        async with serve(handler, host, port, max_size=MAX_FRAME_BYTES, ping_interval=20, ping_timeout=20) as server:
+        async with serve(handler, host, port, **serve_options) as server:
             await server.serve_forever()
     finally:
         if dispatcher is not None:
@@ -598,13 +682,18 @@ async def run(host: str, port: int, token: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--host", default="127.0.0.1", help="loopback or explicit private LAN IP only")
-    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--device-mode", choices=("pcm", "sticks3"), default="pcm")
+    parser.add_argument("--host", help="PCM: loopback/private IP; StickS3: explicit private LAN IP")
+    parser.add_argument("--port", type=int, help="defaults to 8765 for PCM or 8443 for StickS3 TLS-PSK")
     args = parser.parse_args()
+    if args.device_mode == "sticks3" and not args.host:
+        parser.error("StickS3 mode requires an explicit private --host address")
+    host = args.host or "127.0.0.1"
+    port = args.port if args.port is not None else (8443 if args.device_mode == "sticks3" else 8765)
     token = os.environ.get(DEVICE_TOKEN_ENV, "")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     try:
-        asyncio.run(run(args.host, args.port, token))
+        asyncio.run(run(host, port, token, device_mode=args.device_mode))
     except KeyboardInterrupt:
         LOG.info("Live bridge stopped")
     except (OSError, ValueError) as exc:
