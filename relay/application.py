@@ -15,6 +15,7 @@ from typing import Any
 from uuid import uuid4
 
 from fast_voice import LiveProvider, build_live_provider
+from .companion_persona import resolve_persona
 from .live_bridge import (
     POST_TOOL_ACK_MAX_DURATION_SECONDS,
     POST_TOOL_ACK_TIMEOUT_SECONDS,
@@ -198,6 +199,7 @@ def build_relay_handler(
         conversation_id_factory = lambda: str(uuid4())
 
     live_tools = build_relay_tools(sdk_types)
+    system_instruction = resolve_persona(provider_environ)
 
     def provider_factory() -> LiveProvider:
         return build_live_provider(
@@ -205,6 +207,7 @@ def build_relay_handler(
             client_factory=client_factory,
             sdk_types=sdk_types,
             tool_declarations=[live_tools],
+            system_instruction=system_instruction,
         )
 
     def spoken_provider_factory() -> LiveProvider:
@@ -213,6 +216,7 @@ def build_relay_handler(
             provider_environ,
             client_factory=client_factory,
             sdk_types=sdk_types,
+            system_instruction=system_instruction,
         )
 
     def tool_handler_factory(client_id: str, conversation_id: str) -> SlowPathToolHandler:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import re
 from typing import Any
 
 from .contracts import LiveProvider, ProviderError
@@ -27,6 +28,7 @@ def build_live_provider(
     client_factory: Any | None = None,
     sdk_types: Any | None = None,
     tool_declarations: list[Any] | None = None,
+    system_instruction: str | None = None,
 ) -> LiveProvider:
     """Build Gemini only when explicitly selected; do not read files or call network.
 
@@ -48,6 +50,16 @@ def build_live_provider(
     model = environ.get("AMUSANT_GEMINI_MODEL", DEFAULT_GEMINI_MODEL).strip()
     if not model:
         raise ProviderConfigurationError("AMUSANT_GEMINI_MODEL cannot be empty.")
+    voice_name = environ.get("AMUSANT_GEMINI_VOICE")
+    if voice_name is not None and (
+        not isinstance(voice_name, str)
+        or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,31}", voice_name)
+    ):
+        raise ProviderConfigurationError("AMUSANT_GEMINI_VOICE must be a valid prebuilt voice name.")
+    if system_instruction is not None and (
+        not isinstance(system_instruction, str) or not system_instruction.strip()
+    ):
+        raise ProviderConfigurationError("system_instruction must be nonempty text when supplied.")
     max_tokens_value = environ.get("AMUSANT_GEMINI_MAX_OUTPUT_TOKENS")
     try:
         max_output_tokens = int(max_tokens_value) if max_tokens_value is not None else None
@@ -74,6 +86,14 @@ def build_live_provider(
         }
         if max_output_tokens is not None:
             config_options["max_output_tokens"] = max_output_tokens
+        if system_instruction is not None:
+            config_options["system_instruction"] = system_instruction
+        if voice_name is not None:
+            config_options["speech_config"] = sdk_types.SpeechConfig(
+                voice_config=sdk_types.VoiceConfig(
+                    prebuilt_voice_config=sdk_types.PrebuiltVoiceConfig(voice_name=voice_name)
+                )
+            )
         if tool_declarations is not None:
             config_options["tools"] = tool_declarations
         config = sdk_types.LiveConnectConfig(**config_options)
