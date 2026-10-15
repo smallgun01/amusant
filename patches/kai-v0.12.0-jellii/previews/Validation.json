@@ -1,0 +1,47 @@
+{
+  "native_dimensions": [
+    240,
+    135
+  ],
+  "native_png_count": 12,
+  "enlarged_dimensions": [
+    960,
+    540
+  ],
+  "nearest_neighbor_block_copy": true,
+  "native_contact_tiles_are_byte_identical": true,
+  "tentacle_components_below_dome": 4,
+  "speaking_open_sprite_cells": 4,
+  "speaking_open_lcd_pixels": 16,
+  "speaking_open_lcd_box": [
+    4,
+    4
+  ],
+  "sleeping_eye_rows": [
+    7
+  ],
+  "offline_x_eye_pixels_per_eye": 5,
+  "all_nontext_draws_inside_lcd": true,
+  "no_anti_aliasing": true,
+  "gif_palette_is_lossless": true,
+  "font_metrics": {
+    "Font0": [
+      6,
+      8
+    ],
+    "Font2_height": 16,
+    "FreeSansBold9pt7b_baseline": 13,
+    "FreeSansBold9pt7b_height": 18
+  },
+  "ui_fixture": {
+    "battery": 73,
+    "inbox": 3,
+    "status": "state label; nonempty to demonstrate status area"
+  },
+  "caveats": [
+    "Host raster port, not executed firmware / hardware capture.",
+    "Inbox hard-edge roundrect replaces upstream smooth roundrect for requested no-AA output.",
+    "Sleeping bob=1 keeps original overlap with ground at y=115..119.",
+    "Reply View uses original separate layout without Face View status widgets."
+  ]
+}
