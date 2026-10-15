@@ -78,7 +78,11 @@ def _condition_holds(current: dict[str, object] | None, condition: str) -> bool:
     if condition == "pending_queued":
         return current.get("outbox_state") == "pending" and current.get("status") == "queued"
     if condition == "delivery_can_speak":
-        return current.get("delivery_state") != "spoken"
+        return (
+            current.get("status") == "completed"
+            and current.get("speak") is not None
+            and current.get("delivery_state") != "spoken"
+        )
     if condition == "delivery_can_read":
         return current.get("delivery_state") in {None, "pending", "notified"}
     raise ValueError(f"unknown ledger condition {condition}")

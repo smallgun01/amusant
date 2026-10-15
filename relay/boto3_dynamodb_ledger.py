@@ -26,7 +26,10 @@ _CONDITIONS = {
     "claimed_unsent": "outbox_state = :claimed AND attribute_not_exists(dispatch_started_at)",
     "claimed_started": "outbox_state = :claimed AND attribute_exists(dispatch_started_at)",
     "pending_queued": "outbox_state = :pending AND #status = :queued",
-    "delivery_can_speak": "attribute_not_exists(delivery_state) OR delivery_state <> :ds_spoken",
+    "delivery_can_speak": (
+        "attribute_exists(pk) AND #status = :completed AND attribute_exists(speak) AND "
+        "(attribute_not_exists(delivery_state) OR delivery_state <> :ds_spoken)"
+    ),
     "delivery_can_read": (
         "attribute_not_exists(delivery_state) OR delivery_state = :ds_pending "
         "OR delivery_state = :ds_notified"
@@ -194,6 +197,8 @@ class Boto3DynamoLedger:
             values[":pending"] = {"S": "pending"}
         if ":queued" in expression:
             values[":queued"] = {"S": "queued"}
+        if ":completed" in expression:
+            values[":completed"] = {"S": "completed"}
         if ":ds_spoken" in expression:
             values[":ds_spoken"] = {"S": "spoken"}
         if ":ds_pending" in expression:

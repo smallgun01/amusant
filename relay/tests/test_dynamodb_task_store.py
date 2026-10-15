@@ -246,6 +246,31 @@ class DynamoDbTaskStoreTests(unittest.TestCase):
         row = ledger.get_item(CLIENT, f"TASK#{task_id}", consistent=True)
         self.assertIsNone(row.get("delivery_state"))
 
+    def test_spoken_condition_rechecks_completed_result_after_read_race(self):
+        ledger, store = _store()
+        task_id = str(uuid4())
+        store.admit(_request(task_id))
+        claimed = store.claim_due(now=NOW, lease_seconds=30)
+        store.mark_dispatch_started(task_id, now=NOW)
+        store.complete(
+            task_id,
+            result=BoundedTaskResult(speak="Done.", card={"title": "Ok"}, details_md="md"),
+        )
+        store.lookup_inbox(client_id=CLIENT, task_id=task_id)
+        original_update = ledger.update_item
+
+        def status_changes_before_conditional_update(pk, sk, patch, *, condition):
+            row = ledger.items[(pk, sk)]
+            row["status"] = "running"
+            row.pop("speak", None)
+            return original_update(pk, sk, patch, condition=condition)
+
+        ledger.update_item = status_changes_before_conditional_update
+        self.assertFalse(store.mark_inbox_spoken(client_id=CLIENT, task_id=task_id, now=NOW))
+        row = ledger.get_item(CLIENT, f"TASK#{task_id}", consistent=True)
+        self.assertEqual(row["status"], "running")
+        self.assertNotEqual(row.get("delivery_state"), "spoken")
+
     def test_capacity_one_serializes_two_threads(self):
         ledger, store = _store(max_pending_tasks=1)
         errors: list[BaseException] = []

@@ -1725,5 +1725,179 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any(item.get("title") == "Task not accepted" for item in controls))
 
 
+    async def test_late_retired_transcript_cannot_reset_tool_free_timeout(self):
+        spoken_calls = []
+        class Handler:
+            async def __call__(self, _event, _turn_id):
+                return {"status": "completed", "task_id": "4db5aabc-284a-4a01-8a6d-5cddcc7934f1", "speak": "Saved.", "speak_now": True}
+            async def mark_spoken(self, task_id):
+                spoken_calls.append(task_id)
+                return True
+        tool_provider = FakeProvider(auto_complete=False)
+        spoken_provider = FakeProvider(auto_complete=False)
+        server, ws = await self._open(
+            lambda: tool_provider,
+            slow_path_tool_handler=Handler(),
+            spoken_provider_factory=lambda: spoken_provider,
+            post_tool_ack_timeout_seconds=0.05,
+            post_tool_ack_max_duration_seconds=0.1,
+        )
+        try:
+            await self._send_turn(ws)
+            await self._controls_until(ws, lambda item, _items: item.get("state") == "thinking")
+            await tool_provider.callbacks["tool"](
+                ToolCallEvent("lookup-stale-caption", INBOX_TOOL_NAME, {"speak": True})
+            )
+            await tool_provider.callbacks["tool_batch_complete"]()
+            # Simulate a transcript callback already queued by the retired epoch.
+            await tool_provider.callbacks["transcript"](
+                TranscriptEvent("late old-session caption", "output", True)
+            )
+            controls, _audio_bytes = await self._controls_until(
+                ws, lambda item, _items: item.get("type") == "turn_complete"
+            )
+            self.assertTrue(any(item.get("title") == "Saved result available" for item in controls))
+            self.assertEqual(spoken_calls, [])
+        finally:
+            await ws.close()
+            server.close()
+            await server.wait_closed()
+
+    async def test_new_ptt_during_old_provider_close_uses_tool_enabled_provider(self):
+        close_entered = asyncio.Event()
+        release_close = asyncio.Event()
+        routed = []
+        class SignalingProvider(FakeProvider):
+            def __init__(self):
+                super().__init__(auto_complete=False)
+                self.connected_event = asyncio.Event()
+            async def connect(self):
+                await super().connect()
+                self.connected_event.set()
+        tool_provider = FakeProvider(auto_complete=False)
+        normal_provider = SignalingProvider()
+        spoken_provider = FakeProvider(auto_complete=False)
+        async def blocked_close():
+            tool_provider.connected = False
+            tool_provider.closed = True
+            tool_provider.close_calls += 1
+            close_entered.set()
+            await release_close.wait()
+        tool_provider.close = blocked_close
+        provider_queue = [tool_provider, normal_provider]
+        def next_tool_enabled_provider():
+            return provider_queue.pop(0)
+        async def route(event, _turn_id):
+            routed.append(event.name)
+            if event.name == INBOX_TOOL_NAME:
+                return {"status": "completed", "task_id": "4db5aabc-284a-4a01-8a6d-5cddcc7934f1", "speak": "Saved.", "speak_now": True}
+            return {"status": "accepted", "task_id": "new-task", "duplicate": False}
+        server, ws = await self._open(
+            next_tool_enabled_provider,
+            slow_path_tool_handler=route,
+            spoken_provider_factory=lambda: spoken_provider,
+        )
+        handoff = None
+        try:
+            await self._send_turn(ws)
+            await self._controls_until(ws, lambda item, _items: item.get("state") == "thinking")
+            await tool_provider.callbacks["tool"](
+                ToolCallEvent("lookup-close-race", INBOX_TOOL_NAME, {"speak": True})
+            )
+            handoff = asyncio.create_task(tool_provider.callbacks["tool_batch_complete"]())
+            await asyncio.wait_for(close_entered.wait(), timeout=1)
+
+            await ws.send(json.dumps({"type": "ptt_start"}))
+            await ws.send(bytes([132, 3]) * (MIN_UTTERANCE_BYTES // 2))
+            await asyncio.wait_for(normal_provider.connected_event.wait(), timeout=1)
+            await ws.send(json.dumps({"type": "ptt_end"}))
+
+            release_close.set()
+            await asyncio.wait_for(handoff, timeout=1)
+            self.assertEqual(spoken_provider.connect_calls, 0)
+            self.assertEqual(normal_provider.injected_text, [])
+            await normal_provider.callbacks["tool"](
+                ToolCallEvent("delegate-new-turn", "delegate_task", {"task": "new work"})
+            )
+            self.assertEqual(routed, [INBOX_TOOL_NAME, "delegate_task"])
+            await normal_provider.emit_response()
+            await self._controls_until(ws, lambda item, _items: item.get("type") == "turn_complete")
+        finally:
+            release_close.set()
+            if handoff is not None and not handoff.done():
+                await asyncio.gather(handoff, return_exceptions=True)
+            await ws.close()
+            server.close()
+            await server.wait_closed()
+
+    async def test_new_ptt_during_spoken_provider_connect_discards_stale_session(self):
+        connect_entered = asyncio.Event()
+        release_connect = asyncio.Event()
+        routed = []
+        class SignalingProvider(FakeProvider):
+            def __init__(self):
+                super().__init__(auto_complete=False)
+                self.connected_event = asyncio.Event()
+            async def connect(self):
+                await super().connect()
+                self.connected_event.set()
+        tool_provider = FakeProvider(auto_complete=False)
+        normal_provider = SignalingProvider()
+        spoken_provider = FakeProvider(auto_complete=False)
+        async def blocked_spoken_connect():
+            spoken_provider.connect_calls += 1
+            connect_entered.set()
+            await release_connect.wait()
+            spoken_provider.connected = True
+            spoken_provider.events.append("connect")
+        spoken_provider.connect = blocked_spoken_connect
+        provider_queue = [tool_provider, normal_provider]
+        def next_tool_enabled_provider():
+            return provider_queue.pop(0)
+        async def route(event, _turn_id):
+            routed.append(event.name)
+            if event.name == INBOX_TOOL_NAME:
+                return {"status": "completed", "task_id": "4db5aabc-284a-4a01-8a6d-5cddcc7934f1", "speak": "Saved.", "speak_now": True}
+            return {"status": "accepted", "task_id": "new-task", "duplicate": False}
+        server, ws = await self._open(
+            next_tool_enabled_provider,
+            slow_path_tool_handler=route,
+            spoken_provider_factory=lambda: spoken_provider,
+        )
+        handoff = None
+        try:
+            await self._send_turn(ws)
+            await self._controls_until(ws, lambda item, _items: item.get("state") == "thinking")
+            await tool_provider.callbacks["tool"](
+                ToolCallEvent("lookup-connect-race", INBOX_TOOL_NAME, {"speak": True})
+            )
+            handoff = asyncio.create_task(tool_provider.callbacks["tool_batch_complete"]())
+            await asyncio.wait_for(connect_entered.wait(), timeout=1)
+
+            await ws.send(json.dumps({"type": "ptt_start"}))
+            await ws.send(bytes([132, 3]) * (MIN_UTTERANCE_BYTES // 2))
+            await asyncio.wait_for(normal_provider.connected_event.wait(), timeout=1)
+            await ws.send(json.dumps({"type": "ptt_end"}))
+
+            release_connect.set()
+            await asyncio.wait_for(handoff, timeout=1)
+            self.assertFalse(spoken_provider.connected)
+            self.assertEqual(spoken_provider.injected_text, [])
+            self.assertEqual(normal_provider.injected_text, [])
+            await normal_provider.callbacks["tool"](
+                ToolCallEvent("delegate-after-connect-race", "delegate_task", {"task": "new work"})
+            )
+            self.assertEqual(routed, [INBOX_TOOL_NAME, "delegate_task"])
+            await normal_provider.emit_response()
+            await self._controls_until(ws, lambda item, _items: item.get("type") == "turn_complete")
+        finally:
+            release_connect.set()
+            if handoff is not None and not handoff.done():
+                await asyncio.gather(handoff, return_exceptions=True)
+            await ws.close()
+            server.close()
+            await server.wait_closed()
+
+
 if __name__ == "__main__":
     unittest.main()

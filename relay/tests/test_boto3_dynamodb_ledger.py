@@ -87,6 +87,22 @@ class _TransactFaultClient:
         return getattr(self._inner, name)
 
 
+class _DeleteAfterGetClient:
+    def __init__(self, inner):
+        self._inner = inner
+        self.delete_after_next_get = False
+
+    def get_item(self, **kwargs):
+        response = self._inner.get_item(**kwargs)
+        if self.delete_after_next_get:
+            self.delete_after_next_get = False
+            self._inner.delete_item(TableName=kwargs["TableName"], Key=kwargs["Key"])
+        return response
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
 class _QueryCaptureClient:
     def __init__(self, inner):
         self._inner = inner
@@ -173,6 +189,43 @@ class Boto3DynamoLedgerTests(unittest.TestCase):
             inbox = reader.lookup_inbox(client_id=CLIENT, task_id=task_id)
             self.assertEqual(inbox["status"], "completed")
             self.assertEqual(inbox["speak"], "Done.")
+
+    def test_spoken_marker_does_not_recreate_deleted_task_after_strong_read(self):
+        try:
+            import boto3
+            from moto import mock_aws
+        except ImportError:
+            self.skipTest("moto/boto3 not installed")
+        with mock_aws():
+            client = boto3.client("dynamodb", region_name="us-east-1")
+            _create_table(client)
+            from relay.boto3_dynamodb_ledger import Boto3DynamoLedger
+
+            task_id = str(uuid4())
+            writer = DynamoDbTaskStore(
+                Boto3DynamoLedger(client, TABLE), client_id=CLIENT, max_pending_tasks=8
+            )
+            writer.admit(_admit_request(task_id))
+            writer.claim_due(now=NOW, lease_seconds=30)
+            writer.mark_dispatch_started(task_id, now=NOW)
+            writer.complete(
+                task_id,
+                result=BoundedTaskResult(speak="Done.", card={"title": "Ok"}, details_md="md"),
+            )
+            writer.lookup_inbox(client_id=CLIENT, task_id=task_id)
+
+            deleting = _DeleteAfterGetClient(client)
+            deleting.delete_after_next_get = True
+            reader = DynamoDbTaskStore(
+                Boto3DynamoLedger(deleting, TABLE), client_id=CLIENT, max_pending_tasks=8
+            )
+            self.assertFalse(reader.mark_inbox_spoken(client_id=CLIENT, task_id=task_id, now=NOW))
+            row = client.get_item(
+                TableName=TABLE,
+                Key={"pk": {"S": CLIENT}, "sk": {"S": f"TASK#{task_id}"}},
+                ConsistentRead=True,
+            ).get("Item")
+            self.assertIsNone(row)
 
     def test_internal_server_error_after_commit_returns_one_receipt(self):
         try:
