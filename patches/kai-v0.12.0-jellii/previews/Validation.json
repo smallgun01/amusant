@@ -1,0 +1,165 @@
+{
+  "native_dimensions": [
+    240,
+    135
+  ],
+  "native_png_count": 12,
+  "enlarged_dimensions": [
+    960,
+    540
+  ],
+  "nearest_neighbor_block_copy": true,
+  "native_contact_tiles_are_byte_identical": true,
+  "tentacle_components_below_dome": 4,
+  "speaking_open_sprite_cells": 4,
+  "speaking_open_lcd_pixels": 16,
+  "speaking_open_lcd_box": [
+    4,
+    4
+  ],
+  "sleeping_eye_rows": [
+    7
+  ],
+  "offline_x_eye_pixels_per_eye": 5,
+  "all_nontext_draws_inside_lcd": true,
+  "no_anti_aliasing": true,
+  "gif_palette_is_lossless": true,
+  "font_metrics": {
+    "Font0": [
+      6,
+      8
+    ],
+    "Font2_height": 16,
+    "FreeSansBold9pt7b_baseline": 13,
+    "FreeSansBold9pt7b_height": 18
+  },
+  "ui_fixture": {
+    "battery": 73,
+    "inbox": 3,
+    "status": "state label; nonempty to demonstrate status area"
+  },
+  "caveats": [
+    "Host raster port, not executed firmware / hardware capture.",
+    "Inbox hard-edge roundrect replaces upstream smooth roundrect for requested no-AA output.",
+    "Sleeping bob=1 keeps original overlap with ground at y=115..119.",
+    "Reply View uses original separate layout without Face View status widgets."
+  ],
+  "effect_widget_collision_audit": {
+    "bounds_are_half_open_xyxy_pixels": true,
+    "widgets": {
+      "icon_0": [
+        40,
+        3,
+        54,
+        17
+      ],
+      "icon_1": [
+        84,
+        3,
+        98,
+        17
+      ],
+      "icon_2": [
+        128,
+        3,
+        142,
+        17
+      ],
+      "icon_3": [
+        172,
+        3,
+        186,
+        17
+      ],
+      "inbox_badge": [
+        4,
+        3,
+        20,
+        17
+      ],
+      "battery_text": [
+        219,
+        3,
+        237,
+        11
+      ],
+      "status_text_row": [
+        0,
+        118,
+        240,
+        135
+      ]
+    },
+    "external_effects": {
+      "thinking_bubble_1": [
+        165,
+        40,
+        170,
+        45
+      ],
+      "thinking_bubble_2": [
+        175,
+        30,
+        185,
+        40
+      ],
+      "thinking_bubble_3": [
+        190,
+        15,
+        205,
+        30
+      ],
+      "sleep_z_small_bob0": [
+        170,
+        40,
+        190,
+        65
+      ],
+      "sleep_z_big_bob0": [
+        190,
+        10,
+        215,
+        35
+      ],
+      "sleep_z_small_bob1": [
+        170,
+        45,
+        190,
+        70
+      ],
+      "sleep_z_big_bob1": [
+        190,
+        15,
+        215,
+        40
+      ],
+      "listening_inner_left": [
+        60,
+        65,
+        70,
+        85
+      ],
+      "listening_inner_right": [
+        170,
+        65,
+        180,
+        85
+      ],
+      "listening_outer_left": [
+        45,
+        55,
+        60,
+        90
+      ],
+      "listening_outer_right": [
+        180,
+        55,
+        195,
+        90
+      ]
+    },
+    "collisions": [],
+    "result": "no overlap with icon bar, inbox badge, battery text, or status text row",
+    "reply_view": "no external state effects are drawn in Reply View"
+  }
+}

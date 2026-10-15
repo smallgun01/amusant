@@ -1,0 +1,344 @@
+diff --git a/firmware/src/face.cpp b/firmware/src/face.cpp
+index c93f8ec..a90672a 100644
+--- a/firmware/src/face.cpp
++++ b/firmware/src/face.cpp
+@@ -12,22 +12,17 @@ constexpr uint32_t ANIM_FRAME_MS = 50;  // while the mouth or sound waves follow
+ // ---- theme: pastel -----------------------------------------------------------
+ 
+ struct Theme {
+-  uint16_t bg, line, body, eye, hl, cheek, accent, tongue, fx, iconOn, iconOff, text, textSoft, thumb;
++  uint16_t bg, line, body, shell, eye, hl, cheek, accent, tongue, fx, iconOn, iconOff, text, textSoft, thumb;
++  uint16_t tentacle, flower, offlineLine, offlineLav, offlineBlue, offlineCyan, offlineHl, offlineTip;
+ };
+ Theme T;
+ 
+ // ---- sprite ------------------------------------------------------------------
+-// 20x18 grid, stored as the left half and mirrored. '#' outline, 'o' body.
+-
++// The 20x18 Jellii mask is assembled from fixed shell spans and four short tentacles.
+ constexpr int SPR_W = 20, SPR_H = 18;
+-const char* const HALF[SPR_H] = {
+-    "..........", "..........", "..........", "..........", "......####", "....##oooo",
+-    "...#oooooo", "..#ooooooo", "..#ooooooo", ".#oooooooo", ".#oooooooo", ".#oooooooo",
+-    ".#oooooooo", ".#oooooooo", "..#ooooooo", "...##ooooo", ".....#####", ".....##...",
+-};
+ char body[SPR_H][SPR_W + 1];
+ 
+-// Features: 'd' eye/ink, 'w' highlight, 'r' tongue, 'c' cheek.
++// Features: 'd' ink, 'w' highlight, 'r' mouth, 'c' cheek, 'a' tentacle tip.
+ struct Glyph {
+   const char* const* rows;
+   uint8_t n;
+@@ -38,21 +33,21 @@ struct Glyph {
+   const char* const name##_ROWS[] = {__VA_ARGS__};       \
+   const Glyph name = {name##_ROWS, sizeof(name##_ROWS) / sizeof(char*), y, dx};
+ 
+-GLYPH(EYE_OPEN, 8, 0, "dw", "dd")
+-GLYPH(EYE_WIDE, 7, 0, "dw", "dd", "dd")
+-GLYPH(EYE_BLINK, 9, 0, "dd")
+-GLYPH(EYE_UP, 7, 1, "dw", "dd")
+-GLYPH(EYE_HAPPY, 8, 0, ".d.", "d.d")
+-GLYPH(EYE_SLEEP, 9, 0, "ddd")
+-GLYPH(EYE_X, 7, 0, "d.d", ".d.", "d.d")
+-
+-GLYPH(MOUTH_SMILE, 11, 0, "d..d", ".dd.")
+-GLYPH(MOUTH_CLOSED, 12, 0, ".dd.")
+-GLYPH(MOUTH_OPEN, 11, 0, ".dd.", "drrd", ".dd.")
+-GLYPH(MOUTH_O, 11, 0, ".dd.", ".dd.")
+-GLYPH(MOUTH_FLAT, 12, 0, "..dd")
+-GLYPH(MOUTH_FROWN, 11, 0, ".dd.", "d..d")
+-GLYPH(MOUTH_GRIN, 11, 0, "dddd", "drrd", ".dd.")
++GLYPH(EYE_OPEN, 6, 0, "dw", "dd")
++GLYPH(EYE_WIDE, 5, 0, "dw", "dd", "dd")
++GLYPH(EYE_BLINK, 7, 0, "dd")
++GLYPH(EYE_UP, 5, 0, "dw", "dd")
++GLYPH(EYE_HAPPY, 6, 0, ".d.", "d.d")
++GLYPH(EYE_SLEEP, 7, 0, "ddd")
++GLYPH(EYE_X, 6, 0, "d.d", ".d.", "d.d")
++
++GLYPH(MOUTH_SMILE, 9, 0, ".d.d", "..d.")
++GLYPH(MOUTH_CLOSED, 10, 0, ".dd.")
++GLYPH(MOUTH_OPEN, 9, 0, ".rr.", ".rr.")
++GLYPH(MOUTH_O, 9, 0, ".dd.", ".dd.")
++GLYPH(MOUTH_FLAT, 10, 0, ".ddd.")
++GLYPH(MOUTH_FROWN, 9, 0, "..d..", ".d.d.")
++GLYPH(MOUTH_GRIN, 9, 0, "dddd", "drrd", ".dd.")
+ 
+ // 7x7 icons for the bar, drawn at 2 px per dot.
+ const char* const ICONS[4][7] = {
+@@ -65,14 +60,40 @@ const char* const ICONS[4][7] = {
+ struct Pose {
+   const Glyph* eyes = &EYE_OPEN;
+   const Glyph* mouth = &MOUTH_SMILE;
+-  bool antennaTilt = false;
+   uint16_t accent = 0;
+-  bool cheeks = false;
++  bool lookUp = false;
++  bool offline = false;
+ };
+ 
+ struct Pt {
+   int8_t x, y;
+ };
++struct Span {
++  int8_t left, right;
++};
++constexpr int8_t SHELL_LEFT[11] = {8, 6, 4, 2, 1, 0, 0, 0, 0, 0, 1};
++constexpr int8_t SHELL_RIGHT[11] = {11, 13, 15, 17, 18, 19, 19, 19, 19, 19, 18};
++const Span SCALLOPS[] = {{0, 1}, {3, 4}, {6, 7}, {9, 10}, {12, 13}, {15, 16}, {18, 19}};
++
++const Pt HEAD_HIGHLIGHTS[] = {{13, 2}, {14, 3}, {15, 4}, {4, 4}, {5, 5}, {3, 7}, {16, 6}};
++const Pt FLOWER[] = {{4, 4}, {3, 5}, {4, 5}, {5, 5}, {4, 6}};
++const Pt CHEEKS[] = {{6, 9}, {7, 9}, {14, 9}, {15, 9}};
++const Pt TENTACLE_1[] = {{3, 12}, {3, 13}, {2, 14}, {1, 15}, {1, 16}};
++const Pt TENTACLE_2[] = {{7, 12}, {7, 13}, {7, 14}, {6, 15}, {6, 16}, {7, 17}};
++const Pt TENTACLE_3[] = {{11, 12}, {11, 13}, {11, 14}, {12, 15}, {12, 16}, {11, 17}};
++const Pt TENTACLE_4[] = {{15, 12}, {15, 13}, {16, 14}, {17, 15}, {17, 16}};
++struct Tentacle {
++  const Pt* cells;
++  size_t count;
++  char color;
++};
++const Tentacle TENTACLES[] = {
++    {TENTACLE_1, sizeof(TENTACLE_1) / sizeof(Pt), 'v'},
++    {TENTACLE_2, sizeof(TENTACLE_2) / sizeof(Pt), 't'},
++    {TENTACLE_3, sizeof(TENTACLE_3) / sizeof(Pt), 't'},
++    {TENTACLE_4, sizeof(TENTACLE_4) / sizeof(Pt), 'v'},
++};
++
+ // Sound-wave arcs to the right of Kai (mirrored for the left), in sprite grid coordinates.
+ const Pt WAVE_S[] = {{20, 8}, {21, 9}, {21, 10}, {20, 11}};
+ const Pt WAVE_L[] = {{22, 6}, {23, 7}, {24, 8}, {24, 9}, {24, 10}, {23, 11}, {22, 12}};
+@@ -113,13 +134,16 @@ int walk = 0, walkDir = 1;
+ 
+ uint16_t colorFor(char c, const Pose& p) {
+   switch (c) {
+-    case '#': return T.line;
+-    case 'o': return T.body;
++    case '#': return p.offline ? T.offlineLine : T.line;
++    case 'o': return p.offline ? T.offlineBlue : T.body;
++    case 's': return p.offline ? T.offlineCyan : T.shell;
++    case 'v': return p.offline ? T.offlineLav : T.tentacle;
++    case 't': return p.offline ? T.offlineCyan : T.shell;
+     case 'd': return T.eye;
+-    case 'w': return T.hl;
++    case 'w': return p.offline ? T.offlineHl : T.hl;
+     case 'r': return T.tongue;
+     case 'c': return T.cheek;
+-    case 'a': return p.accent;
++    case 'a': return p.offline ? T.offlineTip : p.accent;
+     default: return 0;
+   }
+ }
+@@ -137,30 +161,61 @@ void points(const Pt* pts, size_t n, int px, int py, int s, uint16_t color, bool
+ }
+ #define POINTS(arr, ...) points(arr, sizeof(arr) / sizeof(Pt), __VA_ARGS__)
+ 
+-// Kai with its top-left grid cell at pixel (px, py), each grid cell s x s pixels.
+-void drawKai(int px, int py, int s, const Pose& p) {
++bool shellCell(int x, int y) {
++  if (x < 0 || x >= SPR_W || y < 0 || y >= 12) return false;
++  if (y <= 10) return x >= SHELL_LEFT[y] && x <= SHELL_RIGHT[y];
++  for (const Span& span : SCALLOPS)
++    if (x >= span.left && x <= span.right) return true;
++  return false;
++}
++
++void buildSprite() {
++  for (int y = 0; y < SPR_H; y++) {
++    for (int x = 0; x < SPR_W; x++) body[y][x] = '.';
++    body[y][SPR_W] = 0;
++  }
++
++  for (int y = 0; y < 12; y++) {
++    for (int x = 0; x < SPR_W; x++) {
++      if (!shellCell(x, y)) continue;
++      const bool edge = !shellCell(x - 1, y) || !shellCell(x + 1, y) ||
++                        !shellCell(x, y - 1) || !shellCell(x, y + 1);
++      body[y][x] = edge ? '#' : (y <= 2 ? 'v' : (y <= 5 && (x + y) % 5 == 0 ? 'o' : 's'));
++    }
++  }
++
++  for (const Pt& highlight : HEAD_HIGHLIGHTS)
++    if (shellCell(highlight.x, highlight.y) && body[highlight.y][highlight.x] != '#')
++      body[highlight.y][highlight.x] = 'w';
++
++  for (const Tentacle& tentacle : TENTACLES) {
++    for (size_t i = 0; i < tentacle.count; i++) {
++      const Pt& p = tentacle.cells[i];
++      body[p.y][p.x] = body[p.y][p.x + 1] = tentacle.color;
++    }
++    const Pt& tip = tentacle.cells[tentacle.count - 1];
++    body[tip.y][tip.x] = 'a';
++  }
++}
++
++// Jellii with its top-left grid cell at pixel (px, py), each grid cell s x s pixels.
++void drawJellii(int px, int py, int s, const Pose& p) {
+   for (int y = 0; y < SPR_H; y++)
+     for (int x = 0; x < SPR_W; x++)
+       if (body[y][x] != '.') cell(px, py, s, x, y, colorFor(body[y][x], p));
+ 
+-  if (p.cheeks) {
+-    for (int cx : {4, 5, 14, 15}) cell(px, py, s, cx, 10, T.cheek);
+-  }
++  POINTS(FLOWER, px, py, s, T.flower);
++  cell(px, py, s, 4, 5, T.hl);
++  POINTS(CHEEKS, px, py, s, T.cheek);
++
+   const int eyeW = strlen(p.eyes->rows[0]);
+-  glyph(*p.eyes, px, py, s, eyeW == 3 ? 5 : 6, p);
++  glyph(*p.eyes, px, py, s, eyeW == 3 ? 6 : 7, p);
+   glyph(*p.eyes, px, py, s, 12, p);
+-  glyph(*p.mouth, px, py, s, 8, p);
+-
+-  // Antenna: a stem and a 2x2 ball in the accent color; tilting makes it wobble.
+-  if (p.antennaTilt) {
+-    cell(px, py, s, 10, 3, T.line);
+-    cell(px, py, s, 11, 2, T.line);
+-    canvas.fillRect(px + 11 * s, py, 2 * s, 2 * s, p.accent);
+-  } else {
+-    cell(px, py, s, 10, 2, T.line);
+-    cell(px, py, s, 10, 3, T.line);
+-    canvas.fillRect(px + 10 * s, py, 2 * s, 2 * s, p.accent);
++  if (p.lookUp) {
++    cell(px, py, s, 6, 6, T.eye);
++    cell(px, py, s, 14, 6, T.eye);
+   }
++  glyph(*p.mouth, px, py, s, 8, p);
+ }
+ 
+ void drawIcon(Icon icon, int x0, int y0, uint16_t color) {
+@@ -175,7 +230,7 @@ void drawIcon(Icon icon, int x0, int y0, uint16_t color) {
+ void drawFace(uint32_t now, uint32_t tick, bool newTick) {
+   constexpr int S = 5;
+   Pose p;
+-  p.accent = T.accent;
++  p.accent = T.cheek;
+   int bob = tick % 2;
+   Icon lit = Icon::None;
+ 
+@@ -188,20 +243,20 @@ void drawFace(uint32_t now, uint32_t tick, bool newTick) {
+ 
+   switch (expr) {
+     case Expr::Idle:
+-      p.antennaTilt = (tick >> 1) % 2;
++      p.accent = (tick >> 1) % 2 ? T.tentacle : T.cheek;
+       if (now < blinkUntil) p.eyes = &EYE_BLINK;
+       break;
+     case Expr::Listening:
+       p.eyes = &EYE_WIDE;
+       p.mouth = &MOUTH_O;
+-      p.antennaTilt = tick % 2;
+-      p.accent = tick % 2 ? T.accent : T.hl;
++      p.accent = tick % 2 ? T.cheek : T.hl;
+       bob = 0;
+       lit = Icon::Mic;
+       break;
+     case Expr::Thinking:
+       p.eyes = &EYE_UP;
+       p.mouth = &MOUTH_FLAT;
++      p.lookUp = true;
+       bob = 0;
+       break;
+     case Expr::Sleeping:
+@@ -212,7 +267,8 @@ void drawFace(uint32_t now, uint32_t tick, bool newTick) {
+     case Expr::Offline:
+       p.eyes = &EYE_X;
+       p.mouth = &MOUTH_FROWN;
+-      p.accent = T.iconOff;
++      p.offline = true;
++      p.accent = T.offlineTip;
+       bob = 0;
+       break;
+   }
+@@ -237,7 +293,7 @@ void drawFace(uint32_t now, uint32_t tick, bool newTick) {
+   for (int x = 2; x < W / S - 2; x += 2) canvas.fillRect(x * S, 23 * S, S, S, T.iconOff);
+ 
+   const int px = (14 + walk) * S, py = (5 + bob) * S;
+-  drawKai(px, py, S, p);
++  drawJellii(px, py, S, p);
+ 
+   switch (expr) {
+     case Expr::Listening:  // waves grow with the voice
+@@ -333,19 +389,17 @@ void drawReply(uint32_t now, uint32_t tick) {
+   if (linesDirty) rebuildLines();
+ 
+   Pose p;
+-  p.accent = T.accent;
+-  p.antennaTilt = (tick >> 1) % 2;
++  p.accent = T.cheek;
+   if (replyHasCard && replyCard.happy) {
+     p.eyes = &EYE_HAPPY;
+     p.mouth = &MOUTH_GRIN;
+-    p.cheeks = true;
+   } else if (now < blinkUntil) {
+     p.eyes = &EYE_BLINK;
+   }
+   if (speaking) p.mouth = shownLevel > 0.2f ? &MOUTH_OPEN : &MOUTH_CLOSED;
+-  drawKai(4, 1, 2, p);
++  drawJellii(4, 1, 2, p);
+ 
+-  String title = replyHasCard && replyCard.title.length() ? replyCard.title : String("Kai");
++  String title = replyHasCard && replyCard.title.length() ? replyCard.title : String("Jellii");
+   const bool hasIcon = replyHasCard && replyCard.icon != Icon::None;
+   const int titleMax = W - TITLE_X - (hasIcon ? 22 : 4);
+   canvas.setFont(&fonts::FreeSansBold9pt7b);
+@@ -381,27 +435,29 @@ void begin() {
+   canvas.setColorDepth(16);
+   canvas.createSprite(W, H);
+ 
+-  for (int y = 0; y < SPR_H; y++) {
+-    for (int x = 0; x < SPR_W / 2; x++) body[y][x] = body[y][SPR_W - 1 - x] = HALF[y][x];
+-    body[y][SPR_W] = 0;
+-  }
+-
+   auto c = [](uint32_t rgb) { return canvas.color565(rgb >> 16, (rgb >> 8) & 0xff, rgb & 0xff); };
+ #ifdef KAI_LIGHT_THEME
+-  T = {  // pastel on cream
+-      .bg = c(0xfff3e3), .line = c(0x4b3a63), .body = c(0xcdb9ff), .eye = c(0x4b3a63),
+-      .hl = c(0xffffff), .cheek = c(0xff9fb8), .accent = c(0xffc94d), .tongue = c(0xff7d9e),
+-      .fx = c(0x4b3a63), .iconOn = c(0x4b3a63), .iconOff = c(0xeadcc9), .text = c(0x4b3a63),
+-      .textSoft = c(0x7d6f95), .thumb = c(0x9d86e9),
++  T = {  // cream UI with the same Jellii palette
++      .bg = c(0xfff3e3), .line = c(0x344cb8), .body = c(0x5788ff), .shell = c(0x9ddfff),
++      .eye = c(0x151a38), .hl = c(0xf7faff), .cheek = c(0xffb6d2), .accent = c(0xffc94d),
++      .tongue = c(0xff7d9e), .fx = c(0x4b3a63), .iconOn = c(0x4b3a63), .iconOff = c(0xeadcc9),
++      .text = c(0x4b3a63), .textSoft = c(0x7d6f95), .thumb = c(0x9d86e9),
++      .tentacle = c(0xb9a7ff), .flower = c(0x29c6f7), .offlineLine = c(0xa52149),
++      .offlineLav = c(0xff8b9e), .offlineBlue = c(0xe73957), .offlineCyan = c(0xff5a6e),
++      .offlineHl = c(0xffd6de), .offlineTip = c(0xff8b9e),
+   };
+ #else
+-  T = {  // pastel on deep plum (default)
+-      .bg = c(0x16111f), .line = c(0x6b55a3), .body = c(0xcdb9ff), .eye = c(0x2a1f3d),
+-      .hl = c(0xffffff), .cheek = c(0xff9fb8), .accent = c(0xffc94d), .tongue = c(0xff7d9e),
+-      .fx = c(0xcdb9ff), .iconOn = c(0xcdb9ff), .iconOff = c(0x2e2540), .text = c(0xefe6ff),
+-      .textSoft = c(0xa99bc4), .thumb = c(0x9d86e9),
++  T = {  // deep plum UI with a cyan/lavender Jellii palette
++      .bg = c(0x16111f), .line = c(0x344cb8), .body = c(0x5788ff), .shell = c(0x9ddfff),
++      .eye = c(0x151a38), .hl = c(0xf7faff), .cheek = c(0xffb6d2), .accent = c(0xffc94d),
++      .tongue = c(0xff7d9e), .fx = c(0xcdb9ff), .iconOn = c(0xcdb9ff), .iconOff = c(0x2e2540),
++      .text = c(0xefe6ff), .textSoft = c(0xa99bc4), .thumb = c(0x9d86e9),
++      .tentacle = c(0xb9a7ff), .flower = c(0x29c6f7), .offlineLine = c(0xa52149),
++      .offlineLav = c(0xff8b9e), .offlineBlue = c(0xe73957), .offlineCyan = c(0xff5a6e),
++      .offlineHl = c(0xffd6de), .offlineTip = c(0xff8b9e),
+   };
+ #endif
++  buildSprite();
+ }
+ 
+ void setExpr(Expr e) {
+diff --git a/firmware/src/main.cpp b/firmware/src/main.cpp
+index 45e4b96..0bc678e 100644
+--- a/firmware/src/main.cpp
++++ b/firmware/src/main.cpp
+@@ -610,7 +610,7 @@ static void maintainConnection() {
+ 
+ static void showStatus() {
+   Card c;
+-  c.title = "Kai status";
++  c.title = "Jellii status";
+   c.lines[c.count++] = String("WiFi ") + WiFi.localIP().toString() + " " + String(WiFi.RSSI()) + "dB";
+   c.lines[c.count++] = String("Relay ") + (wsConnected ? "connected" : "offline");
+   c.lines[c.count++] = String("Battery ") + String(M5.Power.getBatteryLevel()) + "%" +
