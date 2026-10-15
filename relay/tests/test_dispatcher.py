@@ -8,8 +8,11 @@ import time
 import unittest
 from unittest.mock import patch
 
-from relay.application import build_supported_relay_handler
+from fast_voice.contracts import ToolCallEvent
+from relay.application import build_supported_relay_handler, build_supported_relay_runtime
 from relay.dispatcher import AsyncDispatcher, ExecutionOutcome
+from relay.dynamodb_task_store import DynamoDbTaskStore, InMemoryDynamoLedger
+from relay.slow_path import SlowPathToolRouter
 from relay.task_store import SQLiteTaskStore, TaskAdmissionRequest
 
 NOW = datetime(2026, 10, 11, 12, 0, tzinfo=timezone.utc)
@@ -41,9 +44,11 @@ class FakeExecutor:
         self.outcome = outcome or ExecutionOutcome(status="completed")
         self.error = error
         self.calls = []
+        self.started_event = asyncio.Event()
 
     async def execute(self, task):
         self.calls.append(task.task_id)
+        self.started_event.set()
         if self.error is not None:
             raise self.error
         return self.outcome
@@ -77,6 +82,32 @@ class SlowClaimStore:
         self.started.set()
         time.sleep(self.delay)
         return self._inner.claim_due(**kwargs)
+
+
+class SlowAdmitStore:
+    def __init__(self, inner, delay: float = 0.08):
+        self._inner = inner
+        self.delay = delay
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    def admit(self, request):
+        time.sleep(self.delay)
+        return self._inner.admit(request)
+
+
+class SlowAdmitStore:
+    def __init__(self, inner, delay: float = 0.08):
+        self._inner = inner
+        self.delay = delay
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    def admit(self, request):
+        time.sleep(self.delay)
+        return self._inner.admit(request)
 
 
 class DispatcherTests(unittest.IsolatedAsyncioTestCase):
@@ -262,6 +293,169 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["status"], "uncertain")
         self.assertEqual(row["dispatch_state"], "uncertain")
 
+
+    async def test_late_commit_after_router_timeout_is_found_by_fallback_poll(self):
+        store = self.store()
+        executor = FakeExecutor()
+        dispatcher = AsyncDispatcher(store, executor, poll_interval_seconds=0.05, now=lambda: NOW)
+        notifications = []
+        router = SlowPathToolRouter(
+            store=SlowAdmitStore(store),
+            client_id=CLIENT,
+            conversation_id=CONVERSATION,
+            backend_id="openab",
+            default_task_kind="research",
+            max_task_ttl_seconds=600,
+            acceptance_timeout_seconds=0.005,
+            now=lambda: NOW,
+            new_task_id=lambda: TASK_ID,
+            on_admitted=lambda: (notifications.append(True), dispatcher.notify()),
+        )
+        await dispatcher.start()
+        try:
+            result = await router(
+                ToolCallEvent("call-late-commit", "delegate_task", {"task": "Compare options"}),
+                1,
+            )
+            self.assertEqual(result["status"], "unknown")
+            self.assertEqual(notifications, [])
+            await asyncio.wait_for(executor.started_event.wait(), timeout=0.5)
+            for _ in range(30):
+                row = store.get_by_task_id(TASK_ID)
+                if row is not None and row["status"] == "completed":
+                    break
+                await asyncio.sleep(0.01)
+            self.assertEqual(executor.calls, [TASK_ID])
+            self.assertEqual(store.get_by_task_id(TASK_ID)["status"], "completed")
+        finally:
+            await dispatcher.stop()
+
+
+    async def test_runtime_uses_dispatcher_as_single_recovery_owner(self):
+        store = self.store()
+        store.admit(request_for(TASK_ID))
+        store.claim_due(now=NOW, lease_seconds=30)
+        store.mark_dispatch_started(TASK_ID, now=NOW)
+        class CountingStore:
+            def __init__(self, inner):
+                self.inner = inner
+                self.recover_calls = 0
+            def __getattr__(self, name):
+                return getattr(self.inner, name)
+            def recover_after_restart(self):
+                self.recover_calls += 1
+                return self.inner.recover_after_restart()
+        counted = CountingStore(store)
+        env = {
+            "AMUSANT_LIVE_PROVIDER": "gemini",
+            "GEMINI_API_KEY": "offline-test-key",
+            "AMUSANT_CLIENT_ID": CLIENT,
+            "AMUSANT_BACKEND_ID": "openab",
+            "AMUSANT_TASK_DB": str(self.db_path),
+        }
+        with patch("relay.application.build_task_store", return_value=counted), \
+             patch("relay.application.load_acp_executor", return_value=FakeExecutor()), \
+             patch("relay.application.build_live_provider", return_value=object()):
+            _handler, dispatcher, runtime_store = build_supported_relay_runtime(
+                expected_device_token="device-token-12",
+                environ=env,
+                sdk_types=FakeSchemaTypes,
+            )
+        self.assertIsNotNone(dispatcher)
+        self.assertIs(runtime_store, counted)
+        self.assertEqual(counted.recover_calls, 0)
+        self.assertEqual(store.get_by_task_id(TASK_ID)["status"], "running")
+        await dispatcher.start()
+        try:
+            self.assertEqual(counted.recover_calls, 1)
+            self.assertEqual(store.get_by_task_id(TASK_ID)["status"], "uncertain")
+        finally:
+            await dispatcher.stop()
+
+
+    async def test_late_commit_after_router_timeout_is_found_by_fallback_poll(self):
+        store = self.store()
+        executor = FakeExecutor()
+        dispatcher = AsyncDispatcher(store, executor, poll_interval_seconds=0.05, now=lambda: NOW)
+        notifications = []
+        router = SlowPathToolRouter(
+            store=SlowAdmitStore(store),
+            client_id=CLIENT,
+            conversation_id=CONVERSATION,
+            backend_id="openab",
+            default_task_kind="research",
+            max_task_ttl_seconds=600,
+            acceptance_timeout_seconds=0.005,
+            now=lambda: NOW,
+            new_task_id=lambda: TASK_ID,
+            on_admitted=lambda: (notifications.append(True), dispatcher.notify()),
+        )
+        await dispatcher.start()
+        try:
+            result = await router(
+                ToolCallEvent("call-late-commit", "delegate_task", {"task": "Compare options"}), 1
+            )
+            self.assertEqual(result["status"], "unknown")
+            self.assertEqual(notifications, [])
+            await asyncio.wait_for(executor.started_event.wait(), timeout=0.5)
+            for _ in range(30):
+                row = store.get_by_task_id(TASK_ID)
+                if row is not None and row["status"] == "completed":
+                    break
+                await asyncio.sleep(0.01)
+            self.assertEqual(executor.calls, [TASK_ID])
+            self.assertEqual(store.get_by_task_id(TASK_ID)["status"], "completed")
+        finally:
+            await dispatcher.stop()
+
+
+    async def test_duplicate_admission_wakes_pending_task_without_second_execution(self):
+        store = self.store()
+        class PausingExecutor:
+            def __init__(self):
+                self.calls = []
+                self.started = asyncio.Event()
+                self.release = asyncio.Event()
+            async def execute(self, task):
+                self.calls.append(task.task_id)
+                self.started.set()
+                await self.release.wait()
+                return ExecutionOutcome(status="completed")
+        executor = PausingExecutor()
+        dispatcher = AsyncDispatcher(store, executor, poll_interval_seconds=30.0, now=lambda: NOW)
+        router = SlowPathToolRouter(
+            store=store,
+            client_id=CLIENT,
+            conversation_id=CONVERSATION,
+            backend_id="openab",
+            default_task_kind="research",
+            max_task_ttl_seconds=600,
+            acceptance_timeout_seconds=1,
+            now=lambda: NOW,
+            new_task_id=lambda: TASK_ID,
+            on_admitted=dispatcher.notify,
+        )
+        event = ToolCallEvent("call-duplicate-wake", "delegate_task", {"task": "Compare options"})
+        await dispatcher.start()
+        try:
+            first = await router(event, 1)
+            self.assertEqual(first["status"], "accepted")
+            await asyncio.wait_for(executor.started.wait(), timeout=0.5)
+            duplicate = await router(event, 1)
+            self.assertTrue(duplicate["duplicate"])
+            await asyncio.sleep(0.05)
+            self.assertEqual(executor.calls, [TASK_ID])
+            executor.release.set()
+            for _ in range(50):
+                if store.get_by_task_id(TASK_ID)["status"] == "completed":
+                    break
+                await asyncio.sleep(0.01)
+            self.assertEqual(store.get_by_task_id(TASK_ID)["status"], "completed")
+            self.assertEqual(executor.calls, [TASK_ID])
+        finally:
+            executor.release.set()
+            await dispatcher.stop()
+
     async def test_background_loop_recovers_pending_work(self):
         store = self.store()
         store.admit(request_for(TASK_ID, turn_id=1, call_id="call-1"))
@@ -284,6 +478,75 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sorted(executor.calls), [TASK_ID, TASK_ID_2])
         self.assertEqual(store.get_by_task_id(TASK_ID)["status"], "completed")
         self.assertEqual(store.get_by_task_id(TASK_ID_2)["status"], "completed")
+
+
+    def test_poll_interval_rejects_nonfinite_bool_and_out_of_bounds(self):
+        self.assertEqual(AsyncDispatcher(self.store(), FakeExecutor())._poll_interval_seconds, 1.0)
+        for invalid in (True, False, 0, -1, float("nan"), float("inf"), float("-inf"), 60.01):
+            with self.subTest(interval=invalid), self.assertRaises(ValueError):
+                AsyncDispatcher(self.store(), FakeExecutor(), poll_interval_seconds=invalid)
+
+    async def test_empty_claim_race_notifies_from_worker_thread_without_lost_wakeup(self):
+        inner = self.store()
+        executor = FakeExecutor()
+
+        class CommitAfterEmptyClaim:
+            def __init__(self, store):
+                self.store = store
+                self.dispatcher = None
+                self.first = True
+
+            def __getattr__(self, name):
+                return getattr(self.store, name)
+
+            def claim_due(self, **kwargs):
+                claimed = self.store.claim_due(**kwargs)
+                if self.first:
+                    self.first = False
+                    if claimed:
+                        raise AssertionError("race setup expected an empty first claim")
+                    # Simulate an admission commit just after the empty query, then
+                    # notify from the to_thread worker that owns this synchronous call.
+                    self.store.admit(request_for(TASK_ID))
+                    self.dispatcher.notify()
+                return claimed
+
+        wrapped = CommitAfterEmptyClaim(inner)
+        dispatcher = AsyncDispatcher(
+            wrapped, executor, poll_interval_seconds=30.0, now=lambda: NOW
+        )
+        wrapped.dispatcher = dispatcher
+        await dispatcher.start()
+        try:
+            await asyncio.wait_for(executor.started_event.wait(), timeout=0.5)
+            for _ in range(20):
+                if inner.get_by_task_id(TASK_ID)["status"] == "completed":
+                    break
+                await asyncio.sleep(0.01)
+        finally:
+            await dispatcher.stop()
+        self.assertEqual(executor.calls, [TASK_ID])
+        self.assertEqual(inner.get_by_task_id(TASK_ID)["status"], "completed")
+
+    async def test_dynamodb_idle_query_rate_uses_bounded_fallback(self):
+        class CountingLedger(InMemoryDynamoLedger):
+            def __init__(self):
+                super().__init__()
+                self.query_prefix_calls = 0
+            def query_prefix(self, pk, prefix):
+                self.query_prefix_calls += 1
+                return super().query_prefix(pk, prefix)
+
+        ledger = CountingLedger()
+        store = DynamoDbTaskStore(ledger, client_id=CLIENT, max_pending_tasks=8)
+        dispatcher = AsyncDispatcher(store, FakeExecutor(), poll_interval_seconds=15.0, now=lambda: NOW)
+        await dispatcher.start()
+        try:
+            await asyncio.sleep(0.1)
+        finally:
+            await dispatcher.stop()
+        # One startup recovery Query + one immediate drain Query; no 20Hz idle loop.
+        self.assertLessEqual(ledger.query_prefix_calls, 2)
 
 
 if __name__ == "__main__":

@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta, timezone
+import logging
 import math
 import re
 from typing import Protocol
@@ -23,6 +24,7 @@ from .task_store import (
 
 TOOL_NAME = "delegate_task"
 INBOX_TOOL_NAME = "check_task_status"
+LOG = logging.getLogger("amusant.relay.slow_path")
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 
@@ -66,6 +68,7 @@ class SlowPathToolRouter:
         acceptance_timeout_seconds: float,
         now=None,
         new_task_id=None,
+        on_admitted: Callable[[], None] | None = None,
     ) -> None:
         if not isinstance(client_id, str) or not _ID_RE.fullmatch(client_id):
             raise ValueError("client_id must be a bounded authenticated identity")
@@ -90,6 +93,7 @@ class SlowPathToolRouter:
         self._timeout = float(acceptance_timeout_seconds)
         self._now = now or (lambda: datetime.now(timezone.utc))
         self._new_task_id = new_task_id or (lambda: str(uuid4()))
+        self._on_admitted = on_admitted
 
     async def __call__(self, event: ToolCallEvent, turn_id: int) -> Mapping[str, JSONValue]:
         if event.name == INBOX_TOOL_NAME:
@@ -124,6 +128,14 @@ class SlowPathToolRouter:
         except Exception:
             # A storage/transport failure can be ambiguous; never invent acceptance.
             return {"status": "unknown", "task_id": request.task_id, "code": "acceptance_unconfirmed"}
+        # The awaited to_thread() has returned to this event loop only after
+        # durable commit or dedup reconciliation; never notify from the worker.
+        if self._on_admitted is not None:
+            try:
+                self._on_admitted()
+            except Exception as exc:
+                # Notification is a latency optimization; durable polling recovers.
+                LOG.warning("dispatcher notification failed error_type=%s", type(exc).__name__)
         return {
             "status": "accepted",
             "task_id": receipt.task_id,

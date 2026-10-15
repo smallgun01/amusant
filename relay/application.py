@@ -28,7 +28,7 @@ from .slow_path import (
     build_relay_tools,
 )
 from .acp_client import load_acp_executor
-from .dispatcher import AsyncDispatcher
+from .dispatcher import AsyncDispatcher, MAX_POLL_INTERVAL_SECONDS
 from .store_factory import build_task_store
 from .task_store import TASK_KINDS
 
@@ -42,10 +42,13 @@ DEFAULT_TASK_KIND_ENV = "AMUSANT_DEFAULT_TASK_KIND"
 MAX_TASK_TTL_ENV = "AMUSANT_MAX_TASK_TTL_SECONDS"
 MAX_PENDING_TASKS_ENV = "AMUSANT_MAX_PENDING_TASKS"
 ACCEPTANCE_TIMEOUT_ENV = "AMUSANT_ACCEPTANCE_TIMEOUT_SECONDS"
+DISPATCHER_POLL_INTERVAL_ENV = "AMUSANT_DISPATCHER_POLL_INTERVAL_SECONDS"
 DEFAULT_TASK_KIND = "research"
 DEFAULT_MAX_TASK_TTL_SECONDS = 600
 DEFAULT_MAX_PENDING_TASKS = 8
 DEFAULT_ACCEPTANCE_TIMEOUT_SECONDS = 2.0
+DEFAULT_SQLITE_DISPATCHER_POLL_SECONDS = 1.0
+DEFAULT_DYNAMODB_DISPATCHER_POLL_SECONDS = 15.0
 _PROCESS_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 
@@ -60,6 +63,7 @@ class RelayProcessConfig:
     max_task_ttl_seconds: int
     max_pending_tasks: int
     acceptance_timeout_seconds: float
+    dispatcher_poll_interval_seconds: float
 
 
 def _require_env(environ: Mapping[str, str], name: str) -> str:
@@ -123,6 +127,18 @@ def load_relay_process_config(
         database_path = None
         if not isinstance(environ.get(DDB_TABLE_ENV), str) or not str(environ.get(DDB_TABLE_ENV)).strip():
             raise ValueError("AMUSANT_DDB_TABLE must be set for DynamoDB")
+    default_dispatcher_poll = (
+        DEFAULT_SQLITE_DISPATCHER_POLL_SECONDS
+        if store_kind == "sqlite"
+        else DEFAULT_DYNAMODB_DISPATCHER_POLL_SECONDS
+    )
+    dispatcher_poll = _optional_positive_float(
+        environ, DISPATCHER_POLL_INTERVAL_ENV, default_dispatcher_poll
+    )
+    if dispatcher_poll > MAX_POLL_INTERVAL_SECONDS:
+        raise ValueError(
+            f"{DISPATCHER_POLL_INTERVAL_ENV} must be at most {MAX_POLL_INTERVAL_SECONDS:g} seconds"
+        )
     return RelayProcessConfig(
         expected_device_token=expected_device_token,
         authenticated_client_id=client_id,
@@ -139,6 +155,7 @@ def load_relay_process_config(
         acceptance_timeout_seconds=_optional_positive_float(
             environ, ACCEPTANCE_TIMEOUT_ENV, DEFAULT_ACCEPTANCE_TIMEOUT_SECONDS
         ),
+        dispatcher_poll_interval_seconds=dispatcher_poll,
     )
 
 
@@ -152,6 +169,7 @@ def build_relay_handler(
     default_task_kind: str,
     max_task_ttl_seconds: int,
     acceptance_timeout_seconds: float,
+    on_admitted: Callable[[], None] | None = None,
     client_factory: ProviderClientFactory | None = None,
     sdk_types: Any | None = None,
     conversation_id_factory: ConversationIdFactory | None = None,
@@ -206,6 +224,7 @@ def build_relay_handler(
             default_task_kind=default_task_kind,
             max_task_ttl_seconds=max_task_ttl_seconds,
             acceptance_timeout_seconds=acceptance_timeout_seconds,
+            on_admitted=on_admitted,
         )
 
     return make_handler(
@@ -233,7 +252,20 @@ def build_supported_relay_runtime(
     """Build handler plus optional ACP dispatcher. Missing ACP config skips ACP."""
     config = load_relay_process_config(environ, expected_device_token=expected_device_token)
     store = build_task_store(environ, max_pending_tasks=config.max_pending_tasks)
-    store.recover_after_restart()
+    executor = load_acp_executor(environ)
+    dispatcher = (
+        None
+        if executor is None
+        else AsyncDispatcher(
+            store,
+            executor,
+            poll_interval_seconds=config.dispatcher_poll_interval_seconds,
+        )
+    )
+    # The running Dispatcher owns startup recovery. If ACP is unavailable,
+    # still recover once so status lookups report interrupted work honestly.
+    if dispatcher is None:
+        store.recover_after_restart()
     handler = build_relay_handler(
         expected_device_token=config.expected_device_token,
         authenticated_client_id=config.authenticated_client_id,
@@ -243,14 +275,13 @@ def build_supported_relay_runtime(
         default_task_kind=config.default_task_kind,
         max_task_ttl_seconds=config.max_task_ttl_seconds,
         acceptance_timeout_seconds=config.acceptance_timeout_seconds,
+        on_admitted=None if dispatcher is None else dispatcher.notify,
         client_factory=client_factory,
         sdk_types=sdk_types,
         conversation_id_factory=conversation_id_factory,
         post_tool_ack_timeout_seconds=post_tool_ack_timeout_seconds,
         post_tool_ack_max_duration_seconds=post_tool_ack_max_duration_seconds,
     )
-    executor = load_acp_executor(environ)
-    dispatcher = None if executor is None else AsyncDispatcher(store, executor)
     return handler, dispatcher, store
 
 

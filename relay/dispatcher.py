@@ -7,6 +7,7 @@ CLI does not call OpenAB.
 from __future__ import annotations
 
 import asyncio
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -31,6 +32,8 @@ class TaskExecutor(Protocol):
 
 
 NowFactory = Callable[[], datetime]
+DEFAULT_POLL_INTERVAL_SECONDS = 1.0
+MAX_POLL_INTERVAL_SECONDS = 60.0
 
 
 class AsyncDispatcher:
@@ -43,7 +46,7 @@ class AsyncDispatcher:
         *,
         lease_seconds: int = 30,
         max_attempts: int = 3,
-        poll_interval_seconds: float = 0.05,
+        poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS,
         now: NowFactory | None = None,
     ) -> None:
         if type(lease_seconds) is not int or lease_seconds <= 0:
@@ -51,10 +54,13 @@ class AsyncDispatcher:
         if type(max_attempts) is not int or max_attempts <= 0:
             raise ValueError("max_attempts must be a positive integer")
         if (
-            not isinstance(poll_interval_seconds, (int, float))
+            isinstance(poll_interval_seconds, bool)
+            or not isinstance(poll_interval_seconds, (int, float))
+            or not math.isfinite(float(poll_interval_seconds))
             or poll_interval_seconds <= 0
+            or poll_interval_seconds > MAX_POLL_INTERVAL_SECONDS
         ):
-            raise ValueError("poll_interval_seconds must be positive")
+            raise ValueError("poll_interval_seconds must be finite, positive, and at most 60 seconds")
         self._store = store
         self._executor = executor
         self._lease_seconds = lease_seconds
@@ -62,11 +68,28 @@ class AsyncDispatcher:
         self._poll_interval_seconds = float(poll_interval_seconds)
         self._now = now or (lambda: datetime.now(timezone.utc))
         self._wakeup = asyncio.Event()
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._running = False
         self._task: asyncio.Task[None] | None = None
 
     def notify(self) -> None:
-        self._wakeup.set()
+        """Wake the loop owner; cross-thread callers use the loop-safe scheduler."""
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            # Startup recovery plus the first drain covers notifications before start.
+            return
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+        if current_loop is loop:
+            self._wakeup.set()
+            return
+        try:
+            loop.call_soon_threadsafe(self._wakeup.set)
+        except RuntimeError:
+            # The owner loop is closing; durable polling/recovery remains authoritative.
+            return
 
     def recover(self):
         return self._store.recover_after_restart()
@@ -74,6 +97,10 @@ class AsyncDispatcher:
     async def start(self) -> None:
         if self._running:
             return
+        loop = asyncio.get_running_loop()
+        if self._loop is not None and self._loop is not loop:
+            self._wakeup = asyncio.Event()
+        self._loop = loop
         await self._store_call(self._store.recover_after_restart)
         self._running = True
         self._task = asyncio.create_task(self._run_loop())
@@ -109,11 +136,13 @@ class AsyncDispatcher:
 
     async def _run_loop(self) -> None:
         while self._running:
+            # Clear before draining: notifications arriving during/after the
+            # empty claim remain set and make wait() return immediately.
+            self._wakeup.clear()
             try:
                 await self.dispatch_available()
             except Exception:
                 pass
-            self._wakeup.clear()
             if not self._running:
                 return
             try:
