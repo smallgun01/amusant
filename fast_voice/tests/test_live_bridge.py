@@ -13,7 +13,13 @@ from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosedError
 
 from fast_voice.contracts import AudioFrame, ProviderCapabilities, ProviderError, ToolCallEvent, TranscriptEvent, TurnCompleteEvent
-from relay.application import build_relay_handler, build_supported_relay_handler, load_relay_process_config
+from relay.application import (
+    build_relay_handler,
+    build_supported_relay_handler,
+    build_supported_relay_runtime,
+    load_relay_process_config,
+)
+from relay.dispatcher import ExecutionOutcome
 from relay.device_opus import DeviceProtocolError
 from relay.device_protocol import DeviceWebSocketAdapter, adapt_device_handler
 from relay.live_bridge import MIN_UTTERANCE_BYTES, make_handler, run as run_live_bridge
@@ -1897,6 +1903,104 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
             await ws.close()
             server.close()
             await server.wait_closed()
+
+
+    async def test_supported_runtime_wakes_idle_dispatcher_after_durable_admission(self):
+        fake = FakeProvider(auto_complete=False)
+        class ObservedExecutor:
+            def __init__(self):
+                self.calls = []
+                self.started = asyncio.Event()
+            async def execute(self, task):
+                self.calls.append(task.task)
+                self.started.set()
+                return ExecutionOutcome(status="completed")
+        executor = ObservedExecutor()
+        with tempfile.TemporaryDirectory() as temp_dir, patch(
+            "relay.application.load_acp_executor", return_value=executor
+        ), patch("relay.application.build_live_provider", return_value=fake):
+            env = {
+                "AMUSANT_LIVE_PROVIDER": "gemini",
+                "GEMINI_API_KEY": "offline-test-key",
+                "AMUSANT_CLIENT_ID": "authenticated-device-1",
+                "AMUSANT_BACKEND_ID": "openab",
+                "AMUSANT_TASK_DB": str(Path(temp_dir) / "dispatcher-wakeup.sqlite3"),
+                "AMUSANT_DISPATCHER_POLL_INTERVAL_SECONDS": "30",
+            }
+            handler, dispatcher, store = build_supported_relay_runtime(
+                expected_device_token=TOKEN,
+                environ=env,
+                sdk_types=FakeSchemaTypes,
+                conversation_id_factory=lambda: "dispatcher-wakeup-session",
+            )
+            self.assertIsNotNone(dispatcher)
+            self.assertEqual(dispatcher._poll_interval_seconds, 30.0)
+            await dispatcher.start()
+            server = await serve(handler, "127.0.0.1", 0, max_size=64 * 1024)
+            port = server.sockets[0].getsockname()[1]
+            ws = await connect(
+                f"ws://127.0.0.1:{port}/ws",
+                additional_headers={"Authorization": f"Bearer {TOKEN}"},
+            )
+            try:
+                await self._send_turn(ws)
+                await self._controls_until(ws, lambda item, _items: item.get("state") == "thinking")
+                await fake.callbacks["tool"](
+                    ToolCallEvent("call-wakeup", "delegate_task", {"task": "Compare current options"})
+                )
+                await fake.callbacks["tool_batch_complete"]()
+                # 30s fallback is configured; prompt wakeup must execute immediately.
+                await asyncio.wait_for(executor.started.wait(), timeout=0.5)
+                await fake.emit_response()
+                await self._controls_until(ws, lambda item, _items: item.get("type") == "turn_complete")
+                for _ in range(50):
+                    row = store.get_by_call(
+                        client_id="authenticated-device-1",
+                        conversation_id="dispatcher-wakeup-session",
+                        turn_id=1,
+                        call_id="call-wakeup",
+                    )
+                    if row is not None and row["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.01)
+                self.assertEqual(executor.calls, ["Compare current options"])
+                self.assertEqual(row["status"], "completed")
+            finally:
+                await ws.close()
+                server.close()
+                await server.wait_closed()
+                await dispatcher.stop()
+
+
+    def test_dispatcher_poll_config_has_backend_defaults_and_bounded_override(self):
+        sqlite_env = {
+            "AMUSANT_LIVE_PROVIDER": "gemini",
+            "GEMINI_API_KEY": "offline-test-key",
+            "AMUSANT_CLIENT_ID": "authenticated-device-1",
+            "AMUSANT_BACKEND_ID": "openab",
+            "AMUSANT_TASK_DB": "/tmp/tasks.sqlite3",
+        }
+        sqlite_config = load_relay_process_config(sqlite_env, expected_device_token="device-token-12")
+        self.assertEqual(sqlite_config.dispatcher_poll_interval_seconds, 1.0)
+        dynamo_env = {
+            **sqlite_env,
+            "AMUSANT_TASK_STORE": "dynamodb",
+            "AMUSANT_DDB_TABLE": "offline-table-name",
+        }
+        dynamo_env.pop("AMUSANT_TASK_DB")
+        dynamo_config = load_relay_process_config(dynamo_env, expected_device_token="device-token-12")
+        self.assertEqual(dynamo_config.dispatcher_poll_interval_seconds, 15.0)
+        override = load_relay_process_config(
+            {**dynamo_env, "AMUSANT_DISPATCHER_POLL_INTERVAL_SECONDS": "2.5"},
+            expected_device_token="device-token-12",
+        )
+        self.assertEqual(override.dispatcher_poll_interval_seconds, 2.5)
+        for raw in ("0", "-1", "NaN", "Infinity", "60.1", "True"):
+            with self.subTest(value=raw), self.assertRaises(ValueError):
+                load_relay_process_config(
+                    {**dynamo_env, "AMUSANT_DISPATCHER_POLL_INTERVAL_SECONDS": raw},
+                    expected_device_token="device-token-12",
+                )
 
 
 if __name__ == "__main__":

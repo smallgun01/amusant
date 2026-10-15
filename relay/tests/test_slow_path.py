@@ -2,10 +2,12 @@ import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 import tempfile
+import threading
 import time
 import unittest
 
 from fast_voice.contracts import ToolCallEvent
+from relay.dynamodb_task_store import DynamoDbTaskStore, InMemoryDynamoLedger
 from relay.slow_path import SlowPathToolRouter
 from relay.task_store import AdmissionUnavailable, SQLiteTaskStore
 
@@ -30,7 +32,7 @@ class SlowStore:
         return self.inner.admit(request)
 
 
-def make_router(store, *, timeout=1.0, task_id=TASK_ID, conversation_id=CONVERSATION):
+def make_router(store, *, timeout=1.0, task_id=TASK_ID, conversation_id=CONVERSATION, on_admitted=None):
     return SlowPathToolRouter(
         store=store,
         client_id=CLIENT,
@@ -41,6 +43,7 @@ def make_router(store, *, timeout=1.0, task_id=TASK_ID, conversation_id=CONVERSA
         acceptance_timeout_seconds=timeout,
         now=lambda: NOW,
         new_task_id=lambda: task_id,
+        on_admitted=on_admitted,
     )
 
 
@@ -144,6 +147,42 @@ class SQLiteSlowPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second, {"status": "unavailable", "code": "task_capacity"})
         self.assertEqual(failed, {"status": "unavailable", "code": "task_store_unavailable"})
 
+
+    async def test_dynamodb_ambiguous_receipt_notifies_only_when_strong_read_confirms(self):
+        ledger = InMemoryDynamoLedger()
+        store = DynamoDbTaskStore(ledger, client_id=CLIENT, max_pending_tasks=8)
+        notifications = []
+        task_ids = iter((TASK_ID, RETRY_TASK_ID))
+        router = SlowPathToolRouter(
+            store=store,
+            client_id=CLIENT,
+            conversation_id=CONVERSATION,
+            backend_id="openab",
+            default_task_kind="research",
+            max_task_ttl_seconds=600,
+            acceptance_timeout_seconds=1,
+            now=lambda: NOW,
+            new_task_id=lambda: next(task_ids),
+            on_admitted=lambda: notifications.append("wake"),
+        )
+        ledger.ambiguous_after_commit = True
+        confirmed = await router(
+            ToolCallEvent("call-ambiguous-after", "delegate_task", {"task": "First"}), 1
+        )
+        self.assertEqual(confirmed["status"], "accepted")
+        self.assertTrue(confirmed["duplicate"])
+        self.assertEqual(notifications, ["wake"])
+
+        ledger.ambiguous_next = True
+        unconfirmed = await router(
+            ToolCallEvent("call-ambiguous-before", "delegate_task", {"task": "Second"}), 2
+        )
+        self.assertEqual(unconfirmed["status"], "unknown")
+        self.assertEqual(notifications, ["wake"])
+        self.assertEqual(store.pending_dispatch_count(), 1)
+
+
+
     async def test_timeout_is_unknown_then_retry_finds_committed_task(self):
         store = self.store()
         slow_router = make_router(SlowStore(store), timeout=0.005, task_id=TASK_ID)
@@ -155,6 +194,34 @@ class SQLiteSlowPathTests(unittest.IsolatedAsyncioTestCase):
         retry = await make_router(retry_store, task_id=RETRY_TASK_ID)(event, 6)
         self.assertEqual(retry, {"status": "accepted", "task_id": TASK_ID, "duplicate": True})
         self.assertEqual(retry_store.pending_dispatch_count(), 1)
+
+
+    async def test_confirmed_and_duplicate_admissions_notify_on_owner_loop(self):
+        store = self.store()
+        notifications = []
+        loop_thread = threading.get_ident()
+        router = make_router(store, on_admitted=lambda: notifications.append(threading.get_ident()))
+        event = ToolCallEvent("call-notify", "delegate_task", {"task": "Research this"})
+        first = await router(event, 9)
+        duplicate = await router(event, 9)
+        self.assertEqual(first["status"], "accepted")
+        self.assertFalse(first["duplicate"])
+        self.assertEqual(duplicate["status"], "accepted")
+        self.assertTrue(duplicate["duplicate"])
+        self.assertEqual(notifications, [loop_thread, loop_thread])
+        self.assertEqual(store.pending_dispatch_count(), 1)
+
+    async def test_rejected_or_unavailable_admission_does_not_notify(self):
+        notifications = []
+        store = self.store()
+        router = make_router(store, on_admitted=lambda: notifications.append("wake"))
+        rejected = await router(ToolCallEvent("bad", "delegate_task", {}), 1)
+        unavailable = await make_router(
+            FailingStore(), on_admitted=lambda: notifications.append("wake")
+        )(ToolCallEvent("failed", "delegate_task", {"task": "Do work"}), 2)
+        self.assertEqual(rejected["status"], "rejected")
+        self.assertEqual(unavailable["status"], "unavailable")
+        self.assertEqual(notifications, [])
 
 
 if __name__ == "__main__":

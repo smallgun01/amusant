@@ -64,6 +64,12 @@ uv run kai-sim --host $relayHost --port 8765
 
 This is a local PTT-to-Live test harness, not production relay deployment; do not expose it publicly or add firewall/port-forward rules. Fake-provider tests do not call Gemini; a real Kai-sim turn does incur provider usage and must stay within the separately approved budget.
 
+## Dispatcher admission wakeup and fallback polling
+
+The supported Relay runtime keeps one in-process Dispatcher. After durable admission is confirmed—including an idempotent duplicate receipt—the router notifies the Dispatcher only after the to_thread store call has returned to the asyncio owner loop. Cross-thread callers use call_soon_threadsafe; rejected or unavailable admissions do not notify. The loop clears its wake event before draining, so notifications arriving around an empty claim are not lost, and it drains the durable outbox before waiting again.
+
+A bounded fallback poll recovers commits whose admission response timed out or was ambiguous. Startup recovery is owned once by dispatcher.start() when ACP is configured; without a Dispatcher, runtime composition performs the one recovery itself. AMUSANT_DISPATCHER_POLL_INTERVAL_SECONDS optionally overrides the idle fallback and must be finite, positive, and at most 60 seconds. Defaults are **1 second for SQLite** and **15 seconds for DynamoDB**, so worst-case discovery is bounded by the interval plus scheduling/query latency. DynamoDB idle polling uses a strongly consistent Query over the owner TASK# partition (not a Scan); offline query counters are not a dollar-cost estimate. This preserves one Dispatcher and the existing two-ECS architecture; it adds no SQS, GSI, or worker service.
+
 ## P4-T4b WSS preflight image entrypoint (bounded live PASS 2026-10-13)
 
 The root Relay Dockerfile's one-off command is `python -m relay.wss_preflight_smoke`: it requires `AMUSANT_TASK_STORE=dynamodb`, an owner-approved fresh `AMUSANT_CLIENT_ID` in the `p4-t4b-<unique-run-id>` namespace supplied as a RunTask override (the task-definition template deliberately contains `REPLACE_RUN_CLIENT_ID`), the current Jellii private IPv4 as a runtime-only `AMUSANT_ACP_EXPECTED_PRIVATE_IP` override, `wss://...:8443/acp`, the ACP bearer secret, and the public private-CA certificate in `AMUSANT_ACP_CA_PEM`. The wrapper verifies the expected client partition is empty using a strong TASK# query and rejects custom DynamoDB endpoints and plaintext mode.
