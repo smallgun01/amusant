@@ -1,6 +1,6 @@
 # Project Amusant — Execution Plan
 
-> 更新：2026-10-14
+> 更新：2026-10-15
 > GitHub：Private repository; remote is configured locally.
 > 本機目錄：projects/amusant
 
@@ -71,3 +71,22 @@
 - P3 local durability uses SQLite task + dispatch intent and an application-scoped Async Dispatcher inside Relay; no standalone Worker ECS. AWS ECS-task replacement requires an approved external durable store (DynamoDB is a candidate); SQS is not an MVP requirement. The two-ECS amendment is accepted as the architecture baseline, not deployed; AWS changes/costs remain separately gated.
 - 任何 AWS 費用、硬體購買、私有主機設定變更或 Kai 上游改動，另行核准後才執行。
 - 目前此排程是專案里程碑，非 cron/提醒。
+
+## 跨軌 Hardware / AWS 整合測試計畫（2026-10-15 決策）
+
+執行順序與 Gate 矩陣以 [Cross-track Integration Roadmap](docs/hardware/cross-track-integration-roadmap.md) 為準。本段是**執行排程**而非修改 SPEC 需求或宣稱驗收通過。
+
+| 先後／可平行 | Gate | 範圍 | Tracking | 尚未通過的驗收 |
+|---|---|---|---|---|
+| **優先** | **G0 / H0.3 Stage C** | 原版 Kai StickS3 → 本地 Amusant Relay（Opus + TLS-PSK） | [#31](https://github.com/smallgun01/amusant/issues/31) | 真實電池 PTT、喚醒/打斷/重連與延遲；#32 是離線程式碼 PASS，不是 G0 PASS |
+| **與 G0 可平行的 read-only/offline** | **P4-A2** | 現有一次性 ECS RunTask → 持久 ECS Service A，保留已驗證 ACP 私網 | [#35](https://github.com/smallgun01/amusant/issues/35)、[#26](https://github.com/smallgun01/amusant/issues/26) | Service 運行、重啟/恢復、成本/安全與回滾；任何 AWS 變更需獨立授權 |
+| **與 G0 可平行的 read-only/offline** | **G1 / Edge** | 評估標準憑證 WSS/Cloudflare 與 TCP TLS-PSK，先軟體假客戶端 | [#27](https://github.com/smallgun01/amusant/issues/27) | 不可把共享 Tunnel sidecar 當已可用；Route/SG/身分/費用需證明 |
+| **G0/H0 通過後** | **H1-W1** | Amusant-owned firmware 的 NVS 動態 Wi-Fi（USB 設定） | [#36](https://github.com/smallgun01/amusant/issues/36)、[#11](https://github.com/smallgun01/amusant/issues/11) | 不再預燒 SSID/密碼；保留本地 PTT/Deep Sleep Baseline |
+| W1 後 | **H1-W2a** | 多 Wi-Fi profiles 與快取感知切換 | [#36](https://github.com/smallgun01/amusant/issues/36) | 多網路失敗切換、本地 Relay 回歸 |
+| W2a 後 | **H1-W2b** | SoftAP + Captive Portal（手機免 USB 配網） | [#36](https://github.com/smallgun01/amusant/issues/36) | 手機配網/安全/逾時/恢復/續航 |
+| **A2 + G1 後** | **G2** | 實體 StickS3，**單一已知 Wi-Fi** → AWS Relay → Gemini | [#27](https://github.com/smallgun01/amusant/issues/27)、[#35](https://github.com/smallgun01/amusant/issues/35) | 若改標準 WSS，應先用單獨 Firmware Transport PR；**不必等 W2b** |
+| **G2 + W2b 後** | **G3** | Wi-Fi 切換 + AWS Fast Voice + Slow Task/ACP/DynamoDB Inbox 整條產品 E2E | 後續於 Gate 前另開追蹤 Issue | 已測的 end-to-end、延遲、復原、費用及版本追溯 |
+
+**隔離原則：** 一個 Gate 只動一個主要層次。Firmware W1/W2 使用同一個經 G0 驗證的本地 Relay；AWS A2/G1 先用軟體 Client，不因 Firmware 配網未完成而等待；G2 使用已知 Wi-Fi 單獨驗證跨網路 Device Edge。
+
+**獨立核准：** 這次文件/Issue 規劃沒有核准 Firmware 匯入/Flash、付費 Gemini、Cloudflare/AWS 變更、對外入口或永久 24/7 服務。PR #34 的 offline CI 用於各軟體 PR 回歸，但不能代替真實硬體 / AWS live gate。
