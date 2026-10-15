@@ -23,9 +23,18 @@ The last command is a mandatory real local Python 3.13/OpenSSL TLS-PSK WSS integ
 
 Keep actual secrets in the owner's private runtime environment; never put them in this file, a committed .env, shell history, command arguments, GitHub comments, or logs.
 
-- Existing app settings: AMUSANT_DEVICE_TOKEN, AMUSANT_LIVE_PROVIDER=gemini, and the locally injected Gemini key.
-- New PSK setting shape: AMUSANT_DEVICE_PSKS=identity:<64-hex-character-key>; multiple unique identities/keys may be comma-separated. Use one unique 32-byte key per physical device. Bearer token and PSK are independent secrets.
-- Bind with an explicit private LAN IP; loopback, wildcard, public, link-local, and DNS-name binds are rejected in StickS3 mode. No public ingress or port-forwarding is part of H0.3.
+The local runtime must supply this complete configuration set before run() can compose the supported Relay:
+
+- AMUSANT_DEVICE_TOKEN — private Bearer token, kept out of this file and shell history.
+- AMUSANT_DEVICE_PSKS — shape identity:<64-hex-character-key>; multiple unique identities/keys may be comma-separated. Use one unique 32-byte PSK per device. The identity/key must match the already-working Kai firmware; Bearer and PSK are independent secrets.
+- AMUSANT_CLIENT_ID — bounded server-owned identity; never derive it from hello.device.
+- AMUSANT_BACKEND_ID — fixed server-side backend selection.
+- AMUSANT_TASK_STORE=sqlite and AMUSANT_TASK_DB=<absolute path to a local SQLite ledger file>.
+- AMUSANT_LIVE_PROVIDER=gemini and GEMINI_API_KEY, injected privately at runtime.
+
+Optional task limits have defaults in relay/application.py. The AMUSANT_ACP_URL / AMUSANT_ACP_AUTH_KEY / AMUSANT_ACP_CWD trio is optional but all-or-none: if all are absent, no AsyncDispatcher starts and admitted tasks can remain pending; a partial trio fails closed. This transport runbook does not authorize real ACP credentials or task execution.
+
+Bind with an explicit private LAN IP; loopback, wildcard, public, link-local, and DNS-name binds are rejected in StickS3 mode. No public ingress or port-forwarding is part of H0.3.
 
 The actual owner-run command, after separate approval for a paid Live turn and physical test, is:
 
