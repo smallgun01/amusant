@@ -1,0 +1,55 @@
+name: CI
+
+# Offline-only regression checks. Never use pull_request_target or inject real
+# Gemini, AWS, device PSK, or Bearer credentials into these jobs.
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  offline-regression:
+    name: Fast Voice / Relay / TLS-PSK (Python 3.13)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install Python 3.13
+        run: uv python install 3.13
+
+      - name: Install locked dependencies (hardware Opus + moto)
+        run: uv sync --locked --python 3.13 --extra hardware-opus --group dev
+
+      - name: Fast Voice offline tests
+        run: uv run --locked --python 3.13 --extra hardware-opus --group dev python -m unittest discover -s fast_voice/tests -v
+
+      - name: Relay offline tests (including moto/DynamoDB)
+        # Legacy test_mock_relay imports mock_relay as a top-level module.
+        # Preserve repo root for package imports, and relay/ for that import.
+        env:
+          PYTHONPATH: .:relay
+        run: uv run --locked --python 3.13 --extra hardware-opus --group dev python -m unittest discover -s relay/tests -v
+
+      - name: TLS-PSK WSS / Opus loopback (fake LiveProvider)
+        # Direct script execution adds relay/tests to sys.path, not the repo root.
+        env:
+          PYTHONPATH: .
+        run: uv run --locked --python 3.13 --extra hardware-opus --group dev python relay/tests/psk_wss_integration.py
