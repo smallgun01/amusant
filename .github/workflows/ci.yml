@@ -42,6 +42,10 @@ jobs:
         run: uv run --locked --python 3.13 --extra hardware-opus --group dev python -m unittest discover -s fast_voice/tests -v
 
       - name: Relay offline tests (including moto/DynamoDB)
+        # Legacy test_mock_relay imports mock_relay as a top-level module.
+        # Preserve repo root for package imports, and relay/ for that import.
+        env:
+          PYTHONPATH: .:relay
         run: uv run --locked --python 3.13 --extra hardware-opus --group dev python -m unittest discover -s relay/tests -v
 
       - name: TLS-PSK WSS / Opus loopback (fake LiveProvider)
