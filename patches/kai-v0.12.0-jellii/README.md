@@ -58,7 +58,7 @@ Static source impact: `Theme` gains nine `uint16_t` values (+18 bytes of global 
 
 ## Preview and verification
 
-All enlarged images use nearest-neighbor scaling, with no anti-aliasing or post effects. The native LCD contact sheet retains Kai's icon bar, battery, inbox, and status text in the actual 240×135 main layout. Thinking bubbles, sleeping Z marks, and listening waves are drawn at the original effect positions; the preview audit reports no non-text drawing outside the LCD bounds.
+All enlarged images use nearest-neighbor scaling, with no anti-aliasing or post effects. The native LCD contact sheet retains Kai's icon bar, battery, inbox, and status text in the actual 240×135 main layout. Thinking bubbles, sleeping Z marks, and listening waves use Kai's original effect positions. A coordinate-level audit checks every effect bounding box against the four icon slots, inbox badge, battery text, and status text row; it finds no overlap. The preview also reports no non-text drawing outside the LCD bounds.
 
 - [Six states, exact 20×18 cells](previews/sprite-6-states-20x18-1x.png)
 - [Six states, 8× nearest-neighbor](previews/sprite-6-states-20x18-8x.png)
