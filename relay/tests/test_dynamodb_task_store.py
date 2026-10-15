@@ -227,11 +227,24 @@ class DynamoDbTaskStoreTests(unittest.TestCase):
             task_id,
             result=BoundedTaskResult(speak="Done.", card={"title": "Ok"}, details_md="md"),
         )
-        spoken = store.lookup_inbox(client_id=CLIENT, task_id=task_id, speak=True)
-        self.assertEqual(spoken["delivery_state"], "spoken")
+        requested = store.lookup_inbox(client_id=CLIENT, task_id=task_id, speak=True)
+        self.assertEqual(requested["delivery_state"], "read")
+        self.assertEqual(store.get_inbox(task_id)["delivery_state"], "read")
+        self.assertTrue(store.mark_inbox_spoken(client_id=CLIENT, task_id=task_id, now=NOW))
         later = store.lookup_inbox(client_id=CLIENT, task_id=task_id, speak=False)
         self.assertEqual(later["delivery_state"], "spoken")
         self.assertEqual(store.get_inbox(task_id)["delivery_state"], "spoken")
+        self.assertTrue(store.mark_inbox_spoken(client_id=CLIENT, task_id=task_id, now=NOW))
+
+    def test_mark_spoken_requires_completed_result_and_authenticated_owner(self):
+        ledger, store = _store()
+        task_id = str(uuid4())
+        store.admit(_request(task_id))
+        self.assertFalse(store.mark_inbox_spoken(client_id=CLIENT, task_id=task_id, now=NOW))
+        with self.assertRaises(AdmissionUnavailable):
+            store.mark_inbox_spoken(client_id="other-owner", task_id=task_id, now=NOW)
+        row = ledger.get_item(CLIENT, f"TASK#{task_id}", consistent=True)
+        self.assertIsNone(row.get("delivery_state"))
 
     def test_capacity_one_serializes_two_threads(self):
         ledger, store = _store(max_pending_tasks=1)

@@ -42,6 +42,10 @@ class TaskAdmissionStore(Protocol):
         """Authorized previous-task lookup."""
         ...
 
+    def mark_inbox_spoken(
+        self, *, client_id: str, task_id: str, now=None
+    ) -> bool: ...
+
 
 class SlowPathToolRouter:
     """Validate a Live tool call and perform short, durable backend-neutral admission.
@@ -125,6 +129,25 @@ class SlowPathToolRouter:
             "task_id": receipt.task_id,
             "duplicate": receipt.duplicate,
         }
+
+    async def mark_spoken(self, task_id: str) -> bool:
+        """Persist spoken only after the bridge confirms its audio boundary."""
+        marker = getattr(self._store, "mark_inbox_spoken", None)
+        if not callable(marker):
+            return False
+        try:
+            return bool(await asyncio.wait_for(
+                asyncio.to_thread(
+                    marker,
+                    client_id=self._client_id,
+                    task_id=task_id,
+                    now=self._now(),
+                ),
+                timeout=self._timeout,
+            ))
+        except Exception:
+            # Unknown writes stay retryable; never claim an unconfirmed transition.
+            return False
 
     async def _lookup(self, event: ToolCallEvent) -> Mapping[str, JSONValue]:
         arguments = event.arguments

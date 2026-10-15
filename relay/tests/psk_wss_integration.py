@@ -46,6 +46,7 @@ class FakeProvider:
     def on_audio(self, callback): self.callbacks["audio"] = callback
     def on_transcript(self, callback): self.callbacks["transcript"] = callback
     def on_tool_call(self, callback): self.callbacks["tool"] = callback
+    def on_tool_calls_complete(self, callback): self.callbacks["tool_batch_complete"] = callback
     def on_interrupted(self, callback): self.callbacks["interrupted"] = callback
     def on_turn_complete(self, callback): self.callbacks["complete"] = callback
     def on_error(self, callback): self.callbacks["error"] = callback
