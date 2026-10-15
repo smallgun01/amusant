@@ -15,6 +15,7 @@ Amusant is an independently maintained, one-to-one Kai-compatible personal voice
 - [SPEC.md](SPEC.md) — canonical requirements (P3 design proposed).
 - [ADR-0001](docs/adr/0001-openab-acp-slow-path.md) — OpenAB ACP Slow Path architecture decision and acceptance gates.
 - [PLAN.md](PLAN.md) — execution sequence and gates.
+- [Cross-track integration roadmap](docs/hardware/cross-track-integration-roadmap.md) — G0 local hardware, parallel P4-A2 / H1 Wi-Fi, G1 edge and G2/G3 joining gates (planning only).
 - [STATUS.md](STATUS.md) — current verified state.
 - [P4-T4b Live acceptance](docs/p4-t4b-live-acceptance.md) — deployed WSS/ACP evidence, after-stop DynamoDB result and recorded exceptions.
 - [`pyproject.toml`](pyproject.toml) + [`uv.lock`](uv.lock) — Python runtime dependencies and reproducible lock.
