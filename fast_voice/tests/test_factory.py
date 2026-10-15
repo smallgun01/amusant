@@ -54,6 +54,7 @@ class FactoryTests(unittest.TestCase):
         self.assertEqual(provider._config.response_modalities, ["AUDIO"])
         self.assertTrue(provider._config.realtime_input_config.automatic_activity_detection.disabled)
         self.assertEqual(provider._config.max_output_tokens, 32)
+        self.assertFalse(hasattr(provider._config, "tools"))
 
     def test_invalid_output_token_limit_fails_before_client_construction(self):
         with self.assertRaises(ProviderConfigurationError):
@@ -83,6 +84,7 @@ class FactoryTests(unittest.TestCase):
         self.assertEqual(provider._config.response_modalities, ["AUDIO"])
         self.assertTrue(provider._config.realtime_input_config.automatic_activity_detection.disabled)
         self.assertEqual(provider._config.max_output_tokens, 32)
+        self.assertFalse(provider._config.tools)
 
     @unittest.skipIf(google_types is None, "google-genai is installed only in the project uv environment")
     def test_delegate_tool_schema_is_explicitly_attached_to_live_config(self):

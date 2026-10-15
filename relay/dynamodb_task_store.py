@@ -78,7 +78,11 @@ def _condition_holds(current: dict[str, object] | None, condition: str) -> bool:
     if condition == "pending_queued":
         return current.get("outbox_state") == "pending" and current.get("status") == "queued"
     if condition == "delivery_can_speak":
-        return current.get("delivery_state") != "spoken"
+        return (
+            current.get("status") == "completed"
+            and current.get("speak") is not None
+            and current.get("delivery_state") != "spoken"
+        )
     if condition == "delivery_can_read":
         return current.get("delivery_state") in {None, "pending", "notified"}
     raise ValueError(f"unknown ledger condition {condition}")
@@ -536,18 +540,16 @@ class DynamoDbTaskStore:
             }
         next_delivery = delivery
         if status in {"completed", "failed", "uncertain", "expired"}:
-            if speak and status == "completed" and result is not None:
-                next_delivery = "spoken"
-            elif delivery in {None, "pending", "notified"}:
+            # Lookup only advances pending/notified to read. Spoken is explicit.
+            if delivery in {None, "pending", "notified"}:
                 next_delivery = "read"
             if next_delivery is not None and next_delivery != delivery:
-                condition = "delivery_can_speak" if next_delivery == "spoken" else "delivery_can_read"
                 try:
                     updated = self._ledger.update_item(
                         str(row["pk"]),
                         str(row["sk"]),
                         {"delivery_state": next_delivery, "inbox_updated_at": now_iso},
-                        condition=condition,
+                        condition="delivery_can_read",
                     )
                     delivery = updated.get("delivery_state")
                 except LedgerConditionFailed:
@@ -565,6 +567,43 @@ class DynamoDbTaskStore:
         if speak and status == "completed" and result is not None:
             payload["speak_now"] = True
         return payload
+
+    def mark_inbox_spoken(
+        self,
+        *,
+        client_id: str,
+        task_id: str,
+        now: datetime | None = None,
+    ) -> bool:
+        """Conditionally acknowledge completed audio delivery for this owner."""
+        if client_id != self._client_id or not _ID_RE.fullmatch(client_id):
+            raise AdmissionUnavailable("invalid_identity")
+        if not isinstance(task_id, str):
+            return False
+        try:
+            parsed = str(UUID(task_id))
+        except (ValueError, TypeError, AttributeError):
+            return False
+        if parsed != task_id.lower():
+            return False
+        now_iso = _utc_iso(now or datetime.now(timezone.utc))
+        with self._lock:
+            row = self._ledger.get_item(client_id, _task_sk(task_id), consistent=True)
+            if row is None or row.get("status") != "completed" or row.get("speak") is None:
+                return False
+            if row.get("delivery_state") == "spoken":
+                return True
+            try:
+                updated = self._ledger.update_item(
+                    client_id,
+                    _task_sk(task_id),
+                    {"delivery_state": "spoken", "inbox_updated_at": now_iso},
+                    condition="delivery_can_speak",
+                )
+                return updated.get("delivery_state") == "spoken"
+            except LedgerConditionFailed:
+                fresh = self._ledger.get_item(client_id, _task_sk(task_id), consistent=True)
+                return fresh is not None and fresh.get("delivery_state") == "spoken"
 
     def get_inbox(self, task_id: str) -> dict[str, object] | None:
         with self._lock:

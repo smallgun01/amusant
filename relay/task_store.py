@@ -136,6 +136,10 @@ class TaskStore(Protocol):
         now: datetime | None = None,
     ) -> dict[str, object] | None: ...
 
+    def mark_inbox_spoken(
+        self, *, client_id: str, task_id: str, now: datetime | None = None
+    ) -> bool: ...
+
     def get_by_task_id(self, task_id: str) -> dict[str, object] | None: ...
 
     def get_inbox(self, task_id: str) -> dict[str, object] | None: ...
@@ -718,9 +722,8 @@ class SQLiteTaskStore:
                 }
             next_delivery = delivery
             if status in {"completed", "failed", "uncertain", "expired"}:
-                if speak and status == "completed" and result is not None:
-                    next_delivery = "spoken"
-                elif delivery in {None, "pending", "notified"}:
+                # Retrieval is not proof that audio reached the device.
+                if delivery in {None, "pending", "notified"}:
                     next_delivery = "read"
                 if next_delivery is not None and next_delivery != delivery:
                     connection.execute(
@@ -743,6 +746,58 @@ class SQLiteTaskStore:
                 payload["speak_now"] = True
             return payload
         except (sqlite3.Error, json.JSONDecodeError):
+            try:
+                connection.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise AdmissionUnavailable("task_store_unavailable") from None
+        finally:
+            connection.close()
+
+    def mark_inbox_spoken(
+        self,
+        *,
+        client_id: str,
+        task_id: str,
+        now: datetime | None = None,
+    ) -> bool:
+        """Acknowledge a completed result after successful server-side audio delivery."""
+        if not isinstance(client_id, str) or not _ID_RE.fullmatch(client_id):
+            raise AdmissionUnavailable("invalid_identity")
+        if not isinstance(task_id, str):
+            return False
+        try:
+            parsed = str(UUID(task_id))
+        except (ValueError, TypeError, AttributeError):
+            return False
+        if parsed != task_id.lower():
+            return False
+        now_iso = _utc_iso(now or datetime.now(timezone.utc))
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT t.status,r.speak,i.delivery_state "
+                "FROM slow_tasks AS t "
+                "LEFT JOIN task_results AS r USING(task_id) "
+                "LEFT JOIN task_inbox AS i USING(task_id) "
+                "WHERE t.client_id=? AND t.task_id=?",
+                (client_id, task_id),
+            ).fetchone()
+            if row is None or row[0] != "completed" or row[1] is None:
+                connection.execute("COMMIT")
+                return False
+            if row[2] == "spoken":
+                connection.execute("COMMIT")
+                return True
+            connection.execute(
+                "INSERT INTO task_inbox(task_id,delivery_state,updated_at) VALUES(?,?,?) "
+                "ON CONFLICT(task_id) DO UPDATE SET delivery_state='spoken', updated_at=excluded.updated_at",
+                (task_id, "spoken", now_iso),
+            )
+            connection.execute("COMMIT")
+            return True
+        except sqlite3.Error:
             try:
                 connection.execute("ROLLBACK")
             except sqlite3.Error:

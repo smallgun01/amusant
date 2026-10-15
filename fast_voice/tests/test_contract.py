@@ -81,6 +81,7 @@ class FakeProvider:
     def on_audio(self, callback): pass
     def on_transcript(self, callback): pass
     def on_tool_call(self, callback): pass
+    def on_tool_calls_complete(self, callback): pass
     def on_interrupted(self, callback): pass
     def on_turn_complete(self, callback): pass
     def on_error(self, callback): pass
@@ -280,6 +281,53 @@ class GeminiAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(session.calls[1]["activity_start"], google_types.ActivityStart)
         self.assertIsInstance(session.calls[2]["activity_end"], google_types.ActivityEnd)
         self.assertIsInstance(session.tool_responses[0]["function_responses"][0], google_types.FunctionResponse)
+        await provider.close()
+
+
+    async def test_tool_call_batch_completion_follows_all_correlated_responses(self):
+        calls = [
+            SimpleNamespace(id="batch-one", name="check_task_status", args={"speak": False}),
+            SimpleNamespace(id="batch-two", name="delegate_task", args={"task": "x"}),
+        ]
+        session = FakeSession([SimpleNamespace(
+            tool_call=SimpleNamespace(function_calls=calls), server_content=None,
+        )])
+        provider = GeminiLiveProvider(FakeClient(session), "test-model", {}, FakeTypes)
+        seen = []
+        completed = asyncio.Event()
+        async def handle(event):
+            seen.append(("call", event.call_id))
+            await provider.send_tool_result(event.call_id, {"status": "rejected"})
+        provider.on_tool_call(handle)
+        provider.on_tool_calls_complete(lambda: (seen.append(("batch",)), completed.set()))
+        await provider.connect()
+        await asyncio.wait_for(completed.wait(), timeout=2)
+        self.assertEqual(seen, [("call", "batch-one"), ("call", "batch-two"), ("batch",)])
+        self.assertEqual(len(session.tool_responses), 2)
+        await provider.close()
+
+    async def test_reused_tool_call_id_is_rejected_before_second_callback(self):
+        repeated = SimpleNamespace(id="reused-call", name="delegate_task", args={"task": "x"})
+        session = FakeSession([SimpleNamespace(
+            tool_call=SimpleNamespace(function_calls=[repeated, repeated]), server_content=None,
+        )])
+        provider = GeminiLiveProvider(FakeClient(session), "test-model", {}, FakeTypes)
+        calls = []
+        errors = []
+        observed = asyncio.Event()
+        async def handle(event):
+            calls.append(event.call_id)
+            await provider.send_tool_result(event.call_id, {"status": "accepted"})
+        def on_error(error):
+            errors.append(error.code)
+            observed.set()
+        provider.on_tool_call(handle)
+        provider.on_error(on_error)
+        await provider.connect()
+        await asyncio.wait_for(observed.wait(), timeout=2)
+        self.assertEqual(calls, ["reused-call"])
+        self.assertEqual(errors, ["duplicate_tool_call_id"])
+        self.assertEqual(len(session.tool_responses), 1)
         await provider.close()
 
 

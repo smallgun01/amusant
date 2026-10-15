@@ -96,6 +96,7 @@ class InboxTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["task_id"], TASK_ID)
         self.assertNotIn("speak", result)
         self.assertIsNone(store.get_result(TASK_ID))
+        self.assertFalse(store.mark_inbox_spoken(client_id=CLIENT, task_id=TASK_ID, now=NOW))
 
     async def test_completed_lookup_returns_bounded_result_and_marks_read(self):
         store = self.store()
@@ -109,17 +110,23 @@ class InboxTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("speak_now", result)
         self.assertEqual(store.get_inbox(TASK_ID)["delivery_state"], "read")
 
-    async def test_user_requested_speech_marks_spoken_without_second_function_response(self):
+    async def test_speech_request_stays_read_until_explicit_delivery_confirmation(self):
         store = self.store()
         store.admit(request_for(TASK_ID))
         await AsyncDispatcher(store, FakeExecutor(), now=lambda: NOW).dispatch_available()
-        result = await make_router(store)(
+        router = make_router(store)
+        result = await router(
             ToolCallEvent("lookup-speak", INBOX_TOOL_NAME, {"task_id": TASK_ID, "speak": True}),
             3,
         )
         self.assertEqual(result["status"], "completed")
         self.assertTrue(result["speak_now"])
         self.assertEqual(result["speak"], RESULT.speak)
+        self.assertEqual(result["delivery_state"], "read")
+        self.assertEqual(store.get_inbox(TASK_ID)["delivery_state"], "read")
+        self.assertTrue(await router.mark_spoken(TASK_ID))
+        self.assertEqual(store.get_inbox(TASK_ID)["delivery_state"], "spoken")
+        self.assertTrue(await router.mark_spoken(TASK_ID))
         self.assertEqual(store.get_inbox(TASK_ID)["delivery_state"], "spoken")
 
     async def test_other_client_cannot_read_inbox(self):
@@ -131,6 +138,8 @@ class InboxTests(unittest.IsolatedAsyncioTestCase):
             1,
         )
         self.assertEqual(result, {"status": "not_found"})
+        self.assertEqual(store.get_inbox(TASK_ID)["delivery_state"], "pending")
+        self.assertFalse(await make_router(store, client_id=OTHER).mark_spoken(TASK_ID))
         self.assertEqual(store.get_inbox(TASK_ID)["delivery_state"], "pending")
 
     async def test_failed_and_uncertain_are_honest_and_have_no_speak(self):
@@ -180,6 +189,8 @@ class InboxTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["speak"], RESULT.speak)
+        self.assertEqual(reopened.get_inbox(TASK_ID)["delivery_state"], "read")
+        self.assertTrue(await make_router(reopened).mark_spoken(TASK_ID))
         self.assertEqual(reopened.get_inbox(TASK_ID)["delivery_state"], "spoken")
 
     async def test_latest_task_is_used_when_task_id_omitted(self):

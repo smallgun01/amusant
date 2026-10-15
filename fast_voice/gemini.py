@@ -26,6 +26,7 @@ from .contracts import (
     ResponseInterruptedEvent,
     ToolCallCallback,
     ToolCallEvent,
+    ToolCallsCompleteCallback,
     TranscriptCallback,
     TranscriptEvent,
     TurnCompleteCallback,
@@ -33,6 +34,7 @@ from .contracts import (
 )
 
 LOG = logging.getLogger("amusant.fast_voice.gemini")
+MAX_TOOL_CALL_IDS_PER_SESSION = 512
 
 
 class GeminiLiveProvider:
@@ -55,10 +57,14 @@ class GeminiLiveProvider:
         self._session: Any | None = None
         self._receiver_task: asyncio.Task[None] | None = None
         self._tool_names: dict[str, str] = {}
+        # Call IDs are unique within a Live session. Retain completed IDs so a
+        # stale replay cannot be rebound to a later Relay turn.
+        self._seen_tool_call_ids: set[str] = set()
         self._was_interrupted = False
         self._on_audio: AudioCallback | None = None
         self._on_transcript: TranscriptCallback | None = None
         self._on_tool_call: ToolCallCallback | None = None
+        self._on_tool_calls_complete: ToolCallsCompleteCallback | None = None
         self._on_interrupted: InterruptedCallback | None = None
         self._on_turn_complete: TurnCompleteCallback | None = None
         self._on_error: ErrorCallback | None = None
@@ -72,6 +78,9 @@ class GeminiLiveProvider:
     def on_tool_call(self, callback: ToolCallCallback) -> None:
         self._on_tool_call = callback
 
+    def on_tool_calls_complete(self, callback: ToolCallsCompleteCallback) -> None:
+        self._on_tool_calls_complete = callback
+
     def on_interrupted(self, callback: InterruptedCallback) -> None:
         self._on_interrupted = callback
 
@@ -84,6 +93,10 @@ class GeminiLiveProvider:
     async def connect(self) -> None:
         if self._session is not None:
             return
+        # A new Live session has a fresh call-ID namespace.
+        self._tool_names.clear()
+        self._seen_tool_call_ids.clear()
+        self._was_interrupted = False
         connection = self._client.aio.live.connect(model=self._model, config=self._config)
         try:
             session = await connection.__aenter__()
@@ -105,6 +118,7 @@ class GeminiLiveProvider:
             except Exception as exc:
                 raise ProviderError(self.provider_id, "close_failed", "Gemini Live close failed", retryable=True) from exc
         self._tool_names.clear()
+        self._seen_tool_call_ids.clear()
         self._was_interrupted = False
 
     def _require_session(self) -> Any:
@@ -168,6 +182,14 @@ class GeminiLiveProvider:
         if inspect.isawaitable(result):
             await result
 
+    async def _emit_tool_calls_complete(self) -> None:
+        callback = self._on_tool_calls_complete
+        if callback is None:
+            return
+        result = callback()
+        if inspect.isawaitable(result):
+            await result
+
     async def _notify_error(self, error: ProviderError) -> None:
         if self._on_error is None:
             return
@@ -226,14 +248,25 @@ class GeminiLiveProvider:
         for call in function_calls:
             call_id = str(getattr(call, "id", "") or "")
             name = str(getattr(call, "name", "") or "")
-            if not call_id or not name:
+            if not call_id or len(call_id) > 128 or not name or len(name) > 64:
                 await self._notify_error(ProviderError(self.provider_id, "invalid_tool_call", "Gemini returned an invalid tool call"))
                 continue
+            if call_id in self._seen_tool_call_ids:
+                await self._notify_error(ProviderError(self.provider_id, "duplicate_tool_call_id", "Gemini reused a tool call id"))
+                break
+            if len(self._seen_tool_call_ids) >= MAX_TOOL_CALL_IDS_PER_SESSION:
+                await self._notify_error(ProviderError(self.provider_id, "tool_call_id_capacity", "Gemini tool call session limit reached"))
+                break
+            self._seen_tool_call_ids.add(call_id)
             self._tool_names[call_id] = name
             arguments = getattr(call, "args", None) or {}
             if not isinstance(arguments, Mapping):
                 arguments = {}
             await self._emit(self._on_tool_call, ToolCallEvent(call_id, name, arguments))
+        if function_calls:
+            # Let the Relay finish per-call authorization for the whole message
+            # before it retires a tool-enabled session for tool-free speech.
+            await self._emit_tool_calls_complete()
 
         content = getattr(message, "server_content", None)
         if content is None:

@@ -189,6 +189,14 @@ def build_relay_handler(
             tool_declarations=[live_tools],
         )
 
+    def spoken_provider_factory() -> LiveProvider:
+        # Saved Inbox content gets its own Live session with no tools in config.
+        return build_live_provider(
+            provider_environ,
+            client_factory=client_factory,
+            sdk_types=sdk_types,
+        )
+
     def tool_handler_factory(client_id: str, conversation_id: str) -> SlowPathToolHandler:
         return SlowPathToolRouter(
             store=task_store,
@@ -204,6 +212,7 @@ def build_relay_handler(
         expected_device_token,
         provider_factory,
         slow_path_tool_handler_factory=tool_handler_factory,
+        spoken_provider_factory=spoken_provider_factory,
         authenticated_client_id=authenticated_client_id,
         conversation_id_factory=conversation_id_factory,
         post_tool_ack_timeout_seconds=post_tool_ack_timeout_seconds,
