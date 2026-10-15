@@ -49,4 +49,7 @@ jobs:
         run: uv run --locked --python 3.13 --extra hardware-opus --group dev python -m unittest discover -s relay/tests -v
 
       - name: TLS-PSK WSS / Opus loopback (fake LiveProvider)
+        # Direct script execution adds relay/tests to sys.path, not the repo root.
+        env:
+          PYTHONPATH: .
         run: uv run --locked --python 3.13 --extra hardware-opus --group dev python relay/tests/psk_wss_integration.py
