@@ -1616,6 +1616,7 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
                     "GEMINI_API_KEY": "offline-test-key",
                     "AMUSANT_PERSONA_PROFILE": "jellii",
                     "AMUSANT_GEMINI_VOICE": "Zephyr",
+                    "AMUSANT_GEMINI_GOOGLE_SEARCH": "1",
                 },
                 backend_id="openab",
                 default_task_kind="research",
@@ -1636,6 +1637,7 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
                 await tool_provider.callbacks["tool_batch_complete"]()
                 self.assertIn("tool_declarations", provider_kwargs[0])
                 self.assertNotIn("tool_declarations", provider_kwargs[1])
+                self.assertIs(provider_kwargs[1]["allow_google_search"], False)
                 # The same Jellii identity must survive the tool-free Inbox speech session.
                 self.assertIn("Jellii", provider_kwargs[0]["system_instruction"])
                 self.assertEqual(

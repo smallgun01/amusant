@@ -211,12 +211,14 @@ def build_relay_handler(
         )
 
     def spoken_provider_factory() -> LiveProvider:
-        # Saved Inbox content gets its own Live session with no tools in config.
+        # Saved Inbox content gets its own Live session with NO tools at all,
+        # including Gemini-managed Google Search grounding.
         return build_live_provider(
             provider_environ,
             client_factory=client_factory,
             sdk_types=sdk_types,
             system_instruction=system_instruction,
+            allow_google_search=False,
         )
 
     def tool_handler_factory(client_id: str, conversation_id: str) -> SlowPathToolHandler:

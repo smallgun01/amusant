@@ -29,6 +29,7 @@ def build_live_provider(
     sdk_types: Any | None = None,
     tool_declarations: list[Any] | None = None,
     system_instruction: str | None = None,
+    allow_google_search: bool = True,
 ) -> LiveProvider:
     """Build Gemini only when explicitly selected; do not read files or call network.
 
@@ -60,6 +61,9 @@ def build_live_provider(
         not isinstance(system_instruction, str) or not system_instruction.strip()
     ):
         raise ProviderConfigurationError("system_instruction must be nonempty text when supplied.")
+    search_setting = environ.get("AMUSANT_GEMINI_GOOGLE_SEARCH", "0")
+    if search_setting not in {"0", "1"}:
+        raise ProviderConfigurationError("AMUSANT_GEMINI_GOOGLE_SEARCH must be 0 or 1.")
     max_tokens_value = environ.get("AMUSANT_GEMINI_MAX_OUTPUT_TOKENS")
     try:
         max_output_tokens = int(max_tokens_value) if max_tokens_value is not None else None
@@ -94,8 +98,13 @@ def build_live_provider(
                     prebuilt_voice_config=sdk_types.PrebuiltVoiceConfig(voice_name=voice_name)
                 )
             )
-        if tool_declarations is not None:
-            config_options["tools"] = tool_declarations
+        # Native grounding is a Gemini-managed tool, not a Relay function call.
+        # Keep it opt-in and NEVER attach it to the tool-free Inbox speech session.
+        tools = list(tool_declarations or [])
+        if search_setting == "1" and allow_google_search:
+            tools.insert(0, sdk_types.Tool(google_search=sdk_types.GoogleSearch()))
+        if tool_declarations is not None or (search_setting == "1" and allow_google_search):
+            config_options["tools"] = tools
         config = sdk_types.LiveConnectConfig(**config_options)
     except Exception:
         # SDK constructor errors may include request/config internals; redact them.
