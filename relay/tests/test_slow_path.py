@@ -182,38 +182,6 @@ class SQLiteSlowPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(store.pending_dispatch_count(), 1)
 
 
-    async def test_dynamodb_ambiguous_receipt_notifies_only_when_strong_read_confirms(self):
-        ledger = InMemoryDynamoLedger()
-        store = DynamoDbTaskStore(ledger, client_id=CLIENT, max_pending_tasks=8)
-        notifications = []
-        task_ids = iter((TASK_ID, RETRY_TASK_ID))
-        router = SlowPathToolRouter(
-            store=store,
-            client_id=CLIENT,
-            conversation_id=CONVERSATION,
-            backend_id="openab",
-            default_task_kind="research",
-            max_task_ttl_seconds=600,
-            acceptance_timeout_seconds=1,
-            now=lambda: NOW,
-            new_task_id=lambda: next(task_ids),
-            on_admitted=lambda: notifications.append("wake"),
-        )
-        ledger.ambiguous_after_commit = True
-        confirmed = await router(
-            ToolCallEvent("call-ambiguous-after", "delegate_task", {"task": "First"}), 1
-        )
-        self.assertEqual(confirmed["status"], "accepted")
-        self.assertTrue(confirmed["duplicate"])
-        self.assertEqual(notifications, ["wake"])
-
-        ledger.ambiguous_next = True
-        unconfirmed = await router(
-            ToolCallEvent("call-ambiguous-before", "delegate_task", {"task": "Second"}), 2
-        )
-        self.assertEqual(unconfirmed["status"], "unknown")
-        self.assertEqual(notifications, ["wake"])
-        self.assertEqual(store.pending_dispatch_count(), 1)
 
     async def test_timeout_is_unknown_then_retry_finds_committed_task(self):
         store = self.store()

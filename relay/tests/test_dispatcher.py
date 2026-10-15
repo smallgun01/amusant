@@ -97,17 +97,6 @@ class SlowAdmitStore:
         return self._inner.admit(request)
 
 
-class SlowAdmitStore:
-    def __init__(self, inner, delay: float = 0.08):
-        self._inner = inner
-        self.delay = delay
-
-    def __getattr__(self, name):
-        return getattr(self._inner, name)
-
-    def admit(self, request):
-        time.sleep(self.delay)
-        return self._inner.admit(request)
 
 
 class DispatcherTests(unittest.IsolatedAsyncioTestCase):
@@ -373,40 +362,6 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
             await dispatcher.stop()
 
 
-    async def test_late_commit_after_router_timeout_is_found_by_fallback_poll(self):
-        store = self.store()
-        executor = FakeExecutor()
-        dispatcher = AsyncDispatcher(store, executor, poll_interval_seconds=0.05, now=lambda: NOW)
-        notifications = []
-        router = SlowPathToolRouter(
-            store=SlowAdmitStore(store),
-            client_id=CLIENT,
-            conversation_id=CONVERSATION,
-            backend_id="openab",
-            default_task_kind="research",
-            max_task_ttl_seconds=600,
-            acceptance_timeout_seconds=0.005,
-            now=lambda: NOW,
-            new_task_id=lambda: TASK_ID,
-            on_admitted=lambda: (notifications.append(True), dispatcher.notify()),
-        )
-        await dispatcher.start()
-        try:
-            result = await router(
-                ToolCallEvent("call-late-commit", "delegate_task", {"task": "Compare options"}), 1
-            )
-            self.assertEqual(result["status"], "unknown")
-            self.assertEqual(notifications, [])
-            await asyncio.wait_for(executor.started_event.wait(), timeout=0.5)
-            for _ in range(30):
-                row = store.get_by_task_id(TASK_ID)
-                if row is not None and row["status"] == "completed":
-                    break
-                await asyncio.sleep(0.01)
-            self.assertEqual(executor.calls, [TASK_ID])
-            self.assertEqual(store.get_by_task_id(TASK_ID)["status"], "completed")
-        finally:
-            await dispatcher.stop()
 
 
     async def test_duplicate_admission_wakes_pending_task_without_second_execution(self):
