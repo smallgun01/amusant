@@ -1,6 +1,6 @@
 # Project Amusant — Status
 
-> 最後更新：2026-10-14
+> 最後更新：2026-10-16（追補既有證據，未新做 Live 測試）
 > 規格權威：SPEC.md
 > 執行計畫：PLAN.md
 > Repo：Private repository; remote is configured locally.
@@ -19,7 +19,7 @@
 
 **Evidence scope:** E1 = merged/offline; E2 = real local/physical; E3 = bounded live cloud; E4 = sustained operational/security/cost acceptance. A local fake POC or one-off AWS smoke must not be reported as E4. #26 T4b does not need a duplicate identical live prompt merely for bookkeeping. #33 avatar-specific tasks are complete in owner evidence; any power regression remains under #14.
 
-## 目前狀態
+## 歷史 P0–P4 進度與實測證據（各日期之當時狀態，非現行待辦清單）
 
 **P0 — Foundation：完成。P1 — Kai-sim mock 音訊 smoke：PASS。P2 — Fast Voice：PASS（2026-10-09 runtime gate）。P3.0 — authenticated OpenAB ACP/model + one-off Worker feasibility smoke：PASS only under explicitly accepted, task-bounded risk; not production acceptance. P3.1–P3.4 squash-merged. P4-A1 live one-off PASS（2026-10-12）. ADR-0002 accepted. Store-ready Relay squash-merged PR #19 (`69bd7ed6cadaba68176f8fa706c5d8ca880f7376`). Durability envelope squash-merged PR #20 (`ff5868a3bc4e3453e419f97e0ea06f3f5a3b5a9c`). P4 durability live one-off PASS（2026-10-12）：write via Dispatcher/ACP, A STOPPED, then `store_get` still reads completed Inbox. Table kept. Not TLS, not 24/7, not device ingress。
 
@@ -109,8 +109,8 @@
 
 ## P1 probe 定位
 
-- `relay/` 是可重現的 P1 協定／音訊測試工具，不是正式 Amusant Relay。
-- P1 mock-based Kai-sim smoke 已通過；正式 Relay／provider 的延遲與可靠性仍須按 P2–P4 驗收。
+- **P1 當時**的 mock probe 是可重現的協定／音訊測試工具，不是正式 Relay；**後續** `relay/` 已實作真實 Live／Task Ledger／Dispatcher／ACP 模組，且 #31 真實裝置連上 Amusant Relay functional PASS。請勿以 P1 時期的工具定位描述目前整個 `relay/`。
+- P1 mock Kai-sim smoke 已通過；P2 真實 Live 和 #31 本地實機 FAST 已後續通過各自功能驗收；**尚缺**裝置可聽第一聲延遲分布、持續雲端 Relay／端到端、操作可靠性驗收。
 
 ## Privacy de-identification
 
