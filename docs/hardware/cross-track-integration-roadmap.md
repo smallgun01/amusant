@@ -17,7 +17,7 @@
 ## Active dependency graph
 
 ```text
-WS1 Local device FAST G0 (functional PASS) ---+ 
+WS1 Local device FAST G0 (functional PASS) ---+
                                                 +---- G2: StickS3 -> deployed Relay -> Gemini FAST
 WS3 G1 device ingress --------------------------+
 WS2 B0 backend selection ------+                |
