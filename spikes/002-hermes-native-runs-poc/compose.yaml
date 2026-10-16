@@ -63,6 +63,37 @@ services:
     networks:
       - isolated
 
+  phase2b-state-init:
+    image: *hermes-image
+    user: "0:0"
+    entrypoint: ["python3", "-c"]
+    command: ["import os; os.chown('/state', 10000, 10000); os.chmod('/state', 0o700)"]
+    volumes:
+      - phase2b_state:/state
+
+  phase2b-relay:
+    image: *hermes-image
+    user: "10000:10000"
+    entrypoint: ["python3", "/poc/phase2b_relay_client.py"]
+    command: []
+    environment:
+      POC_API_BASE: http://hermes:8642
+      POC_API_KEY: "${POC_API_KEY:?run_poc.py must set POC_API_KEY}"
+      POC_FAKE_BASE: http://fake-provider:8000
+      AMUSANT_HERMES_RUNS_URL: http://hermes:8642
+      AMUSANT_HERMES_API_KEY: "${POC_API_KEY:?run_poc.py must set POC_API_KEY}"
+      AMUSANT_HERMES_ALLOW_PLAINTEXT: "1"
+      PYTHONPATH: /repo
+      POC_RUN_TAG: "${POC_RUN_TAG:-p2b-unused}"
+    volumes:
+      - ./phase2b_relay_client.py:/poc/phase2b_relay_client.py:ro
+      - ../../relay:/repo/relay:ro
+      - phase2b_state:/state
+    depends_on:
+      - hermes
+    networks:
+      - isolated
+
 networks:
   isolated:
     internal: true
@@ -70,3 +101,5 @@ networks:
 volumes:
   hermes_home:
     name: amusant-hermes-runs-p2a-v4-home
+  phase2b_state:
+    name: amusant-hermes-runs-p2b-state

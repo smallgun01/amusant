@@ -22,6 +22,7 @@ from .task_store import (
     SQLiteTaskStore,
     TaskAdmissionRequest,
     _ID_RE,
+    _RUN_ID_RE,
     _sanitize_error,
     _utc_iso,
 )
@@ -75,6 +76,18 @@ def _condition_holds(current: dict[str, object] | None, condition: str) -> bool:
         return current.get("outbox_state") == "claimed" and not current.get("dispatch_started_at")
     if condition == "claimed_started":
         return current.get("outbox_state") == "claimed" and bool(current.get("dispatch_started_at"))
+    if condition == "claimed_started_run_id_absent":
+        return (
+            current.get("outbox_state") == "claimed"
+            and bool(current.get("dispatch_started_at"))
+            and not current.get("backend_run_id")
+        )
+    if condition == "claimed_started_run_known":
+        return (
+            current.get("outbox_state") == "claimed"
+            and bool(current.get("dispatch_started_at"))
+            and bool(current.get("backend_run_id"))
+        )
     if condition == "pending_queued":
         return current.get("outbox_state") == "pending" and current.get("status") == "queued"
     if condition == "delivery_can_speak":
@@ -237,6 +250,7 @@ class DynamoDbTaskStore:
             "task_text": request.task,
             "task_kind": request.task_kind,
             "backend": request.backend,
+            "executor_kind": request.executor_kind,
             "status": "queued",
             "created_at": created,
             "expires_at": _utc_iso(request.expires_at),
@@ -293,19 +307,40 @@ class DynamoDbTaskStore:
             pk = str(row["pk"])
             sk = str(row["sk"])
             if row.get("dispatch_started_at"):
-                updated = self._ledger.update_item(
-                    pk,
-                    sk,
-                    {
-                        "outbox_state": "uncertain",
-                        "status": "uncertain",
-                        "last_error": "acp_result_unconfirmed",
-                        "retain_until": int(datetime.now(timezone.utc).timestamp()) + RETAIN_SECONDS,
-                    },
-                    condition="claimed_started",
-                )
-                self._align_dedup_ttl(updated)
-                uncertain += 1
+                if row.get("executor_kind", "openab_acp") == "hermes_runs" and row.get("backend_run_id"):
+                    updated = self._ledger.update_item(
+                        pk,
+                        sk,
+                        {
+                            "outbox_state": "pending",
+                            "status": "queued",
+                            "claimed_until": None,
+                            "dispatch_started_at": None,
+                            "last_error": None,
+                        },
+                        condition="claimed_started_run_known",
+                    )
+                    self._align_dedup_ttl(updated)
+                    requeued += 1
+                else:
+                    error = (
+                        "hermes_submission_unconfirmed"
+                        if row.get("executor_kind", "openab_acp") == "hermes_runs"
+                        else "acp_result_unconfirmed"
+                    )
+                    updated = self._ledger.update_item(
+                        pk,
+                        sk,
+                        {
+                            "outbox_state": "uncertain",
+                            "status": "uncertain",
+                            "last_error": error,
+                            "retain_until": int(datetime.now(timezone.utc).timestamp()) + RETAIN_SECONDS,
+                        },
+                        condition="claimed_started",
+                    )
+                    self._align_dedup_ttl(updated)
+                    uncertain += 1
             else:
                 self._ledger.update_item(
                     pk,
@@ -368,6 +403,8 @@ class DynamoDbTaskStore:
                     task_kind=str(updated["task_kind"]),
                     backend=str(updated["backend"]),
                     attempts=int(updated["attempts"]),
+                    executor_kind=str(updated.get("executor_kind") or "openab_acp"),
+                    backend_run_id=str(updated["backend_run_id"]) if updated.get("backend_run_id") else None,
                 )
             )
         return claimed
@@ -387,6 +424,47 @@ class DynamoDbTaskStore:
             )
         except LedgerConditionFailed as exc:
             raise AdmissionUnavailable("dispatch_not_claimed") from exc
+
+    def save_backend_run_id(self, task_id: str, run_id: str) -> None:
+        """Store one Hermes Run ID with an owner-scoped conditional update."""
+        if not isinstance(run_id, str) or not _RUN_ID_RE.fullmatch(run_id):
+            raise AdmissionUnavailable("invalid_backend_run_id")
+        with self._lock:
+            key = _task_sk(task_id)
+            current = self._ledger.get_item(self._client_id, key, consistent=True)
+            if current is None:
+                raise AdmissionUnavailable("task_not_found")
+            if current.get("executor_kind", "openab_acp") != "hermes_runs":
+                raise AdmissionUnavailable("executor_mismatch")
+            existing = current.get("backend_run_id")
+            if existing is not None:
+                if existing == run_id:
+                    return
+                raise AdmissionConflict("backend_run_id_conflict")
+            if current.get("outbox_state") != "claimed" or not current.get("dispatch_started_at"):
+                raise AdmissionUnavailable("dispatch_not_claimed")
+            try:
+                self._ledger.update_item(
+                    self._client_id,
+                    key,
+                    {"backend_run_id": run_id},
+                    condition="claimed_started_run_id_absent",
+                )
+            except LedgerConditionFailed as exc:
+                fresh = self._ledger.get_item(self._client_id, key, consistent=True)
+                if fresh is not None and fresh.get("backend_run_id") == run_id:
+                    return
+                if fresh is not None and fresh.get("backend_run_id") is not None:
+                    raise AdmissionConflict("backend_run_id_conflict") from exc
+                raise AdmissionUnavailable("dispatch_not_claimed") from exc
+            except LedgerAmbiguous as exc:
+                try:
+                    fresh = self._ledger.get_item(self._client_id, key, consistent=True)
+                except (AdmissionUnavailable, LedgerAmbiguous):
+                    raise AdmissionUnknown("backend_run_mapping_unconfirmed") from exc
+                if fresh is not None and fresh.get("backend_run_id") == run_id:
+                    return
+                raise AdmissionUnknown("backend_run_mapping_unconfirmed") from exc
 
     def complete(self, task_id: str, *, result: BoundedTaskResult | None = None) -> None:
         self._finish(task_id, task_status="completed", outbox_state="sent", error=None, result=result)
@@ -485,6 +563,8 @@ class DynamoDbTaskStore:
             "attempts": row.get("attempts"),
             "dispatch_started": row.get("dispatch_started_at") is not None,
             "last_error": row.get("last_error"),
+            "executor_kind": row.get("executor_kind", "openab_acp"),
+            "backend_run_id": row.get("backend_run_id"),
         }
 
     def lookup_inbox(

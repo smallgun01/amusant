@@ -1,8 +1,8 @@
 """In-process Async Dispatcher for admitted slow tasks.
 
 This is a single-Relay application component. It does not provision a Worker
-ECS service, SQS, or distributed leases. ACP execution is injected; the default
-CLI does not call OpenAB.
+ECS service, SQS, or distributed leases. Agent execution is injected; the default
+CLI does not call an external agent.
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from typing import Literal, Protocol
 
 from .task_store import BoundedTaskResult, ClaimedTask, TaskStore
 
-ExecutionStatus = Literal["completed", "failed"]
+ExecutionStatus = Literal["completed", "failed", "uncertain"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,7 +37,7 @@ MAX_POLL_INTERVAL_SECONDS = 60.0
 
 
 class AsyncDispatcher:
-    """Claim pending outbox rows, record ACP-start, and persist terminal/uncertain state."""
+    """Claim pending outbox rows, record dispatch-start, and persist terminal/uncertain state."""
 
     def __init__(
         self,
@@ -170,21 +170,30 @@ class AsyncDispatcher:
             return
         try:
             outcome = await self._executor.execute(task)
-        except Exception:
+        except Exception as exc:
+            code = getattr(exc, "code", "acp_result_unconfirmed")
             await self._safe_store(
                 self._store.mark_uncertain,
                 task.task_id,
-                code="acp_result_unconfirmed",
+                code=code,
             )
             return
         try:
             if outcome.status == "completed":
                 await self._store_call(self._store.complete, task.task_id, result=outcome.result)
                 return
+            if outcome.status == "uncertain":
+                await self._store_call(
+                    self._store.mark_uncertain,
+                    task.task_id,
+                    code=outcome.code or "dispatch_result_unconfirmed",
+                )
+                return
             await self._store_call(self._store.fail, task.task_id, code=outcome.code or "dispatch_failed")
         except Exception:
+            code = "hermes_result_unconfirmed" if task.executor_kind == "hermes_runs" else "acp_result_unconfirmed"
             await self._safe_store(
                 self._store.mark_uncertain,
                 task.task_id,
-                code="acp_result_unconfirmed",
+                code=code,
             )

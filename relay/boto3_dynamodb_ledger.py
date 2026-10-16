@@ -25,6 +25,8 @@ _CONDITIONS = {
     "claimed": "outbox_state = :claimed",
     "claimed_unsent": "outbox_state = :claimed AND attribute_not_exists(dispatch_started_at)",
     "claimed_started": "outbox_state = :claimed AND attribute_exists(dispatch_started_at)",
+    "claimed_started_run_id_absent": "outbox_state = :claimed AND attribute_exists(dispatch_started_at) AND attribute_not_exists(backend_run_id)",
+    "claimed_started_run_known": "outbox_state = :claimed AND attribute_exists(dispatch_started_at) AND attribute_exists(backend_run_id)",
     "pending_queued": "outbox_state = :pending AND #status = :queued",
     "delivery_can_speak": (
         "attribute_exists(pk) AND #status = :completed AND attribute_exists(speak) AND "

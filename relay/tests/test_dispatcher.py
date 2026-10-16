@@ -199,6 +199,16 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["dispatch_state"], "failed")
         self.assertEqual(row["last_error"], "acp_timeout")
 
+    async def test_uncertain_execution_outcome_is_uncertain_not_failed(self):
+        store = self.store()
+        store.admit(request_for(TASK_ID))
+        executor = FakeExecutor(outcome=ExecutionOutcome(status="uncertain", code="hermes_run_interrupted"))
+        await AsyncDispatcher(store, executor, now=lambda: NOW).dispatch_available()
+        row = store.get_by_task_id(TASK_ID)
+        self.assertEqual(row["status"], "uncertain")
+        self.assertEqual(row["dispatch_state"], "uncertain")
+        self.assertEqual(row["last_error"], "hermes_run_interrupted")
+
     async def test_attempts_exhausted_fail_closed_without_executor(self):
         store = self.store()
         store.admit(request_for(TASK_ID))
