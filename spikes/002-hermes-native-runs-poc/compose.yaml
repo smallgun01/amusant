@@ -1,0 +1,72 @@
+name: amusant-hermes-runs-p2a-v4
+
+x-hermes-image: &hermes-image docker.io/nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7
+
+services:
+  seed:
+    profiles: ["bootstrap"]
+    image: *hermes-image
+    user: "10000:10000"
+    entrypoint: ["python3", "/poc/seed_config.py"]
+    command: []
+    environment:
+      HERMES_HOME: /opt/data
+    volumes:
+      - hermes_home:/opt/data
+      - ./hermes-config.yaml:/poc/hermes-config.yaml:ro
+      - ./seed_config.py:/poc/seed_config.py:ro
+
+  fake-provider:
+    image: *hermes-image
+    user: "10000:10000"
+    entrypoint: ["python3", "/poc/fake_provider.py"]
+    command: []
+    environment:
+      FAKE_CLIENT_DELAY_SECONDS: "4"
+      FAKE_RESTART_DELAY_SECONDS: "40"
+    volumes:
+      - ./fake_provider.py:/poc/fake_provider.py:ro
+    networks:
+      - isolated
+
+  hermes:
+    image: *hermes-image
+    command: ["gateway", "run"]
+    environment:
+      HERMES_HOME: /opt/data
+      HERMES_UID: "10000"
+      HERMES_GID: "10000"
+      API_SERVER_ENABLED: "true"
+      API_SERVER_HOST: "0.0.0.0"
+      API_SERVER_PORT: "8642"
+      API_SERVER_KEY: "${POC_API_KEY:?run_poc.py must set POC_API_KEY}"
+      POC_FAKE_MODEL_KEY: "${POC_FAKE_MODEL_KEY:?run_poc.py must set POC_FAKE_MODEL_KEY}"
+    volumes:
+      - hermes_home:/opt/data
+    depends_on:
+      - fake-provider
+    stop_grace_period: 3s
+    networks:
+      - isolated
+
+  client:
+    image: *hermes-image
+    user: "10000:10000"
+    entrypoint: ["python3", "/poc/poc_client.py"]
+    command: []
+    environment:
+      POC_API_BASE: http://hermes:8642
+      POC_API_KEY: "${POC_API_KEY:?run_poc.py must set POC_API_KEY}"
+      POC_FAKE_BASE: http://fake-provider:8000
+    volumes:
+      - ./poc_client.py:/poc/poc_client.py:ro
+    networks:
+      - isolated
+
+networks:
+  isolated:
+    internal: true
+
+volumes:
+  hermes_home:
+    name: amusant-hermes-runs-p2a-v4-home
