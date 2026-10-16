@@ -2,6 +2,18 @@
 
 Amusant is an independently maintained, one-to-one Kai-compatible personal voice companion. Muse Charm is a product-category/interaction benchmark only—not a feature-parity, compatibility, or dependency claim. Its first phase is software-first: validate the voice loop with Kai's simulator, then proceed to Kai-derived hardware only after software acceptance.
 
+
+## Active project delivery (2026-10-16)
+
+Use the [WS1–WS4 execution plan](docs/project-management/workstreams.md) as the **current project management and gate index**, alongside [PLAN.md](PLAN.md) (sequence), [STATUS.md](STATUS.md) (evidence), and [SPEC.md](SPEC.md) (normative requirements). The original P0–P4/H0/H1 milestones are retained for history; workstreams do not themselves authorize architecture changes.
+
+- **WS1 [#47](https://github.com/smallgun01/amusant/issues/47)** — physical StickS3 and Relay Fast UX/selected Kai capabilities, firmware Wi-Fi provisioning. Local device FAST functional PASS; latency product gate open.
+- **WS2 [#48](https://github.com/smallgun01/amusant/issues/48)** — B0 Slow Task product contract and backend/hosting decision. Existing OpenAB cloud proof; Hermes [Draft PR #45](https://github.com/smallgun01/amusant/pull/45) local fake-provider POC only; no backend switch yet.
+- **WS3 [#49](https://github.com/smallgun01/amusant/issues/49)** — device edge G1, persistent Relay A2, [S1 #46](https://github.com/smallgun01/amusant/issues/46) software cloud Fast→Slow→Inbox spoken, G2 physical FAST, G3a physical Slow, G3b Wi-Fi mobility.
+- **WS4 [#50](https://github.com/smallgun01/amusant/issues/50)** — reliability, bounded recovery, DynamoDB history, security, monitoring and cost gates. CI and PR #40/#41 merged; #30 PR-C/D pending.
+
+Important: **WS1** denotes the workstream; **WiFi-W1** denotes the firmware NVS sub-stage. Neither the accepted OpenAB/two-ECS SPEC nor the running cloud footprint changes merely because the Hermes selection is being evaluated. No new cloud/spend/flash authorization follows from these documents.
+
 ## Scope
 
 - Accepted target AWS architecture (PR #9): exactly two ECS Services—Amusant Relay (in-process Dispatcher) and OpenAB/Jellii Agent Runtime. **The P4-T4b live proof used a standalone Relay RunTask; the persistent Relay ECS Service A remains a future step.** No standalone Worker ECS or assumed SQS.
