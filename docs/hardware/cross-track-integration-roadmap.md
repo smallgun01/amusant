@@ -1,5 +1,8 @@
 # Amusant — Cross-track Hardware / AWS Integration Roadmap
 
+> **Superseded for active sequencing by the [WS1–WS4 project index](../project-management/workstreams.md) (2026-10-16).** Preserve this 2026-10-15 roadmap as a historical technical planning baseline; it predates #31 physical functional PASS, #33 Jellii physical PASS, #36 WiFi-W1.5 BLE decision, and #46 S1/G3a/G3b split. Use new index + PLAN for current gates. This is not a change to accepted SPEC/ADR or an execution permit.
+
+
 > Planning decision: 2026-10-15. **Sequence and acceptance map, not an execution permit.**
 > [SPEC.md](../../SPEC.md) governs requirements; [PLAN.md](../../PLAN.md) governs sequencing; [STATUS.md](../../STATUS.md) records demonstrated evidence only. Nothing here changes the accepted two-ECS architecture.
 
