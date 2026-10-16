@@ -1,7 +1,7 @@
 # Amusant Project Execution — Four Workstreams (WS1–WS4)
 
 > Owner-approved PM restructuring: 2026-10-16. **Planning and tracking only; no runtime changes or execution authorization.**
-> This document is the **active workstream index**. `SPEC.md` remains normative; ADRs record accepted architecture; `PLAN.md` is the execution sequence; `STATUS.md` contains evidence; older P0–P4/H0/H1 and the [cross-track roadmap](hardware/cross-track-integration-roadmap.md) remain historical Gate identifiers.
+> This document is the **active workstream index**. `SPEC.md` remains normative; ADRs record accepted architecture; `PLAN.md` is the execution sequence; `STATUS.md` contains evidence; older P0–P4/H0/H1 and the [cross-track roadmap](../hardware/cross-track-integration-roadmap.md) remain historical Gate identifiers.
 > Naming: **WS1–WS4 = program workstreams**; **WiFi-W1 / W1.5 / W2a / W2b = firmware provisioning slices**, never interchangeable.
 
 ## North star and scoped releases

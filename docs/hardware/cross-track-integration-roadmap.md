@@ -1,6 +1,7 @@
 # Amusant — Cross-track Hardware / AWS Integration Roadmap
 
 > Active technical integration view refreshed 2026-10-16, subordinate to [WS1–WS4 delivery index](../project-management/workstreams.md), [PLAN](../../PLAN.md), [STATUS](../../STATUS.md), and accepted [SPEC](../../SPEC.md). #31 G0 device FAST functional PASS and #33 avatar physical PASS are **not** the same as formal H0 latency/battery UX acceptance. No Cloud/flash/live authorization is implied.
+> **H1 authorization:** local G0 functional PASS does not authorize firmware changes or flashing; require Owner H0 Go/No-Go, then separate approval for each firmware build/flash per #36.
 
 ## Verified baseline vs outstanding gates
 
@@ -37,7 +38,7 @@ G3a ------------------------------------------------------+--> G3b mobility
 |---|---|---|
 | **H0/G0** #31 | Frozen known local firmware + Amusant Relay | **functional PASS** 10/10; formal real-speaker latency p50/p95 and battery Go/No-Go pending |
 | **B0** #44/#48 | Slow product contract, Agent + hosting | Real agentic bake-off, storage/run recovery/permissions, ECS/VM/N100 cost; reviewed SPEC/ADR if switching |
-| **PR-C / PR-D** #30 | Durable history and service lifecycle | >100/500 completed history, bounded safe shutdown/restart, Python 3.13, health/non-root; **A2 live blockers** |
+| **PR-C / PR-D** #30 | Durable history and service lifecycle | >100 retained TASK rows per #30 A1; optional 500-row stress characterization, not a separate gate unless #30 is revised; bounded safe shutdown/restart, Python 3.13, health/non-root; **A2 live blockers** |
 | **A2** #35 | From one-off RunTask to persistent Relay Service A | Live canary after B0+PR-C/D, ECS healthy/task replacement, DynamoDB recovery, owner cloud approval |
 | **G1** #27 | Device→Relay edge only, fake client then approved canary | Standard cert WSS or native TCP TLS-PSK choice, auth/reject, no plaintext fallback, SG/routes verified; don't alter shared Gateway Tunnel |
 | **S1** #46 | Cloud software-only Voice→Slow→Inbox→voice | New authorized Gemini tool-disabled spoken turn, durable lookup, truthful delivery/recovery; no physical StickS3 needed |

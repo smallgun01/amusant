@@ -96,7 +96,7 @@
 |---|---|---|
 | H0/G0 #31 | **本地實機 FAST 功能 PASS**；正式 UX 門檻仍 OPEN | 補可聽第一聲 p50/p95、續航和 Owner UX Go/No-Go；#33 六狀態+PTT PASS |
 | B0 #44 / PR #45 | **OPEN**：Hermes 本地 fake-provider PoC PASS，未完成選型 | 真實 Agent Task Quality、長任務/上下文、工具權限、成本、部署 ECS/VM/N100；變更需 SPEC/ADR |
-| WS4 PR-C/D #30 | **OPEN**；#40/#41 已 merge | 100+/500+ DynamoDB history、bounded shutdown、non-smoke Python 3.13 entrypoint；**A2 live hard gates** |
+| WS4 PR-C/D #30 | **OPEN**；#40/#41 已 merge | >100 retained TASK rows per #30 A1; optional 500-row stress characterization; bounded shutdown、non-smoke Python 3.13 entrypoint；**A2 live hard gates** |
 | A2 #35 | **持續 ECS A 未部署** | A2.0 read-only/A2.1 offline 可先做；live 須 B0 + PR-C/D + Owner 雲端授權 |
 | G1 #27 | **外部 Device ingress 未證明** | 標準 cert-WSS/Cloudflare 或 TLS-PSK/TCP，先 fake client/auth/TLS/rollback |
 | S1 #46 | **雲端軟體 FAST→SLOW→Inbox spoken 未驗** | 選型＋A2 後在核准的 live 環境執行；與實體 G2 分開 |
