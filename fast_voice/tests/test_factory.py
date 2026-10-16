@@ -84,7 +84,8 @@ class FactoryTests(unittest.TestCase):
         config = provider._config
         self.assertEqual(config.system_instruction, "You are Jellii.")
         self.assertEqual(config.speech_config.voice_config.prebuilt_voice_config.voice_name, "Zephyr")
-        self.assertIs(config.tools, tools)
+        self.assertEqual(config.tools, tools)
+        self.assertIs(config.tools[0], tools[0])
         self.assertTrue(config.realtime_input_config.automatic_activity_detection.disabled)
 
     def test_google_search_is_explicit_opt_in_and_preserves_function_tools(self):
