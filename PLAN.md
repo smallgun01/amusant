@@ -4,6 +4,22 @@
 > GitHub：Private repository; remote is configured locally.
 > 本機目錄：projects/amusant
 
+
+## Active execution model — WS1–WS4 (2026-10-16)
+
+**Current authoritative delivery/decision sequence:** [four-workstream execution index](docs/project-management/workstreams.md). The older P0–P4/H0/H1 phase table and cross-track gate table below are historical/planning baselines, not a mandate to redo completed gates; in any sequencing conflict, use the WS1–WS4 index pending a SPEC/ADR-approved architecture decision. The four workstream indexes are [WS1 #47](https://github.com/smallgun01/amusant/issues/47), [WS2/B0 #48](https://github.com/smallgun01/amusant/issues/48), [WS3 #49](https://github.com/smallgun01/amusant/issues/49), and [WS4 #50](https://github.com/smallgun01/amusant/issues/50).
+
+| Execution lane | Immediate work | Blocking scope |
+|---|---|---|
+| WS1 Edge Device & Fast UX | #42 Jellii persona/Zephyr/Search real test; #31 H0 latency/power; #36 WiFi-W1→W1.5 BLE→W2a→W2b | Firmware H1 owner Go/No-Go; **not** blocked by Agent selection |
+| WS2 Backend Agent | #44/#45 Hermes-vs-OpenAB capability/hosting bake-off; B0 Slow contract and choice | **B0 blocks final selected Agent production deployment and S1 live**, not local FAST/G1 offline |
+| WS3 Placement/E2E | #27 G1 offline edge transport, #35 A2 design, #46 S1; then G2 (known Wi-Fi) → G3a physical Slow → G3b mobility | A2 live requires WS4 PR-C/D and B0; G2 requires A2+G1; **G2 does not require Wi-Fi phone provisioning** |
+| WS4 Reliability/Operations | #30 PR-C (>100 history) and PR-D (bounded shutdown/persistent service packaging), least privilege/secrets/cost | Hard gates for A2 live; not blockers for local WS1 functional work |
+
+**Acceptance language:** #31 real local StickS3 FAST 10/10 is **functional PASS**, but formal audible-onset p95/H0 UX remains pending; #33 six animations and local PTT regression are owner-confirmed PASS; #26 T4b is bounded **functional PASS**, not persistent/production acceptance; #45 Hermes Docker fake-provider POC passed locally, not selected or production-proven. New [S1 #46](https://github.com/smallgun01/amusant/issues/46) verifies cloud software Fast→Slow→Inbox→tool-disabled spoken result **before** physical G3a. Distinguish program **WS1** from firmware **WiFi-W1**.
+
+**Architecture and authorization:** Accepted SPEC v0.4 / ADR-0001 currently remains OpenAB/two ECS; switching backend or moving it to VM/N100 needs owner-approved ADR/SPEC update first. No AWS, paid Gemini/Agent calls, flashing or long-lived deployment is authorized by this planning change.
+
 ## 文件權責
 
 - SPEC.md：唯一需求與驗收規格來源。
