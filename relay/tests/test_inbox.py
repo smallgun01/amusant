@@ -218,6 +218,7 @@ class InboxTests(unittest.IsolatedAsyncioTestCase):
             "GEMINI_API_KEY": "offline-test-key",
             "AMUSANT_CLIENT_ID": CLIENT,
             "AMUSANT_BACKEND_ID": "openab",
+            "AMUSANT_SLOW_EXECUTOR": "openab_acp",  # explicit legacy fixture
             "AMUSANT_TASK_DB": str(self.db_path),
         }
         with patch("relay.application.build_live_provider", return_value=object()):
