@@ -62,7 +62,7 @@ The `set` action prompts for SSID and hidden password input; credentials are not
 
 - Patch application check after Jellii: **PASS**. Reverse-apply check for rollback: **PASS**.
 - Offline host tests: run both the C++ fake-NVS/parser/power-policy suite and Python provisioning-helper suite with `python patches/kai-v0.12.0-wifi-w1/tests/run_host_tests.py --firmware-root <kai>/firmware`; this requires a host `g++` compiler. The C++ suite covers CRC corruption, invalid/missing NVS recovery, USB clear while the network is offline, configured-but-offline status, the 45-second battery sleep boundary, USB-powered awake behavior, and parser timeout polling/resynchronization for partial lines and payloads.
-- GitHub Actions runs the same offline suite on PR changes to the Jellii/W1 patch packages. It compiles the W1 firmware modules with a host compiler; the PlatformIO build below separately compiles the full ESP32-S3 firmware.
+- GitHub Actions runs the same offline suite on PR changes to the Jellii/W1 patch packages. The latest PR run passed: C++ fake-NVS/parser/power-policy suite plus **5 Python helper tests**. The PlatformIO build below separately compiles the full ESP32-S3 firmware.
 - PlatformIO `sticks3` build: **PASS** for both the Jellii-only baseline and W1.
 - The build used the example's placeholder Relay values; no Wi-Fi credentials or real secrets were used or committed. This environment's Git for Windows could not run its submodule shell, so codec-opus was staged from its exact pinned commit into a local PlatformIO library path for the build. The committed `platformio.ini` remains unchanged.
 
@@ -73,8 +73,8 @@ PlatformIO reports the application image usage against the default 8 MB StickS3 
 | Build | Flash used / 3,342,336 bytes | Internal RAM used / 327,680 bytes |
 | --- | ---: | ---: |
 | Kai v0.12.0 + Jellii | 1,611,863 (48.2%) | 76,692 (23.4%) |
-| Kai v0.12.0 + Jellii + W1 | 1,616,487 (48.4%) | 76,996 (23.5%) |
-| W1 delta | +4,624 | +304 |
+| Kai v0.12.0 + Jellii + W1 | 1,616,983 (48.4%) | 76,996 (23.5%) |
+| W1 delta | +5,120 | +304 |
 
 No firmware binary is included. These are build measurements, not evidence of a successful physical-device flash or live connection.
 
