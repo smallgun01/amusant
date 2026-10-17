@@ -275,6 +275,7 @@ def build_supported_relay_runtime(
             environ,
             save_backend_run_id=store.save_backend_run_id,
             update_poll_state=store.update_hermes_poll_state,
+            update_stop_state=store.update_hermes_stop_state,
         )
     except HermesConfigError:
         if config.slow_executor_kind != "openab_acp":

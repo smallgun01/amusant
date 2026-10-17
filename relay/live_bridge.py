@@ -22,7 +22,7 @@ from websockets.exceptions import ConnectionClosed
 
 from fast_voice import AudioFrame, LiveProvider, ProviderError
 from fast_voice.contracts import JSONValue, ToolCallEvent
-from relay.slow_path import INBOX_TOOL_NAME, TOOL_NAME
+from relay.slow_path import CANCEL_TOOL_NAME, INBOX_TOOL_NAME, TOOL_NAME
 from relay.device_opus import DeviceOpusCodec, DeviceProtocolError
 from relay.device_protocol import adapt_device_handler
 from relay.device_tls_psk import server_context_from_environ, validate_hardware_bind_host
@@ -391,7 +391,7 @@ def make_handler(
                 if (
                     turn.tool_response_sent
                     and turn.tool_action_kind in {"admission", "unsupported"}
-                    and turn.tool_result_status != "accepted"
+                    and turn.tool_result_status not in {"accepted", "busy"}
                 ):
                     return
                 if turn.tool_response_sent:
@@ -429,7 +429,7 @@ def make_handler(
                 if (
                     turn.tool_response_sent
                     and turn.tool_action_kind in {"admission", "unsupported"}
-                    and turn.tool_result_status != "accepted"
+                    and turn.tool_result_status not in {"accepted", "busy"}
                 ):
                     return
                 if turn.tool_response_sent:
@@ -452,7 +452,7 @@ def make_handler(
                     return
                 turn.tool_call_ids.add(event.call_id)
 
-                supported_tool = isinstance(event.name, str) and event.name in {INBOX_TOOL_NAME, TOOL_NAME}
+                supported_tool = isinstance(event.name, str) and event.name in {INBOX_TOOL_NAME, TOOL_NAME, CANCEL_TOOL_NAME}
                 first_action = not turn.tool_action_claimed and supported_tool
                 if not supported_tool:
                     result: Mapping[str, JSONValue] = {"status": "rejected", "code": "unsupported_tool"}
@@ -461,7 +461,11 @@ def make_handler(
                         turn.tool_result_status = "rejected"
                 elif first_action:
                     turn.tool_action_claimed = True
-                    tool_kind = "lookup" if event.name == INBOX_TOOL_NAME else "admission"
+                    tool_kind = (
+                        "lookup" if event.name == INBOX_TOOL_NAME
+                        else "cancel" if event.name == CANCEL_TOOL_NAME
+                        else "admission"
+                    )
                     turn.tool_action_kind = tool_kind
                     if session_slow_path_tool_handler is None:
                         result = {"status": "unavailable", "code": "slow_path_not_configured"}
@@ -480,16 +484,25 @@ def make_handler(
                         except Exception:
                             # Admission may have committed before a transport error;
                             # Inbox failures are lookup-unknown, not admission-unknown.
-                            code = "lookup_unconfirmed" if tool_kind == "lookup" else "acceptance_unconfirmed"
+                            code = (
+                                "lookup_unconfirmed" if tool_kind == "lookup"
+                                else "cancel_unconfirmed" if tool_kind == "cancel"
+                                else "acceptance_unconfirmed"
+                            )
                             result = {"status": "unknown", "code": code}
                     result_status = result.get("status")
                     if tool_kind == "lookup":
                         valid_statuses = {
-                            "queued", "running", "completed", "failed", "uncertain",
-                            "expired", "not_found", "rejected", "unavailable", "unknown",
+                            "queued", "running", "stopping", "completed", "failed", "uncertain",
+                            "timed_out", "cancelled", "expired", "not_found", "rejected", "unavailable", "unknown",
+                        }
+                    elif tool_kind == "cancel":
+                        valid_statuses = {
+                            "stopping", "cancelled", "completed", "failed", "uncertain", "timed_out",
+                            "not_found", "rejected", "unavailable", "unknown",
                         }
                     else:
-                        valid_statuses = {"accepted", "rejected", "unavailable", "unknown"}
+                        valid_statuses = {"accepted", "busy", "rejected", "unavailable", "unknown"}
                     if not isinstance(result_status, str) or result_status not in valid_statuses:
                         result = {"status": "unknown", "code": "invalid_tool_result"}
                         result_status = "unknown"

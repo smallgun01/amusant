@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import tempfile
 import threading
@@ -9,7 +9,7 @@ import unittest
 from fast_voice.contracts import ToolCallEvent
 from relay.dynamodb_task_store import DynamoDbTaskStore, InMemoryDynamoLedger
 from relay.slow_path import SlowPathToolRouter, build_check_task_status_tool
-from relay.task_store import AdmissionUnavailable, SQLiteTaskStore
+from relay.task_store import AdmissionBusy, AdmissionUnavailable, SQLiteTaskStore, TaskAdmissionRequest
 
 TASK_ID = "4db5aabc-284a-4a01-8a6d-5cddcc7934f1"
 RETRY_TASK_ID = "f8f3c5a2-4f97-4c91-ae62-6b0d3f84ea28"
@@ -32,10 +32,10 @@ class SlowStore:
         return self.inner.admit(request)
 
 
-def make_router(store, *, timeout=1.0, task_id=TASK_ID, conversation_id=CONVERSATION, on_admitted=None):
+def make_router(store, *, timeout=1.0, task_id=TASK_ID, client_id=CLIENT, conversation_id=CONVERSATION, on_admitted=None):
     return SlowPathToolRouter(
         store=store,
-        client_id=CLIENT,
+        client_id=client_id,
         conversation_id=conversation_id,
         backend_id="openab",
         default_task_kind="research",
@@ -144,7 +144,11 @@ class SQLiteSlowPathTests(unittest.IsolatedAsyncioTestCase):
             ToolCallEvent("call-fail", "delegate_task", {"task": "Third"}), 3
         )
         self.assertEqual(first["status"], "accepted")
-        self.assertEqual(second, {"status": "unavailable", "code": "task_capacity"})
+        self.assertEqual(second["status"], "busy")
+        self.assertEqual(second["code"], "slow_busy")
+        self.assertEqual(second["active_task_id"], TASK_ID)
+        self.assertNotIn("task_id", second)
+        self.assertIsNone(store.get_by_call(client_id=CLIENT, conversation_id=CONVERSATION, turn_id=2, call_id="call-cap-2"))
         self.assertEqual(failed, {"status": "unavailable", "code": "task_store_unavailable"})
 
 
@@ -174,11 +178,26 @@ class SQLiteSlowPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(notifications, ["wake"])
 
         ledger.ambiguous_next = True
-        unconfirmed = await router(
+        other_store = DynamoDbTaskStore(ledger, client_id="authenticated-client-2", max_pending_tasks=8)
+        other_notifications = []
+        other_router = SlowPathToolRouter(
+            store=other_store,
+            client_id="authenticated-client-2",
+            conversation_id="conversation-2",
+            backend_id="openab",
+            default_task_kind="research",
+            max_task_ttl_seconds=600,
+            acceptance_timeout_seconds=1,
+            now=lambda: NOW,
+            new_task_id=lambda: RETRY_TASK_ID,
+            on_admitted=lambda: other_notifications.append("wake"),
+        )
+        unconfirmed = await other_router(
             ToolCallEvent("call-ambiguous-before", "delegate_task", {"task": "Second"}), 2
         )
         self.assertEqual(unconfirmed["status"], "unknown")
         self.assertEqual(notifications, ["wake"])
+        self.assertEqual(other_notifications, [])
         self.assertEqual(store.pending_dispatch_count(), 1)
 
 
@@ -222,6 +241,192 @@ class SQLiteSlowPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rejected["status"], "rejected")
         self.assertEqual(unavailable["status"], "unavailable")
         self.assertEqual(notifications, [])
+
+
+class SingleFlightSlowPathTests(unittest.IsolatedAsyncioTestCase):
+    def _admit_running_hermes(self, store, task_id=TASK_ID, client_id=CLIENT, conversation_id=CONVERSATION):
+        now = NOW
+        store.admit(TaskAdmissionRequest(
+            task_id=task_id,
+            client_id=client_id,
+            conversation_id=conversation_id,
+            turn_id=1,
+            call_id="active-slow-call",
+            task="Existing single-flight task",
+            task_kind="research",
+            backend="server-selected",
+            created_at=now,
+            expires_at=now + timedelta(minutes=10),
+            executor_kind="hermes_runs",
+        ))
+        store.claim_due(now=now, lease_seconds=30, limit=1)
+        store.mark_dispatch_started(task_id, now=now)
+        store.save_backend_run_id(
+            task_id,
+            "run-single-flight",
+            run_started_at=now,
+            run_deadline_at=now + timedelta(minutes=5),
+            next_poll_at=now,
+        )
+
+    async def test_busy_rejects_new_owner_task_but_keeps_duplicate_dedup(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        store = SQLiteTaskStore(database_path=Path(temp.name) / "busy.sqlite3", max_pending_tasks=8)
+        owner_router = make_router(store)
+        first = await owner_router(ToolCallEvent("call-active", "delegate_task", {"task": "Active"}), 1)
+        busy = await owner_router(ToolCallEvent("call-busy", "delegate_task", {"task": "New"}), 2)
+        duplicate = await owner_router(ToolCallEvent("call-active", "delegate_task", {"task": "Active"}), 1)
+        self.assertEqual(first["status"], "accepted")
+        self.assertEqual(busy["status"], "busy")
+        self.assertEqual(busy["code"], "slow_busy")
+        self.assertEqual(busy["active_task_id"], TASK_ID)
+        self.assertNotIn("task_id", busy)
+        self.assertTrue(duplicate["duplicate"])
+        self.assertEqual(store.pending_dispatch_count(), 1)
+
+    async def test_two_sqlite_store_instances_race_to_one_owner_slot(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        database = Path(temp.name) / "race.sqlite3"
+        first_store = SQLiteTaskStore(database_path=database, max_pending_tasks=8)
+        second_store = SQLiteTaskStore(database_path=database, max_pending_tasks=8)
+        first_router = make_router(first_store, task_id=TASK_ID)
+        second_router = make_router(second_store, task_id=RETRY_TASK_ID)
+        events = [
+            ToolCallEvent("race-one", "delegate_task", {"task": "First"}),
+            ToolCallEvent("race-two", "delegate_task", {"task": "Second"}),
+        ]
+        results = await asyncio.gather(first_router(events[0], 1), second_router(events[1], 2))
+        self.assertEqual(sorted(item["status"] for item in results), ["accepted", "busy"])
+        accepted = next(item for item in results if item["status"] == "accepted")
+        busy = next(item for item in results if item["status"] == "busy")
+        self.assertEqual(busy["active_task_id"], accepted["task_id"])
+        self.assertEqual(first_store.pending_dispatch_count(), 1)
+        self.assertEqual(
+            sum(first_store.get_by_call(client_id=CLIENT, conversation_id=CONVERSATION, turn_id=turn, call_id=call) is not None
+                for turn, call in ((1, "race-one"), (2, "race-two"))),
+            1,
+        )
+
+    async def test_two_dynamodb_store_instances_race_owner_slot_transaction(self):
+        ledger = InMemoryDynamoLedger()
+        first_store = DynamoDbTaskStore(ledger, client_id=CLIENT, max_pending_tasks=8)
+        second_store = DynamoDbTaskStore(ledger, client_id=CLIENT, max_pending_tasks=8)
+        first_router = make_router(first_store, task_id=TASK_ID)
+        second_router = make_router(second_store, task_id=RETRY_TASK_ID)
+        events = [
+            ToolCallEvent("ddb-race-one", "delegate_task", {"task": "First"}),
+            ToolCallEvent("ddb-race-two", "delegate_task", {"task": "Second"}),
+        ]
+        results = await asyncio.gather(first_router(events[0], 1), second_router(events[1], 2))
+        self.assertEqual(sorted(item["status"] for item in results), ["accepted", "busy"])
+        accepted = next(item for item in results if item["status"] == "accepted")
+        busy = next(item for item in results if item["status"] == "busy")
+        self.assertEqual(busy["active_task_id"], accepted["task_id"])
+        task_rows = [key for key in ledger.items if key[0] == CLIENT and key[1].startswith("TASK#")]
+        dedup_rows = [key for key in ledger.items if key[0] == CLIENT and key[1].startswith("DEDUP#")]
+        self.assertEqual(len(task_rows), 1)
+        self.assertEqual(len(dedup_rows), 1)
+
+    async def test_busy_is_owner_scoped(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        store = SQLiteTaskStore(database_path=Path(temp.name) / "owner.sqlite3", max_pending_tasks=8)
+        owner_a = make_router(store, task_id=TASK_ID, client_id=CLIENT, conversation_id="owner-a")
+        owner_b = make_router(store, task_id=RETRY_TASK_ID, client_id="authenticated-client-2", conversation_id="owner-b")
+        first = await owner_a(ToolCallEvent("owner-a-call", "delegate_task", {"task": "A"}), 1)
+        second = await owner_b(ToolCallEvent("owner-b-call", "delegate_task", {"task": "B"}), 1)
+        self.assertEqual(first["status"], "accepted")
+        self.assertEqual(second["status"], "accepted")
+
+    async def test_cancel_known_run_stays_busy_until_terminal_confirmation(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        store = SQLiteTaskStore(database_path=Path(temp.name) / "cancel.sqlite3", max_pending_tasks=8)
+        self._admit_running_hermes(store)
+        router = make_router(store, task_id=RETRY_TASK_ID)
+        cancelled = await router(ToolCallEvent("cancel-1", "cancel_task", {"task_id": TASK_ID}), 2)
+        repeated = await router(ToolCallEvent("cancel-2", "cancel_task", {"task_id": TASK_ID}), 3)
+        status = await router(ToolCallEvent("status-1", "check_task_status", {"task_id": TASK_ID}), 4)
+        busy = await router(ToolCallEvent("new-while-stopping", "delegate_task", {"task": "Next"}), 5)
+        self.assertEqual(cancelled["status"], "stopping")
+        self.assertEqual(repeated["status"], "stopping")
+        self.assertTrue(repeated.get("duplicate"))
+        self.assertEqual(status["status"], "stopping")
+        self.assertNotIn("speak", status)
+        self.assertEqual(busy["code"], "slow_busy")
+        # This store transition represents a Hermes GET-confirmed terminal Run.
+        store.fail(TASK_ID, code="hermes_cancelled")
+        accepted_after_terminal = await router(ToolCallEvent("new-after-terminal", "delegate_task", {"task": "Next"}), 6)
+        self.assertEqual(accepted_after_terminal["status"], "accepted")
+
+    async def test_cancel_during_ambiguous_submission_does_not_free_owner(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        store = SQLiteTaskStore(database_path=Path(temp.name) / "ambiguous-cancel.sqlite3", max_pending_tasks=8)
+        store.admit(TaskAdmissionRequest(
+            task_id=TASK_ID,
+            client_id=CLIENT,
+            conversation_id=CONVERSATION,
+            turn_id=1,
+            call_id="ambiguous-submit",
+            task="Potentially submitted task",
+            task_kind="research",
+            backend="server-selected",
+            created_at=NOW,
+            expires_at=NOW + timedelta(minutes=10),
+            executor_kind="hermes_runs",
+        ))
+        store.claim_due(now=NOW, lease_seconds=30)
+        store.mark_dispatch_started(TASK_ID, now=NOW)
+        router = make_router(store, task_id=RETRY_TASK_ID)
+        waiting_for_id = await router(ToolCallEvent("cancel-flight", "cancel_task", {"task_id": TASK_ID}), 2)
+        self.assertEqual(waiting_for_id["status"], "stopping")
+        self.assertEqual(waiting_for_id["code"], "hermes_stop_waiting_run_id")
+        row = store.get_by_task_id(TASK_ID)
+        self.assertEqual(row["dispatch_state"], "claimed")
+        self.assertIsNone(row["backend_run_id"])
+        store.mark_uncertain(TASK_ID, code="hermes_submission_unconfirmed")
+        busy = await router(ToolCallEvent("new-after-unknown", "delegate_task", {"task": "Next"}), 3)
+        self.assertEqual(busy["status"], "busy")
+        self.assertEqual(store.pending_dispatch_count(), 0)
+
+    async def test_dynamodb_busy_and_terminal_release_use_owner_slot(self):
+        ledger = InMemoryDynamoLedger()
+        store = DynamoDbTaskStore(ledger, client_id=CLIENT, max_pending_tasks=8)
+        store.admit(TaskAdmissionRequest(
+            task_id=TASK_ID,
+            client_id=CLIENT,
+            conversation_id=CONVERSATION,
+            turn_id=1,
+            call_id="ddb-active",
+            task="Existing task",
+            task_kind="research",
+            backend="server-selected",
+            created_at=NOW,
+            expires_at=NOW + timedelta(minutes=10),
+            executor_kind="hermes_runs",
+        ))
+        claimed = store.claim_due(now=NOW, lease_seconds=30, limit=1)[0]
+        store.mark_dispatch_started(TASK_ID, now=NOW)
+        store.save_backend_run_id(
+            TASK_ID,
+            "run-ddb-slot",
+            run_started_at=NOW,
+            run_deadline_at=NOW + timedelta(minutes=5),
+            next_poll_at=NOW,
+        )
+        busy_router = make_router(store, task_id=RETRY_TASK_ID)
+        busy = await busy_router(ToolCallEvent("ddb-busy", "delegate_task", {"task": "Next"}), 2)
+        self.assertEqual(busy["status"], "busy")
+        self.assertEqual(busy["active_task_id"], TASK_ID)
+        self.assertIsNone(store.get_by_task_id(RETRY_TASK_ID))
+        store.fail(TASK_ID, code="hermes_cancelled")
+        accepted = await busy_router(ToolCallEvent("ddb-next", "delegate_task", {"task": "Next"}), 3)
+        self.assertEqual(accepted["status"], "accepted")
+        self.assertEqual(claimed.backend_run_id, None)
+        self.assertEqual(store.get_by_task_id(TASK_ID)["backend_run_id"], "run-ddb-slot")
 
 
 class CheckTaskStatusDescriptionTests(unittest.TestCase):

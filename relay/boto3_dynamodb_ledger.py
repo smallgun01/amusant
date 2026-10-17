@@ -27,8 +27,14 @@ _CONDITIONS = {
     "claimed_started": "outbox_state = :claimed AND attribute_exists(dispatch_started_at)",
     "claimed_started_run_id_absent": "outbox_state = :claimed AND attribute_exists(dispatch_started_at) AND attribute_not_exists(backend_run_id)",
     "claimed_started_run_known": "outbox_state = :claimed AND attribute_exists(dispatch_started_at) AND attribute_exists(backend_run_id)",
+    "uncertain_task": "outbox_state = :uncertain AND #status = :uncertain",
     "pending_queued": "outbox_state = :pending AND #status = :queued",
     "pending_running_known_run": "outbox_state = :pending AND #status = :running AND attribute_exists(backend_run_id)",
+    "cancel_pending_unsubmitted": "outbox_state = :pending AND #status = :queued AND attribute_not_exists(dispatch_started_at) AND attribute_not_exists(backend_run_id)",
+    "cancel_claimed_unsubmitted": "outbox_state = :claimed AND #status = :running AND attribute_not_exists(dispatch_started_at) AND attribute_not_exists(backend_run_id)",
+    "pending_started_run_id_absent": "outbox_state = :pending AND #status IN (:queued,:running,:uncertain) AND attribute_exists(dispatch_started_at) AND attribute_not_exists(backend_run_id)",
+    "cancel_ambiguous_no_run": "outbox_state IN (:pending,:claimed,:uncertain) AND #status IN (:queued,:running,:uncertain) AND attribute_exists(dispatch_started_at) AND attribute_not_exists(backend_run_id)",
+    "request_stop_known_run": "outbox_state IN (:pending,:claimed,:uncertain) AND #status IN (:queued,:running,:uncertain) AND attribute_exists(dispatch_started_at) AND attribute_exists(backend_run_id)",
     "delivery_can_speak": (
         "attribute_exists(pk) AND #status = :completed AND attribute_exists(speak) AND "
         "(attribute_not_exists(delivery_state) OR delivery_state <> :ds_spoken)"
@@ -114,6 +120,90 @@ class Boto3DynamoLedger:
         )
         item = response.get("Item")
         return None if not item else self._load(item)
+
+    def find_active_tasks(self, pk: str, sk_prefix: str, now_iso: str) -> tuple[list[dict[str, object]], bool]:
+        """Find legacy active rows with a paginated owner Query, not a fixed history cap."""
+        rows: list[dict[str, object]] = []
+        kwargs: dict[str, object] = {
+            "TableName": self._table,
+            "KeyConditionExpression": "pk = :pk AND begins_with(sk, :prefix)",
+            "FilterExpression": "#status IN (:queued, :running, :uncertain)",
+            "ExpressionAttributeNames": {"#status": "status"},
+            "ExpressionAttributeValues": {
+                ":pk": {"S": pk},
+                ":prefix": {"S": sk_prefix},
+                ":queued": {"S": "queued"},
+                ":running": {"S": "running"},
+                ":uncertain": {"S": "uncertain"},
+            },
+            "ConsistentRead": True,
+            "Limit": QUERY_ITEM_BOUND,
+        }
+        while True:
+            response = self._call("query", **kwargs)
+            for raw in response.get("Items") or []:
+                row = self._load(raw)
+                if row.get("status") == "queued" and not (
+                    str(row.get("expires_at") or "") > now_iso
+                    or row.get("backend_run_id")
+                    or row.get("dispatch_started_at")
+                ):
+                    continue
+                rows.append(row)
+                if len(rows) > QUERY_ITEM_BOUND:
+                    rows.sort(key=lambda item: str(item.get("created_at") or ""))
+                    return rows[:QUERY_ITEM_BOUND], True
+            start = response.get("LastEvaluatedKey")
+            if not start:
+                break
+            kwargs["ExclusiveStartKey"] = start
+        rows.sort(key=lambda item: str(item.get("created_at") or ""))
+        return rows, False
+
+    def query_latest(self, pk: str, sk_prefix: str) -> dict[str, object] | None:
+        response = self._call(
+            "query",
+            TableName=self._table,
+            KeyConditionExpression="pk = :pk AND begins_with(sk, :prefix)",
+            ExpressionAttributeValues={":pk": {"S": pk}, ":prefix": {"S": sk_prefix}},
+            ConsistentRead=True,
+            ScanIndexForward=False,
+            Limit=1,
+        )
+        rows = response.get("Items") or []
+        return None if not rows else self._load(rows[0])
+
+    def latest_task(self, pk: str, sk_prefix: str) -> dict[str, object] | None:
+        """Paginate legacy Task history while retaining only the newest row."""
+        latest: dict[str, object] | None = None
+        kwargs: dict[str, object] = {
+            "TableName": self._table,
+            "KeyConditionExpression": "pk = :pk AND begins_with(sk, :prefix)",
+            "ExpressionAttributeValues": {":pk": {"S": pk}, ":prefix": {"S": sk_prefix}},
+            "ConsistentRead": True,
+            "Limit": QUERY_ITEM_BOUND,
+        }
+        while True:
+            response = self._call("query", **kwargs)
+            for raw in response.get("Items") or []:
+                row = self._load(raw)
+                if latest is None or str(row.get("created_at") or "") > str(latest.get("created_at") or ""):
+                    latest = row
+            start = response.get("LastEvaluatedKey")
+            if not start:
+                return latest
+            kwargs["ExclusiveStartKey"] = start
+
+    def delete_item(self, pk: str, sk: str, *, condition: str, expected_value: str) -> None:
+        if condition != "slot_matches_task":
+            raise ValueError(f"unknown delete condition {condition}")
+        self._call(
+            "delete_item",
+            TableName=self._table,
+            Key={"pk": {"S": pk}, "sk": {"S": sk}},
+            ConditionExpression="active_task_id = :task_id",
+            ExpressionAttributeValues={":task_id": {"S": expected_value}},
+        )
 
     def has_prefix(self, pk: str, sk_prefix: str) -> bool:
         """Strongly test for one matching row with a single bounded Query call."""
@@ -202,6 +292,8 @@ class Boto3DynamoLedger:
             values[":queued"] = {"S": "queued"}
         if ":running" in expression:
             values[":running"] = {"S": "running"}
+        if ":uncertain" in expression:
+            values[":uncertain"] = {"S": "uncertain"}
         if ":completed" in expression:
             values[":completed"] = {"S": "completed"}
         if ":ds_spoken" in expression:

@@ -48,10 +48,15 @@ def executor_options(db):
     return {
         "save_backend_run_id": db.save_backend_run_id,
         "update_poll_state": db.update_hermes_poll_state,
+        "update_stop_state": db.update_hermes_stop_state,
         "run_deadline_seconds": float(os.environ["AMUSANT_HERMES_RUN_DEADLINE_SECONDS"]),
         "poll_cycle_seconds": float(os.environ["AMUSANT_HERMES_POLL_CYCLE_SECONDS"]),
         "http_timeout_seconds": float(os.environ["AMUSANT_HERMES_HTTP_TIMEOUT_SECONDS"]),
         "poll_interval_seconds": float(os.environ["AMUSANT_HERMES_POLL_INTERVAL_SECONDS"]),
+        "stop_grace_seconds": float(os.environ["AMUSANT_HERMES_STOP_GRACE_SECONDS"]),
+        "stop_max_attempts": int(os.environ["AMUSANT_HERMES_STOP_MAX_ATTEMPTS"]),
+        "stop_retry_base_seconds": float(os.environ["AMUSANT_HERMES_STOP_RETRY_BASE_SECONDS"]),
+        "stop_retry_max_seconds": float(os.environ["AMUSANT_HERMES_STOP_RETRY_MAX_SECONDS"]),
     }
 
 

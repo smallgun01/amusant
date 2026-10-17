@@ -152,11 +152,11 @@ class AcpSmokeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report.exit_code, EXIT_CONFIG)
         self.assertEqual(report.error, "invalid_config")
 
-    async def test_queued_capacity_is_failed_not_traceback(self):
+    async def test_single_flight_busy_is_failed_without_dispatch(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "tasks.sqlite3"
             store = SQLiteTaskStore(database_path=db_path, max_pending_tasks=1)
-            now = datetime(2026, 10, 11, 15, 0, tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
             store.admit(TaskAdmissionRequest(
                 task_id="4db5aabc-284a-4a01-8a6d-5cddcc7934f1",
                 client_id="authenticated-client-1",
@@ -171,7 +171,9 @@ class AcpSmokeTests(unittest.IsolatedAsyncioTestCase):
             ))
             report = await run_smoke(self._env("ws://127.0.0.1:9/acp", db_path))
             self.assertEqual(report.exit_code, EXIT_FAILED)
-            self.assertEqual(report.error, "task_capacity")
+            self.assertEqual(report.error, "slow_busy")
+            self.assertIsNone(report.task_id)
+            self.assertEqual(store.get_by_task_id("4db5aabc-284a-4a01-8a6d-5cddcc7934f1")["status"], "queued")
 
     async def test_complete_failure_after_acp_is_uncertain_not_config(self):
         agent = FakeAcpAgent()

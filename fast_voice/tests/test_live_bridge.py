@@ -24,7 +24,7 @@ from relay.device_opus import DeviceProtocolError
 from relay.device_protocol import DeviceWebSocketAdapter, adapt_device_handler
 from relay.live_bridge import MIN_UTTERANCE_BYTES, make_handler, run as run_live_bridge
 from relay.dispatcher import AsyncDispatcher, ExecutionOutcome
-from relay.slow_path import INBOX_TOOL_NAME, SlowPathToolRouter
+from relay.slow_path import CANCEL_TOOL_NAME, INBOX_TOOL_NAME, TOOL_NAME, SlowPathToolRouter
 from relay.task_store import BoundedTaskResult, SQLiteTaskStore, TaskAdmissionRequest
 
 TOKEN = secrets.token_urlsafe(24)
@@ -234,6 +234,97 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(sum(item.get("type") == "turn_complete" for item in controls), 1)
             self.assertEqual(returned_audio_bytes, 12_000)
             self.assertTrue(any(item.get("type") == "caption" for item in controls))
+
+    async def test_busy_and_cancel_status_cross_real_fast_voice_tool_boundary(self):
+        fake = FakeProvider(
+            auto_complete=False,
+            transcripts=[
+                "I am still working on the previous task. I can check it or cancel it before starting another.",
+                "Cancellation was requested. I will wait for Hermes to confirm it stopped.",
+                "The task is still stopping; it remains busy until confirmation.",
+            ],
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SQLiteTaskStore(database_path=Path(temp_dir) / "single-flight.sqlite3", max_pending_tasks=8)
+            owner = "authenticated-device-1"
+            conversation = "kai-session-single-flight"
+            created = datetime.now(timezone.utc)
+            active_id = "4db5aabc-284a-4a01-8a6d-5cddcc7934f1"
+            store.admit(TaskAdmissionRequest(
+                task_id=active_id,
+                client_id=owner,
+                conversation_id=conversation,
+                turn_id=1,
+                call_id="existing-active-call",
+                task="Existing research request",
+                task_kind="research",
+                backend="server-selected",
+                created_at=created,
+                expires_at=created + timedelta(minutes=10),
+                executor_kind="hermes_runs",
+            ))
+            store.claim_due(now=created, lease_seconds=30, limit=1)
+            store.mark_dispatch_started(active_id, now=created)
+            store.save_backend_run_id(
+                active_id,
+                "run-active-voice-boundary",
+                run_started_at=created,
+                run_deadline_at=created + timedelta(minutes=5),
+                next_poll_at=created + timedelta(seconds=5),
+            )
+            router = SlowPathToolRouter(
+                store=store,
+                client_id=owner,
+                conversation_id=conversation,
+                backend_id="server-selected",
+                default_task_kind="research",
+                max_task_ttl_seconds=600,
+                acceptance_timeout_seconds=2,
+                new_task_id=lambda: "f8f3c5a2-4f97-4c91-ae62-6b0d3f84ea28",
+            )
+            server = await serve(
+                make_handler(TOKEN, lambda: fake, slow_path_tool_handler=router),
+                "127.0.0.1", 0, max_size=64 * 1024,
+            )
+            port = server.sockets[0].getsockname()[1]
+            ws = await connect(f"ws://127.0.0.1:{port}/ws", additional_headers={"Authorization": f"Bearer {TOKEN}"})
+            try:
+                await self._send_turn(ws)
+                await self._controls_until(ws, lambda item, _items: item.get("type") == "state" and item.get("state") == "thinking")
+                await fake.callbacks["tool"](ToolCallEvent("busy-call", TOOL_NAME, {"task": "New research request"}))
+                await fake.callbacks["complete"](TurnCompleteEvent(cancelled=False))
+                busy_result = fake.tool_results[-1][1]
+                self.assertEqual(busy_result["status"], "busy")
+                self.assertEqual(busy_result["code"], "slow_busy")
+                self.assertEqual(busy_result["active_task_id"], active_id)
+                await fake.emit_response()
+                controls, audio = await self._controls_until(ws, lambda item, _items: item.get("type") == "turn_complete")
+                self.assertEqual(audio, 12_000)
+                self.assertTrue(any(item.get("type") == "caption" and "previous task" in item.get("delta", "") for item in controls))
+                self.assertIsNone(store.get_by_call(client_id=owner, conversation_id=conversation, turn_id=2, call_id="busy-call"))
+
+                await self._send_turn(ws)
+                await self._controls_until(ws, lambda item, _items: item.get("type") == "state" and item.get("state") == "thinking")
+                await fake.callbacks["tool"](ToolCallEvent("cancel-call", CANCEL_TOOL_NAME, {"task_id": active_id}))
+                await fake.callbacks["complete"](TurnCompleteEvent(cancelled=False))
+                self.assertEqual(fake.tool_results[-1][1]["status"], "stopping")
+                await fake.emit_response()
+                await self._controls_until(ws, lambda item, _items: item.get("type") == "turn_complete")
+                self.assertEqual(store.lookup_inbox(client_id=owner, task_id=active_id)["status"], "stopping")
+
+                await self._send_turn(ws)
+                await self._controls_until(ws, lambda item, _items: item.get("type") == "state" and item.get("state") == "thinking")
+                await fake.callbacks["tool"](ToolCallEvent("lookup-call", INBOX_TOOL_NAME, {"task_id": active_id}))
+                await fake.callbacks["complete"](TurnCompleteEvent(cancelled=False))
+                self.assertEqual(fake.tool_results[-1][1]["status"], "stopping")
+                await fake.emit_response()
+                controls, audio = await self._controls_until(ws, lambda item, _items: item.get("type") == "turn_complete")
+                self.assertEqual(audio, 12_000)
+                self.assertTrue(any(item.get("type") == "caption" and "still stopping" in item.get("delta", "") for item in controls))
+            finally:
+                await ws.close()
+                server.close()
+                await server.wait_closed()
 
     async def test_empty_post_tool_followup_uses_bounded_honest_ack_card(self):
         fake = FakeProvider(auto_complete=False)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import sqlite3
 import tempfile
@@ -12,7 +13,14 @@ from uuid import uuid4
 from relay.dispatcher import AsyncDispatcher
 from relay.dynamodb_task_store import DynamoDbTaskStore, InMemoryDynamoLedger
 from relay.hermes_runs_executor import HermesRunsExecutor
-from relay.task_store import AdmissionConflict, AdmissionUnavailable, BoundedTaskResult, TaskAdmissionRequest, SQLiteTaskStore
+from relay.task_store import (
+    AdmissionBusy,
+    AdmissionConflict,
+    AdmissionUnavailable,
+    BoundedTaskResult,
+    TaskAdmissionRequest,
+    SQLiteTaskStore,
+)
 
 NOW = datetime(2026, 10, 16, 12, 0, tzinfo=timezone.utc)
 CLIENT = "phase2b-test-owner"
@@ -38,6 +46,81 @@ def request(
         expires_at=expires_at or NOW + timedelta(seconds=600),
         executor_kind=executor_kind,
     )
+
+
+def seed_legacy_sqlite_task(
+    store: SQLiteTaskStore,
+    task_id: str,
+    *,
+    created_at: datetime,
+    status: str = "queued",
+    outbox_state: str = "pending",
+    dispatch_started_at: str | None = None,
+    backend_run_id: str | None = None,
+    run_deadline_at: str | None = None,
+    next_poll_at: str | None = None,
+) -> None:
+    connection = store._connect()
+    try:
+        connection.execute(
+            "INSERT INTO slow_tasks(task_id,client_id,conversation_id,turn_id,call_id,payload_sha256,"
+            "task_text,task_kind,backend,executor_kind,backend_run_id,run_started_at,run_deadline_at,"
+            "next_poll_at,status,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                task_id, CLIENT, "legacy-" + task_id[:8], 1, "legacy-call-" + task_id[:8], "legacy-hash",
+                "Legacy task", "research", "openab", "hermes_runs", backend_run_id,
+                dispatch_started_at, run_deadline_at, next_poll_at, status, created_at.isoformat(),
+                (created_at + timedelta(minutes=10)).isoformat(),
+            ),
+        )
+        connection.execute(
+            "INSERT INTO dispatch_outbox(task_id,state,attempts,created_at,dispatch_started_at) VALUES(?,?,?,?,?)",
+            (task_id, outbox_state, 1 if dispatch_started_at else 0, created_at.isoformat(), dispatch_started_at),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def seed_legacy_dynamo_task(
+    ledger: InMemoryDynamoLedger,
+    task_id: str,
+    *,
+    created_at: datetime,
+    status: str = "queued",
+    outbox_state: str = "pending",
+    dispatch_started_at: str | None = None,
+    backend_run_id: str | None = None,
+    run_deadline_at: str | None = None,
+    next_poll_at: str | None = None,
+) -> None:
+    item = {
+        "pk": CLIENT,
+        "sk": "TASK#" + task_id,
+        "task_id": task_id,
+        "client_id": CLIENT,
+        "conversation_id": "legacy-" + task_id[:8],
+        "turn_id": 1,
+        "call_id": "legacy-call-" + task_id[:8],
+        "payload_sha256": "legacy-hash",
+        "task_text": "Legacy task",
+        "task_kind": "research",
+        "backend": "openab",
+        "executor_kind": "hermes_runs",
+        "status": status,
+        "created_at": created_at.isoformat(),
+        "expires_at": (created_at + timedelta(minutes=10)).isoformat(),
+        "outbox_state": outbox_state,
+        "attempts": 1 if dispatch_started_at else 0,
+        "dispatch_started_at": dispatch_started_at,
+        "backend_run_id": backend_run_id,
+        "run_started_at": dispatch_started_at if backend_run_id else None,
+        "run_deadline_at": run_deadline_at,
+        "next_poll_at": next_poll_at,
+        "poll_attempts": 0,
+        "stop_attempts": 0,
+    }
+    ledger.items[(CLIENT, "TASK#" + task_id)] = item
 
 
 def complete_hermes_task(store, task_id: str, client_id: str = CLIENT) -> None:
@@ -94,10 +177,15 @@ def exercise_multiple_known_run_restarts(store_factory, task_id: str) -> None:
             api_key="local-test-api-key-123",
             save_backend_run_id=store.save_backend_run_id,
             update_poll_state=store.update_hermes_poll_state,
+            update_stop_state=store.update_hermes_stop_state,
             run_deadline_seconds=30,
             poll_cycle_seconds=5,
             http_timeout_seconds=2,
             poll_interval_seconds=10,
+            stop_grace_seconds=30,
+            stop_max_attempts=3,
+            stop_retry_base_seconds=1,
+            stop_retry_max_seconds=5,
             allow_plaintext=True,
             clock=lambda: now[0],
             request_json=request_json,
@@ -181,6 +269,103 @@ class SQLiteHermesMappingTests(unittest.TestCase):
         )
         self.assertEqual(reopened.get_by_task_id(task_id)["next_poll_at"], (NOW + timedelta(seconds=10)).isoformat())
 
+    def test_legacy_known_run_is_polled_before_older_queued_task_is_submitted(self):
+        store = self.store()
+        run_id = str(uuid4())
+        queued_id = str(uuid4())
+        seed_legacy_sqlite_task(
+            store,
+            run_id,
+            created_at=NOW,
+            status="running",
+            outbox_state="pending",
+            dispatch_started_at=NOW.isoformat(),
+            backend_run_id="run-legacy-known",
+            run_deadline_at=(NOW + timedelta(minutes=5)).isoformat(),
+            next_poll_at=NOW.isoformat(),
+        )
+        seed_legacy_sqlite_task(store, queued_id, created_at=NOW + timedelta(seconds=1))
+
+        claimed = store.claim_due(now=NOW + timedelta(seconds=2), lease_seconds=30, limit=2)
+        self.assertEqual([task.task_id for task in claimed], [run_id])
+        self.assertEqual(claimed[0].backend_run_id, "run-legacy-known")
+        self.assertEqual(store.claim_due(now=NOW + timedelta(seconds=2), lease_seconds=30), [])
+
+        store.complete(run_id)
+        next_claim = store.claim_due(now=NOW + timedelta(seconds=3), lease_seconds=30)
+        self.assertEqual([task.task_id for task in next_claim], [queued_id])
+        self.assertIsNone(next_claim[0].backend_run_id)
+        self.assertFalse(next_claim[0].dispatch_started_at)
+
+    def test_legacy_ambiguous_task_blocks_other_queued_tasks_and_new_admission(self):
+        store = self.store()
+        ambiguous_id = str(uuid4())
+        queued_id = str(uuid4())
+        seed_legacy_sqlite_task(
+            store,
+            ambiguous_id,
+            created_at=NOW,
+            status="uncertain",
+            outbox_state="uncertain",
+            dispatch_started_at=NOW.isoformat(),
+        )
+        seed_legacy_sqlite_task(store, queued_id, created_at=NOW + timedelta(seconds=1))
+
+        self.assertEqual(store.claim_due(now=NOW + timedelta(seconds=2), lease_seconds=30), [])
+        with self.assertRaises(AdmissionBusy):
+            store.admit(request(str(uuid4())))
+        self.assertEqual(store.get_by_task_id(ambiguous_id)["status"], "uncertain")
+        self.assertEqual(store.get_by_task_id(queued_id)["status"], "queued")
+
+    def test_operator_no_remote_run_reconciliation_is_audited_and_unlocks_owner(self):
+        store = self.store()
+        task_id = str(uuid4())
+        store.admit(request(task_id))
+        store.claim_due(now=NOW, lease_seconds=30)
+        store.mark_dispatch_started(task_id, now=NOW)
+        store.mark_uncertain(task_id, code="hermes_submission_unconfirmed")
+
+        with self.assertRaises(AdmissionUnavailable):
+            store.operator_reconcile_uncertain(
+                client_id=CLIENT,
+                task_id=task_id,
+                terminal_state="cancelled",
+                verified_run_id=None,
+                operator_id="operator-1",
+                evidence_ref="INC-61-no-run-check",
+                now=NOW,
+            )
+        next_request = replace(
+            request(str(uuid4())),
+            conversation_id="after-operator-reconciliation",
+            turn_id=2,
+            call_id="after-operator-reconciliation-call",
+        )
+        with self.assertRaises(AdmissionBusy):
+            store.admit(next_request)
+
+        receipt = store.operator_reconcile_uncertain(
+            client_id=CLIENT,
+            task_id=task_id,
+            terminal_state="no_remote_run",
+            verified_run_id=None,
+            operator_id="operator-1",
+            evidence_ref="INC-61-no-run-check",
+            now=NOW + timedelta(seconds=1),
+        )
+        self.assertEqual(receipt.code, "hermes_operator_confirmed_no_remote_run")
+        connection = store._connect()
+        try:
+            audit = connection.execute(
+                "SELECT manual_reconciled_by,manual_reconciliation_ref,manual_reconciled_state "
+                "FROM slow_tasks WHERE task_id=?",
+                (task_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        self.assertEqual(audit, ("operator-1", "INC-61-no-run-check", "no_remote_run"))
+        self.assertFalse(store.admit(next_request).duplicate)
+
     def test_sqlite_expired_hermes_queue_before_first_claim_stays_expired(self):
         store = self.store()
         task_id = str(uuid4())
@@ -250,10 +435,15 @@ class SQLiteHermesMappingTests(unittest.TestCase):
             api_key="local-test-api-key-123",
             save_backend_run_id=store.save_backend_run_id,
             update_poll_state=store.update_hermes_poll_state,
+            update_stop_state=store.update_hermes_stop_state,
             run_deadline_seconds=60,
             poll_cycle_seconds=0.01,
             http_timeout_seconds=0.05,
             poll_interval_seconds=0.001,
+            stop_grace_seconds=30,
+            stop_max_attempts=3,
+            stop_retry_base_seconds=0.01,
+            stop_retry_max_seconds=0.1,
             allow_plaintext=True,
             clock=lambda: after_queue_deadline,
             request_json=lambda *args: (200, {"status": "expired"}),
@@ -332,9 +522,12 @@ class SQLiteHermesMappingTests(unittest.TestCase):
         self.assertEqual(row["executor_kind"], "openab_acp")
         self.assertIsNone(row["backend_run_id"])
         connection = sqlite3.connect(self.db)
-        self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 6)
+        self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 7)
         columns = {row[1] for row in connection.execute("PRAGMA table_info(slow_tasks)")}
-        self.assertTrue({"run_started_at", "run_deadline_at", "next_poll_at", "poll_attempts"} <= columns)
+        self.assertTrue({
+            "run_started_at", "run_deadline_at", "next_poll_at", "poll_attempts",
+            "stop_requested_at", "stop_reason", "stop_attempts", "stop_accepted_at",
+        } <= columns)
         connection.close()
 
     def test_v5_known_run_migration_backfills_start_anchor_only(self):
@@ -376,12 +569,112 @@ class SQLiteHermesMappingTests(unittest.TestCase):
         self.assertIsNone(row["run_deadline_at"])
         self.assertIsNone(row["next_poll_at"])
         self.assertEqual(row["poll_attempts"], 0)
+        self.assertIsNone(row["stop_requested_at"])
+        self.assertEqual(row["stop_attempts"], 0)
         connection = sqlite3.connect(self.db)
-        self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 6)
+        self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 7)
         connection.close()
 
 
 class DynamoHermesMappingTests(unittest.TestCase):
+    def test_legacy_known_run_is_polled_before_queued_task_is_submitted(self):
+        ledger = InMemoryDynamoLedger()
+        store = DynamoDbTaskStore(ledger, client_id=CLIENT, max_pending_tasks=8)
+        run_id = str(uuid4())
+        queued_id = str(uuid4())
+        seed_legacy_dynamo_task(
+            ledger,
+            run_id,
+            created_at=NOW,
+            status="running",
+            outbox_state="pending",
+            dispatch_started_at=NOW.isoformat(),
+            backend_run_id="run-legacy-known-ddb",
+            run_deadline_at=(NOW + timedelta(minutes=5)).isoformat(),
+            next_poll_at=NOW.isoformat(),
+        )
+        seed_legacy_dynamo_task(ledger, queued_id, created_at=NOW + timedelta(seconds=1))
+
+        claimed = store.claim_due(now=NOW + timedelta(seconds=2), lease_seconds=30, limit=2)
+        self.assertEqual([task.task_id for task in claimed], [run_id])
+        self.assertEqual(claimed[0].backend_run_id, "run-legacy-known-ddb")
+        self.assertEqual(store.claim_due(now=NOW + timedelta(seconds=2), lease_seconds=30), [])
+
+        store.complete(run_id)
+        next_claim = store.claim_due(now=NOW + timedelta(seconds=3), lease_seconds=30)
+        self.assertEqual([task.task_id for task in next_claim], [queued_id])
+        self.assertIsNone(next_claim[0].backend_run_id)
+
+    def test_legacy_ambiguous_task_blocks_other_queued_tasks_and_new_admission(self):
+        ledger = InMemoryDynamoLedger()
+        store = DynamoDbTaskStore(ledger, client_id=CLIENT, max_pending_tasks=8)
+        ambiguous_id = str(uuid4())
+        queued_id = str(uuid4())
+        seed_legacy_dynamo_task(
+            ledger,
+            ambiguous_id,
+            created_at=NOW,
+            status="uncertain",
+            outbox_state="uncertain",
+            dispatch_started_at=NOW.isoformat(),
+        )
+        seed_legacy_dynamo_task(ledger, queued_id, created_at=NOW + timedelta(seconds=1))
+
+        self.assertEqual(store.claim_due(now=NOW + timedelta(seconds=2), lease_seconds=30), [])
+        with self.assertRaises(AdmissionBusy):
+            store.admit(request(str(uuid4())))
+        self.assertEqual(store.get_by_task_id(ambiguous_id)["status"], "uncertain")
+        self.assertEqual(ledger.get_item(CLIENT, "TASK#" + queued_id)["status"], "queued")
+
+    def test_operator_reconciliation_requires_matching_run_id_then_releases_slot(self):
+        ledger = InMemoryDynamoLedger()
+        store = DynamoDbTaskStore(ledger, client_id=CLIENT, max_pending_tasks=8)
+        task_id = str(uuid4())
+        run_id = "run-operator-reconcile"
+        store.admit(request(task_id))
+        store.claim_due(now=NOW, lease_seconds=30)
+        store.mark_dispatch_started(task_id, now=NOW)
+        store.save_backend_run_id(task_id, run_id)
+        store.mark_uncertain(task_id, code="hermes_stop_unconfirmed")
+
+        with self.assertRaises(AdmissionUnavailable):
+            store.operator_reconcile_uncertain(
+                client_id=CLIENT,
+                task_id=task_id,
+                terminal_state="cancelled",
+                verified_run_id="run-wrong",
+                operator_id="operator-1",
+                evidence_ref="INC-61-terminal-check",
+                now=NOW,
+            )
+        slot = ledger.get_item(CLIENT, "SLOT#SLOW")
+        self.assertEqual(slot["active_task_id"], task_id)
+        next_request = replace(
+            request(str(uuid4())),
+            conversation_id="after-operator-reconciliation",
+            turn_id=2,
+            call_id="after-operator-reconciliation-call",
+        )
+        with self.assertRaises(AdmissionBusy):
+            store.admit(next_request)
+
+        receipt = store.operator_reconcile_uncertain(
+            client_id=CLIENT,
+            task_id=task_id,
+            terminal_state="cancelled",
+            verified_run_id=run_id,
+            operator_id="operator-1",
+            evidence_ref="INC-61-terminal-check",
+            now=NOW + timedelta(seconds=1),
+        )
+        self.assertEqual(receipt.status, "cancelled")
+        self.assertIsNone(ledger.get_item(CLIENT, "SLOT#SLOW"))
+        audit = ledger.get_item(CLIENT, "TASK#" + task_id)
+        self.assertEqual(audit["manual_reconciled_by"], "operator-1")
+        self.assertEqual(audit["manual_reconciliation_ref"], "INC-61-terminal-check")
+        self.assertEqual(audit["manual_reconciled_run_id"], run_id)
+        self.assertFalse(store.admit(next_request).duplicate)
+
     def test_hermes_result_lookup_rejects_wrong_owner_partition(self):
         ledger = InMemoryDynamoLedger()
         owner_store = DynamoDbTaskStore(ledger, client_id=CLIENT, max_pending_tasks=8)

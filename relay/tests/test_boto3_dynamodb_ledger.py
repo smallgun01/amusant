@@ -1,14 +1,16 @@
 """moto-backed boto3 ledger tests. Creates a table only inside moto, never AWS."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import unittest
 from uuid import uuid4
 
 from botocore.exceptions import ClientError
 
-from relay.dynamodb_task_store import DynamoDbTaskStore
+from relay.dynamodb_task_store import QUERY_ITEM_BOUND, DynamoDbTaskStore
 from relay.task_store import (
+    AdmissionBusy,
     AdmissionUnavailable,
     AdmissionUnknown,
     BoundedTaskResult,
@@ -144,6 +146,106 @@ class Boto3DynamoLedgerTests(unittest.TestCase):
             self.assertTrue(capture.query_calls[-1]["ConsistentRead"])
             self.assertEqual(capture.query_calls[-1]["Limit"], 1)
 
+    def test_independent_dynamodb_stores_atomically_admit_only_one_slow_task(self):
+        try:
+            import boto3
+            from moto import mock_aws
+        except ImportError:
+            self.skipTest("moto/boto3 not installed")
+        with mock_aws():
+            client = boto3.client("dynamodb", region_name="us-east-1")
+            _create_table(client)
+            from relay.boto3_dynamodb_ledger import Boto3DynamoLedger
+
+            first_store = DynamoDbTaskStore(Boto3DynamoLedger(client, TABLE), client_id=CLIENT, max_pending_tasks=8)
+            second_store = DynamoDbTaskStore(Boto3DynamoLedger(client, TABLE), client_id=CLIENT, max_pending_tasks=8)
+            requests = [
+                TaskAdmissionRequest(
+                    task_id=str(uuid4()),
+                    client_id=CLIENT,
+                    conversation_id="same-owner",
+                    turn_id=index,
+                    call_id=f"slot-race-{index}",
+                    task=f"Concurrent Slow Task {index}",
+                    task_kind="research",
+                    backend="server-selected",
+                    created_at=NOW,
+                    expires_at=NOW + timedelta(minutes=10),
+                    executor_kind="hermes_runs",
+                )
+                for index in (1, 2)
+            ]
+
+            def admit(args):
+                store, request = args
+                try:
+                    return ("accepted", store.admit(request).task_id)
+                except AdmissionBusy as exc:
+                    return ("busy", exc.active_task_id)
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = list(pool.map(admit, [(first_store, requests[0]), (second_store, requests[1])]))
+            accepted = [value for state, value in results if state == "accepted"]
+            busy = [value for state, value in results if state == "busy"]
+            self.assertEqual(len(accepted), 1, results)
+            self.assertEqual(busy, accepted)
+            page = client.query(
+                TableName=TABLE,
+                KeyConditionExpression="pk = :pk",
+                ExpressionAttributeValues={":pk": {"S": CLIENT}},
+                ConsistentRead=True,
+            )
+            rows = page.get("Items", [])
+            self.assertEqual(sum(item["sk"]["S"].startswith("TASK#") for item in rows), 1)
+            self.assertEqual(sum(item["sk"]["S"].startswith("DEDUP#") for item in rows), 1)
+            slot = client.get_item(
+                TableName=TABLE,
+                Key={"pk": {"S": CLIENT}, "sk": {"S": "SLOT#SLOW"}},
+                ConsistentRead=True,
+            )["Item"]
+            self.assertEqual(slot["active_task_id"]["S"], accepted[0])
+
+    def test_more_than_100_retained_terminal_rows_do_not_block_new_admission(self):
+        try:
+            import boto3
+            from moto import mock_aws
+        except ImportError:
+            self.skipTest("moto/boto3 not installed")
+        with mock_aws():
+            client = boto3.client("dynamodb", region_name="us-east-1")
+            _create_table(client)
+            from relay.boto3_dynamodb_ledger import Boto3DynamoLedger
+
+            for index in range(QUERY_ITEM_BOUND + 7):
+                client.put_item(
+                    TableName=TABLE,
+                    Item={
+                        "pk": {"S": CLIENT},
+                        "sk": {"S": f"TASK#history-{index:03d}"},
+                        "task_id": {"S": f"history-{index:03d}"},
+                        "status": {"S": "completed"},
+                        "created_at": {"S": (NOW + timedelta(seconds=index)).isoformat()},
+                        "retain_until": {"N": str(int(NOW.timestamp()) + 30 * 24 * 60 * 60)},
+                    },
+                )
+
+            capture = _QueryCaptureClient(client)
+            store = DynamoDbTaskStore(
+                Boto3DynamoLedger(capture, TABLE),
+                client_id=CLIENT,
+                max_pending_tasks=8,
+            )
+            receipt = store.admit(_admit_request(str(uuid4())))
+
+            self.assertFalse(receipt.duplicate)
+            self.assertGreaterEqual(len(capture.query_calls), 2)
+            slot = client.get_item(
+                TableName=TABLE,
+                Key={"pk": {"S": CLIENT}, "sk": {"S": "SLOT#SLOW"}},
+                ConsistentRead=True,
+            )["Item"]
+            self.assertEqual(slot["active_task_id"]["S"], receipt.task_id)
+
     def test_completed_item_round_trip_through_moto(self):
         try:
             import boto3
@@ -249,6 +351,66 @@ class Boto3DynamoLedgerTests(unittest.TestCase):
             self.assertEqual(resumed[0].backend_run_id, "run-boto-deferred")
             self.assertEqual(resumed[0].run_deadline_at, deadline.isoformat())
             self.assertEqual(resumed[0].attempts, claimed.attempts + 1)
+
+    def test_two_independent_stores_atomically_reserve_one_owner_slot(self):
+        try:
+            import boto3
+            from moto import mock_aws
+        except ImportError:
+            self.skipTest("moto/boto3 not installed")
+        with mock_aws():
+            client = boto3.client("dynamodb", region_name="us-east-1")
+            _create_table(client)
+            from relay.boto3_dynamodb_ledger import Boto3DynamoLedger
+
+            first_store = DynamoDbTaskStore(Boto3DynamoLedger(client, TABLE), client_id=CLIENT, max_pending_tasks=8)
+            second_store = DynamoDbTaskStore(Boto3DynamoLedger(client, TABLE), client_id=CLIENT, max_pending_tasks=8)
+            requests = [
+                TaskAdmissionRequest(
+                    task_id=str(uuid4()),
+                    client_id=CLIENT,
+                    conversation_id="single-flight",
+                    turn_id=index,
+                    call_id=f"concurrent-{index}",
+                    task=f"Concurrent request {index}",
+                    task_kind="research",
+                    backend="server-selected",
+                    created_at=NOW,
+                    expires_at=NOW + timedelta(minutes=10),
+                    executor_kind="hermes_runs",
+                )
+                for index in (1, 2)
+            ]
+
+            def admit(args):
+                store, request = args
+                try:
+                    return ("accepted", store.admit(request).task_id)
+                except AdmissionBusy as exc:
+                    return ("busy", exc.active_task_id)
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                outcomes = list(pool.map(admit, [(first_store, requests[0]), (second_store, requests[1])]))
+            accepted = [value for kind, value in outcomes if kind == "accepted"]
+            busy = [value for kind, value in outcomes if kind == "busy"]
+            self.assertEqual(len(accepted), 1, outcomes)
+            self.assertEqual(busy, accepted)
+            page = client.query(
+                TableName=TABLE,
+                KeyConditionExpression="pk = :pk",
+                ExpressionAttributeValues={":pk": {"S": CLIENT}},
+                ConsistentRead=True,
+            )
+            task_rows = [item for item in page.get("Items", []) if item["sk"]["S"].startswith("TASK#")]
+            dedup_rows = [item for item in page.get("Items", []) if item["sk"]["S"].startswith("DEDUP#")]
+            self.assertEqual(len(task_rows), 1)
+            self.assertEqual(len(dedup_rows), 1)
+            slot = client.get_item(
+                TableName=TABLE,
+                Key={"pk": {"S": CLIENT}, "sk": {"S": "SLOT#SLOW"}},
+                ConsistentRead=True,
+            )["Item"]
+            self.assertEqual(slot["active_task_id"]["S"], accepted[0])
 
     def test_spoken_marker_does_not_recreate_deleted_task_after_strong_read(self):
         try:

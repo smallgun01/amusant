@@ -4,10 +4,12 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import threading
 import unittest
+from dataclasses import replace
 from uuid import uuid4
 
 from relay.dynamodb_task_store import DynamoDbTaskStore, InMemoryDynamoLedger
 from relay.task_store import (
+    AdmissionBusy,
     AdmissionCapacity,
     AdmissionConflict,
     AdmissionUnavailable,
@@ -54,27 +56,31 @@ class DynamoDbTaskStoreTests(unittest.TestCase):
         older_id = "ffffffff-ffff-4fff-8fff-ffffffffffff"
         newer_id = "00000000-0000-4000-8000-000000000001"
         store.admit(_request(older_id, created_at=NOW, call_id="call-old", turn_id=1))
+        store.claim_due(now=NOW, lease_seconds=30, limit=1)
+        store.complete(older_id, result=BoundedTaskResult(speak="Old.", card={"title": "Old"}, details_md="old"))
         store.admit(
             _request(newer_id, created_at=NOW + timedelta(seconds=5), call_id="call-new", turn_id=2)
         )
         inbox = store.lookup_inbox(client_id=CLIENT)
         self.assertEqual(inbox["task_id"], newer_id)
 
-    def test_claim_due_picks_oldest_created_at(self):
+    def test_second_same_owner_task_is_busy_not_queued_by_created_order(self):
         ledger, store = _store()
         later_id = str(uuid4())
         earlier_id = str(uuid4())
         store.admit(_request(later_id, created_at=NOW + timedelta(seconds=10), call_id="c-late", turn_id=2))
-        store.admit(_request(earlier_id, created_at=NOW, call_id="c-early", turn_id=1))
-        claimed = store.claim_due(now=NOW + timedelta(seconds=1), lease_seconds=30, limit=1)
-        self.assertEqual(len(claimed), 1)
-        self.assertEqual(claimed[0].task_id, earlier_id)
+        with self.assertRaises(AdmissionBusy) as raised:
+            store.admit(_request(earlier_id, created_at=NOW, call_id="c-early", turn_id=1))
+        self.assertEqual(raised.exception.active_task_id, later_id)
+        self.assertEqual(store.pending_dispatch_count(), 1)
 
-    def test_pending_capacity(self):
+    def test_pending_capacity_is_replaced_by_single_flight_busy(self):
         ledger, store = _store(max_pending_tasks=1)
-        store.admit(_request(str(uuid4()), call_id="only"))
-        with self.assertRaises(AdmissionCapacity):
+        active_id = str(uuid4())
+        store.admit(_request(active_id, call_id="only"))
+        with self.assertRaises(AdmissionBusy) as raised:
             store.admit(_request(str(uuid4()), call_id="two", turn_id=2))
+        self.assertEqual(raised.exception.active_task_id, active_id)
 
     def test_has_client_tasks_is_strongly_scoped_to_owner_partition(self):
         ledger, store = _store()
@@ -127,7 +133,7 @@ class DynamoDbTaskStoreTests(unittest.TestCase):
 
         def selective(pk, sk, *, consistent=True):
             calls["n"] += 1
-            if calls["n"] >= 2:
+            if calls["n"] >= 4:
                 raise AdmissionUnavailable("task_store_unavailable")
             return original(pk, sk, consistent=consistent)
 
@@ -140,23 +146,27 @@ class DynamoDbTaskStoreTests(unittest.TestCase):
         self.assertEqual(store.pending_dispatch_count(), 1)
 
     def test_recovery_requeues_unsent_and_uncertains_started(self):
-        ledger, store = _store()
+        ledger, unsent_store = _store()
+        started_owner = "started-owner"
+        started_store = DynamoDbTaskStore(ledger, client_id=started_owner, max_pending_tasks=8)
         unsent = str(uuid4())
         started = str(uuid4())
-        store.admit(_request(unsent, call_id="unsent", turn_id=1))
-        store.admit(_request(started, call_id="started", turn_id=2))
-        claimed = store.claim_due(now=NOW, lease_seconds=30, limit=2)
-        ids = {item.task_id for item in claimed}
-        self.assertEqual(ids, {unsent, started})
-        store.mark_dispatch_started(started, now=NOW)
-        counts = store.recover_after_restart()
-        self.assertEqual(counts.requeued, 1)
-        self.assertEqual(counts.uncertain, 1)
-        self.assertEqual(store.get_by_task_id(unsent)["status"], "queued")
-        self.assertEqual(store.get_by_task_id(started)["status"], "uncertain")
-        self.assertTrue(store.get_by_task_id(started)["dispatch_started"])
-        task = ledger.get_item(CLIENT, f"TASK#{started}")
-        dedup = ledger.get_item(CLIENT, f"DEDUP#{CONVERSATION}#2#started")
+        unsent_store.admit(_request(unsent, call_id="unsent", turn_id=1))
+        started_store.admit(replace(_request(started, call_id="started", turn_id=2), client_id=started_owner))
+        claimed_unsent = unsent_store.claim_due(now=NOW, lease_seconds=30, limit=1)
+        claimed_started = started_store.claim_due(now=NOW, lease_seconds=30, limit=1)
+        self.assertEqual(claimed_unsent[0].task_id, unsent)
+        self.assertEqual(claimed_started[0].task_id, started)
+        started_store.mark_dispatch_started(started, now=NOW)
+        unsent_counts = unsent_store.recover_after_restart()
+        started_counts = started_store.recover_after_restart()
+        self.assertEqual((unsent_counts.requeued, unsent_counts.uncertain), (1, 0))
+        self.assertEqual((started_counts.requeued, started_counts.uncertain), (0, 1))
+        self.assertEqual(unsent_store.get_by_task_id(unsent)["status"], "queued")
+        self.assertEqual(started_store.get_by_task_id(started)["status"], "uncertain")
+        self.assertTrue(started_store.get_by_task_id(started)["dispatch_started"])
+        task = ledger.get_item(started_owner, f"TASK#{started}")
+        dedup = ledger.get_item(started_owner, f"DEDUP#{CONVERSATION}#2#started")
         self.assertEqual(task["retain_until"], dedup["retain_until"])
         self.assertGreater(task["retain_until"], int(NOW.timestamp()) + 86400)
 
@@ -287,7 +297,7 @@ class DynamoDbTaskStoreTests(unittest.TestCase):
         second.start()
         first.join()
         second.join()
-        self.assertEqual(sum(isinstance(item, AdmissionCapacity) for item in errors), 1)
+        self.assertEqual(sum(isinstance(item, AdmissionBusy) for item in errors), 1)
         self.assertEqual(store.pending_dispatch_count(), 1)
 
     def test_complete_inbox_stays_pending_without_lookup(self):

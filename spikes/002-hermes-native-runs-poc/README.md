@@ -13,7 +13,7 @@ All four local API gates passed. The sanitized summary is evidence/phase2a-gates
 - G3: a new disposable client recovers the completed result using the saved Run ID.
 - G4: a completed Run survives Hermes restart on the same named volume; an active Run becomes interrupted and is not replayed after Hermes restart.
 
-The runner supplies explicit test-only values for all four timing variables because Compose evaluates the shared Phase 2B service interpolation even for Phase 2A. These values are harness inputs, not approved Hermes product defaults.
+The runners supply explicit test-only values for the eight Run, polling, HTTP, and stop-timing variables because Compose evaluates the shared Phase 2B service interpolation even for Phase 2A. These values are harness inputs, not approved Hermes product defaults.
 
 Run with Python 3 and Docker Compose v2: python3 run_poc.py
 

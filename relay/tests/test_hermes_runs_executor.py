@@ -66,14 +66,20 @@ class HermesRunsExecutorTests(unittest.TestCase):
             saved.append((task_id, run_id))
 
         update_poll_state = kwargs.pop("update_poll_state", lambda *args, **kw: None)
+        update_stop_state = kwargs.pop("update_stop_state", lambda *args, **kw: None)
         kwargs.setdefault("run_deadline_seconds", 60.0)
         kwargs.setdefault("poll_cycle_seconds", 0.01)
         kwargs.setdefault("http_timeout_seconds", 0.05)
+        kwargs.setdefault("stop_grace_seconds", 2.0)
+        kwargs.setdefault("stop_max_attempts", 3)
+        kwargs.setdefault("stop_retry_base_seconds", 0.001)
+        kwargs.setdefault("stop_retry_max_seconds", 0.01)
         return HermesRunsExecutor(
             url="http://127.0.0.1:8642",
             api_key="local-test-api-key-123",
             save_backend_run_id=save_run_id,
             update_poll_state=update_poll_state,
+            update_stop_state=update_stop_state,
             poll_interval_seconds=0.001,
             request_json=request,
             **kwargs,
@@ -362,6 +368,11 @@ class HermesRunsExecutorTests(unittest.TestCase):
             poll_cycle_seconds=1,
             http_timeout_seconds=0.05,
             poll_interval_seconds=0.01,
+            update_stop_state=lambda *args, **kwargs: None,
+            stop_grace_seconds=2,
+            stop_max_attempts=3,
+            stop_retry_base_seconds=0.01,
+            stop_retry_max_seconds=0.1,
         )
         public_info = (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("8.8.8.8", 443))
         with patch("relay.hermes_runs_executor.socket.getaddrinfo", return_value=[public_info]):
@@ -421,6 +432,11 @@ class HermesRunsExecutorTests(unittest.TestCase):
             "poll_cycle_seconds": 1,
             "http_timeout_seconds": 0.05,
             "poll_interval_seconds": 0.01,
+            "update_stop_state": lambda *args, **kwargs: None,
+            "stop_grace_seconds": 2,
+            "stop_max_attempts": 3,
+            "stop_retry_base_seconds": 0.01,
+            "stop_retry_max_seconds": 0.1,
         }
         with self.assertRaises(HermesConfigError):
             HermesRunsExecutor(url="http://hermes.internal:8642", **common)
@@ -435,9 +451,9 @@ class HermesRunsExecutorTests(unittest.TestCase):
 
     def test_loader_requires_pair_and_separate_timing_configuration(self):
         no_op = lambda *args, **kwargs: None
-        self.assertIsNone(load_hermes_runs_executor({}, save_backend_run_id=no_op, update_poll_state=no_op))
+        self.assertIsNone(load_hermes_runs_executor({}, save_backend_run_id=no_op, update_poll_state=no_op, update_stop_state=no_op))
         with self.assertRaises(HermesConfigError):
-            load_hermes_runs_executor({"AMUSANT_HERMES_API_KEY": "local-test-api-key-123"}, save_backend_run_id=no_op, update_poll_state=no_op)
+            load_hermes_runs_executor({"AMUSANT_HERMES_API_KEY": "local-test-api-key-123"}, save_backend_run_id=no_op, update_poll_state=no_op, update_stop_state=no_op)
 
         configured = {
             "AMUSANT_HERMES_RUNS_URL": "http://127.0.0.1:8642",
@@ -446,19 +462,33 @@ class HermesRunsExecutorTests(unittest.TestCase):
             "AMUSANT_HERMES_POLL_CYCLE_SECONDS": "1",
             "AMUSANT_HERMES_HTTP_TIMEOUT_SECONDS": "0.5",
             "AMUSANT_HERMES_POLL_INTERVAL_SECONDS": "0.01",
+            "AMUSANT_HERMES_STOP_GRACE_SECONDS": "2",
+            "AMUSANT_HERMES_STOP_MAX_ATTEMPTS": "3",
+            "AMUSANT_HERMES_STOP_RETRY_BASE_SECONDS": "0.01",
+            "AMUSANT_HERMES_STOP_RETRY_MAX_SECONDS": "0.1",
         }
         with self.assertRaisesRegex(HermesConfigError, "RUN_DEADLINE"):
-            load_hermes_runs_executor({**configured, "AMUSANT_HERMES_RUN_DEADLINE_SECONDS": ""}, save_backend_run_id=no_op, update_poll_state=no_op)
+            load_hermes_runs_executor({**configured, "AMUSANT_HERMES_RUN_DEADLINE_SECONDS": ""}, save_backend_run_id=no_op, update_poll_state=no_op, update_stop_state=no_op)
         with self.assertRaisesRegex(HermesConfigError, "ambiguous"):
-            load_hermes_runs_executor({**configured, "AMUSANT_HERMES_TIMEOUT_SECONDS": "120"}, save_backend_run_id=no_op, update_poll_state=no_op)
-        loaded = load_hermes_runs_executor(configured, save_backend_run_id=no_op, update_poll_state=no_op)
+            load_hermes_runs_executor({**configured, "AMUSANT_HERMES_TIMEOUT_SECONDS": "120"}, save_backend_run_id=no_op, update_poll_state=no_op, update_stop_state=no_op)
+        loaded = load_hermes_runs_executor(configured, save_backend_run_id=no_op, update_poll_state=no_op, update_stop_state=no_op)
         self.assertEqual(loaded._run_deadline_seconds, 30)
         self.assertEqual(loaded._poll_cycle_seconds, 1)
         self.assertEqual(loaded._http_timeout_seconds, 0.5)
         self.assertEqual(loaded._poll_interval, 0.01)
-        for missing in ("AMUSANT_HERMES_POLL_CYCLE_SECONDS", "AMUSANT_HERMES_HTTP_TIMEOUT_SECONDS", "AMUSANT_HERMES_POLL_INTERVAL_SECONDS"):
+        self.assertEqual(loaded._stop_grace_seconds, 2)
+        self.assertEqual(loaded._stop_max_attempts, 3)
+        for missing in (
+            "AMUSANT_HERMES_POLL_CYCLE_SECONDS",
+            "AMUSANT_HERMES_HTTP_TIMEOUT_SECONDS",
+            "AMUSANT_HERMES_POLL_INTERVAL_SECONDS",
+            "AMUSANT_HERMES_STOP_GRACE_SECONDS",
+            "AMUSANT_HERMES_STOP_MAX_ATTEMPTS",
+            "AMUSANT_HERMES_STOP_RETRY_BASE_SECONDS",
+            "AMUSANT_HERMES_STOP_RETRY_MAX_SECONDS",
+        ):
             with self.subTest(missing=missing), self.assertRaisesRegex(HermesConfigError, missing):
-                load_hermes_runs_executor({key: value for key, value in configured.items() if key != missing}, save_backend_run_id=no_op, update_poll_state=no_op)
+                load_hermes_runs_executor({key: value for key, value in configured.items() if key != missing}, save_backend_run_id=no_op, update_poll_state=no_op, update_stop_state=no_op)
 
         common = {
             "AMUSANT_CLIENT_ID": "client-a",

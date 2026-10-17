@@ -19,6 +19,7 @@ from .store_factory import build_task_store
 from .task_store import (
     MAX_TASK_CHARS,
     TASK_KINDS,
+    AdmissionBusy,
     AdmissionCapacity,
     AdmissionConflict,
     AdmissionUnavailable,
@@ -100,6 +101,8 @@ async def run_smoke(environ) -> SmokeReport:
         return SmokeReport(EXIT_UNCERTAIN, task_id, None, None, "acceptance_unconfirmed", False)
     except AdmissionUnavailable:
         return SmokeReport(EXIT_CONFIG, None, None, None, "task_store_unavailable", False)
+    except AdmissionBusy:
+        return SmokeReport(EXIT_FAILED, None, None, None, "slow_busy", False)
     except AdmissionCapacity:
         return SmokeReport(EXIT_FAILED, None, None, None, "task_capacity", False)
     except AdmissionConflict:

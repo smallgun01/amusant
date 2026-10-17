@@ -86,6 +86,10 @@ services:
       AMUSANT_HERMES_POLL_CYCLE_SECONDS: "${POC_POLL_CYCLE_SECONDS:?run_phase2b.py must set test-only cycle budget}"
       AMUSANT_HERMES_HTTP_TIMEOUT_SECONDS: "${POC_HTTP_TIMEOUT_SECONDS:?run_phase2b.py must set test-only HTTP timeout}"
       AMUSANT_HERMES_POLL_INTERVAL_SECONDS: "${POC_POLL_INTERVAL_SECONDS:?run_phase2b.py must set test-only poll interval}"
+      AMUSANT_HERMES_STOP_GRACE_SECONDS: "${POC_STOP_GRACE_SECONDS:?runner must set test-only stop grace}"
+      AMUSANT_HERMES_STOP_MAX_ATTEMPTS: "${POC_STOP_MAX_ATTEMPTS:?runner must set test-only stop attempts}"
+      AMUSANT_HERMES_STOP_RETRY_BASE_SECONDS: "${POC_STOP_RETRY_BASE_SECONDS:?runner must set test-only stop retry base}"
+      AMUSANT_HERMES_STOP_RETRY_MAX_SECONDS: "${POC_STOP_RETRY_MAX_SECONDS:?runner must set test-only stop retry maximum}"
       AMUSANT_HERMES_ALLOW_PLAINTEXT: "1"
       PYTHONPATH: /repo
       POC_RUN_TAG: "${POC_RUN_TAG:-p2b-unused}"
