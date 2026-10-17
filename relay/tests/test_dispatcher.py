@@ -489,7 +489,7 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
             # Pre-58A configuration can remain in a rollback environment.
             "AMUSANT_HERMES_TIMEOUT_SECONDS": "120",
         }
-        with patch("relay.application.load_acp_executor", return_value=FakeExecutor()), \\
+        with patch("relay.application.load_acp_executor", return_value=FakeExecutor()), \
              patch("relay.application.build_live_provider", return_value=object()):
             _handler, dispatcher, _store = build_supported_relay_runtime(
                 expected_device_token="device-token-12",
