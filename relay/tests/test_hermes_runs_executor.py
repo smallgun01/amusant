@@ -279,8 +279,12 @@ class HermesRunsExecutorTests(unittest.TestCase):
             "AMUSANT_BACKEND_ID": "server-backend",
             "AMUSANT_TASK_DB": "/tmp/tasks.db",
         }
+        default_config = load_relay_process_config(common, expected_device_token="device-token-123")
+        self.assertEqual(default_config.slow_executor_kind, "hermes_runs")
         config = load_relay_process_config({**common, "AMUSANT_SLOW_EXECUTOR": "hermes_runs"}, expected_device_token="device-token-123")
         self.assertEqual(config.slow_executor_kind, "hermes_runs")
+        legacy_config = load_relay_process_config({**common, "AMUSANT_SLOW_EXECUTOR": "openab_acp"}, expected_device_token="device-token-123")
+        self.assertEqual(legacy_config.slow_executor_kind, "openab_acp")
         with self.assertRaises(ValueError):
             load_relay_process_config({**common, "AMUSANT_SLOW_EXECUTOR": "shell"}, expected_device_token="device-token-123")
 
