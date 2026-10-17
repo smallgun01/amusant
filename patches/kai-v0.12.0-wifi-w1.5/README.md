@@ -53,7 +53,7 @@ Delete the local `secrets.h` after the build. It is git-ignored and must not be 
 python3 patches/kai-v0.12.0-wifi-w1.5/tests/run_host_tests.py --firmware-root kai/firmware
 ```
 
-The C++ fake-NVS suite covers first boot with no namespace, no credential write before success, wrong-PoP no-event behavior, failed Wi-Fi credential retry, success persistence, PoP encoding, timeout, USB removal, and the configured-profile BLE gate. Python helper tests cover the existing USB recovery protocol. The host tests do not contact hardware or a network. The CI workflow also verifies the W1.5 patch applies after Jellii and W1.
+The C++ fake-NVS suite covers first boot with no namespace, no credential write before success, wrong-PoP no-event behavior, failed Wi-Fi credential retry, success persistence, PoP encoding, timeout, USB removal, and the configured-profile BLE gate. Python helper tests cover the existing USB recovery protocol. The host tests do not contact hardware or a network. The CI workflow verifies the W1.5 patch applies after Jellii and W1, then runs both suites.
 
 ## Footprint and test results
 
@@ -67,7 +67,7 @@ The exact pinned `sticks3` build completed successfully:
 
 The W1.5 image uses 57.1% of the 3,342,336-byte application partition. The linker RAM number is static image usage; NimBLE is configured for internal memory, but dynamic BLE heap/free-heap, scan time, power, and sleep behavior need the separately authorized physical acceptance and are not inferred from a build. The local build used the exact checked-out Opus commit `c02de6316dddbb9dffdf976c159c4eaacecdf12f` because this Windows host's Git credential provider refused the HTTPS fetch. The temporary build config pointed to that local checkout; the tracked pinned `platformio.ini` was unchanged.
 
-> Results: PlatformIO `sticks3` build **PASS** (Arduino-ESP32 3.3.12 / ESP-IDF libraries 5.5.5); Python USB-helper offline tests **5/5 PASS**. C++ fake-NVS/BLE-flow tests run in the PR CI workflow; this workstation has no host C++ compiler.
+> Results: PlatformIO `sticks3` build **PASS** (Arduino-ESP32 3.3.12 / ESP-IDF libraries 5.5.5); Python USB-helper tests **5/5 PASS** locally; GitHub Actions W1.5 host workflow **PASS** (C++ fake-NVS/BLE-flow and Python suites). This workstation has no host C++ compiler.
 
 ## Limits and rollback
 
