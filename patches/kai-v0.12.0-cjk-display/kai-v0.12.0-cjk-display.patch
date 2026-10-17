@@ -1,0 +1,209 @@
+diff --git a/firmware/src/face.cpp b/firmware/src/face.cpp
+--- a/firmware/src/face.cpp
++++ b/firmware/src/face.cpp
+@@ -1,4 +1,5 @@
+ #include "face.h"
++#include "jellii_text_utf8.h"
+ 
+ #include <vector>
+ 
+@@ -345,37 +346,18 @@
+ constexpr int TEXT_W = W - TEXT_X - 10;               // room for the scrollbar
+ constexpr int TITLE_X = 50;
+ 
++// The font must match drawReply(): all width measurements are in glyph pixels.
+ void wrapInto(const String& text, bool fromCard) {
+-  String line;
+-  int start = 0;
+-  const int len = text.length();
+-  while (start < len) {
+-    int end = text.indexOf(' ', start);
+-    if (end < 0) end = len;
+-    String word = text.substring(start, end);
+-    start = end + 1;
+-    if (word.isEmpty()) continue;
+-    String candidate = line.isEmpty() ? word : line + " " + word;
+-    if (canvas.textWidth(candidate) <= TEXT_W) {
+-      line = candidate;
+-      continue;
+-    }
+-    if (!line.isEmpty()) lines.push_back({line, fromCard});
+-    while (canvas.textWidth(word) > TEXT_W) {  // hard-break words wider than the screen
+-      int cut = word.length() - 1;
+-      while (cut > 1 && canvas.textWidth(word.substring(0, cut)) > TEXT_W) cut--;
+-      lines.push_back({word.substring(0, cut), fromCard});
+-      word = word.substring(cut);
+-    }
+-    line = word;
+-  }
+-  if (!line.isEmpty()) lines.push_back({line, fromCard});
++  jellii_text::wrap(
++      text.c_str(), text.length(), TEXT_W,
++      [&](size_t start, size_t end) { return canvas.textWidth(text.substring(start, end)); },
++      [&](size_t start, size_t end) { lines.push_back({text.substring(start, end), fromCard}); });
+ }
+ 
+ int maxTop() { return max(0, int(lines.size()) - VISIBLE_LINES); }
+ 
+ void rebuildLines() {
+-  canvas.setFont(&fonts::Font2);
++  canvas.setFont(&fonts::efontTW_14);
+   lines.clear();
+   if (replyHasCard) {
+     for (size_t i = 0; i < replyCard.count; i++) wrapInto(replyCard.lines[i], true);
+@@ -402,15 +384,19 @@
+   String title = replyHasCard && replyCard.title.length() ? replyCard.title : String("Jellii");
+   const bool hasIcon = replyHasCard && replyCard.icon != Icon::None;
+   const int titleMax = W - TITLE_X - (hasIcon ? 22 : 4);
+-  canvas.setFont(&fonts::FreeSansBold9pt7b);
+-  while (title.length() > 1 && canvas.textWidth(title) > titleMax) title.remove(title.length() - 1);
++  canvas.setFont(&fonts::efontTW_14);
++  // Truncate the card title at a UTF-8 boundary, never in the middle of a hanzi.
++  const size_t titleEnd = jellii_text::fitting_prefix(
++      title.c_str(), title.length(), titleMax,
++      [&](size_t start, size_t end) { return canvas.textWidth(title.substring(start, end)); });
++  title.remove(titleEnd);
+   canvas.setTextDatum(middle_left);
+   canvas.setTextColor(T.text);
+   canvas.drawString(title, TITLE_X, HEADER_H / 2);
+   if (hasIcon) drawIcon(replyCard.icon, W - 18, HEADER_H / 2 - 7, T.iconOn);
+   canvas.drawFastHLine(4, HEADER_H, W - 8, T.iconOff);
+ 
+-  canvas.setFont(&fonts::Font2);
++  canvas.setFont(&fonts::efontTW_14);
+   canvas.setTextDatum(top_left);
+   for (int i = 0; i < VISIBLE_LINES && top + i < int(lines.size()); i++) {
+     const Line& l = lines[top + i];
+@@ -497,11 +483,15 @@
+ }
+ 
+ void appendReplyText(const String& text) {
+-  // Spoken answers are a few hundred characters. A cap keeps a runaway caption stream from eating the heap
+-  // and making every re-wrap slower (the whole text is wrapped again on each change).
+-  static constexpr size_t MAX_REPLY_CHARS = 2048;
+-  if (replyText.length() >= MAX_REPLY_CHARS) return;
+-  replyText += text.substring(0, MAX_REPLY_CHARS - replyText.length());
++  // Keep the existing 2 KiB cap, but never truncate the last UTF-8 glyph's bytes.
++  // Each caption delta arrives as decoded JSON text (complete UTF-8 scalars).
++  static constexpr size_t MAX_REPLY_BYTES = 2048;
++  const size_t used = replyText.length();
++  if (used >= MAX_REPLY_BYTES) return;
++  const size_t safeBytes = jellii_text::prefix(
++      text.c_str(), text.length(), MAX_REPLY_BYTES - used);
++  if (!safeBytes) return;
++  replyText += text.substring(0, safeBytes);
+   linesDirty = dirty = true;
+ }
+ 
+diff --git a/firmware/src/jellii_text_utf8.h b/firmware/src/jellii_text_utf8.h
+new file mode 100644
+--- /dev/null
++++ b/firmware/src/jellii_text_utf8.h
+@@ -0,0 +1,107 @@
++// Jellii display text layout: byte-bounded UTF-8, no heap allocation, no Arduino dependency.
++// Input is valid UTF-8 (decoded JSON captions/cards); invalid bytes advance one byte.
++#pragma once
++
++#include <stddef.h>
++#include <stdint.h>
++
++namespace jellii_text {
++
++inline size_t next(const char* bytes, size_t length, size_t offset) {
++  if (offset >= length) return length;
++  const uint8_t first = static_cast<uint8_t>(bytes[offset]);
++  size_t count = 1;
++  if (first >= 0xC2 && first <= 0xDF) count = 2;
++  else if (first >= 0xE0 && first <= 0xEF) count = 3;
++  else if (first >= 0xF0 && first <= 0xF4) count = 4;
++  if (offset + count > length) return offset + 1;
++  for (size_t i = offset + 1; i < offset + count; ++i) {
++    if ((static_cast<uint8_t>(bytes[i]) & 0xC0) != 0x80) return offset + 1;
++  }
++  // Reject non-shortest encodings, UTF-16 surrogates, and code points > U+10FFFF.
++  const uint8_t second = count > 1 ? static_cast<uint8_t>(bytes[offset + 1]) : 0;
++  if ((first == 0xE0 && second < 0xA0) || (first == 0xED && second >= 0xA0) ||
++      (first == 0xF0 && second < 0x90) || (first == 0xF4 && second > 0x8F))
++    return offset + 1;
++  return offset + count;
++}
++
++inline size_t prefix(const char* bytes, size_t length, size_t max_bytes) {
++  size_t pos = 0;
++  while (pos < length) {
++    const size_t n = next(bytes, length, pos);
++    if (n > max_bytes) break;
++    pos = n;
++  }
++  return pos;
++}
++
++inline bool space(char c) { return c == ' ' || c == '\t'; }
++
++template <typename Measure, typename Emit>
++void wrap(const char* bytes, size_t length, int max_width, Measure measure, Emit emit) {
++  if (!bytes || !length || max_width <= 0) return;
++  constexpr size_t npos = static_cast<size_t>(-1);
++  size_t start = 0;
++  size_t pos = 0;
++  size_t space_break = npos;
++  const auto emit_trimmed = [&](size_t begin, size_t end) {
++    while (end > begin && space(bytes[end - 1])) --end;
++    if (end > begin) emit(begin, end);
++  };
++  while (pos < length) {
++    const char c = bytes[pos];
++    const size_t advance = next(bytes, length, pos);
++    if (c == '\n' || c == '\r') {
++      size_t end = pos;
++      while (end > start && space(bytes[end - 1])) --end;
++      if (end > start) emit(start, end);
++      else if (c == '\n') emit(start, start);  // Preserve an intentional empty line.
++      pos = advance;
++      if (c == '\r' && pos < length && bytes[pos] == '\n') ++pos;
++      start = pos;
++      space_break = npos;
++      continue;
++    }
++    if (space(c) && pos == start) {
++      start = pos = advance;  // Never draw leading spaces on wrapped lines.
++      continue;
++    }
++    if (measure(start, advance) <= max_width) {
++      if (space(c)) space_break = pos;
++      pos = advance;
++      continue;
++    }
++    if (space_break != npos && space_break > start) {
++      emit_trimmed(start, space_break);  // Prefer word boundary for English.
++      start = space_break;
++      while (start < length && space(bytes[start])) ++start;
++      pos = start;
++    } else if (pos > start) {
++      emit_trimmed(start, pos);  // CJK and long unspaced words break at UTF-8 boundaries.
++      start = pos;
++    } else {
++      emit(start, advance);  // Guard against a single glyph wider than the viewport.
++      start = pos = advance;
++    }
++    space_break = npos;
++  }
++  size_t end = length;
++  while (end > start && space(bytes[end - 1])) --end;
++  if (end > start) emit(start, end);
++}
++
++template <typename Measure>
++size_t fitting_prefix(const char* bytes, size_t length, int max_width, Measure measure) {
++  if (!bytes || max_width <= 0) return 0;
++  size_t pos = 0;
++  while (pos < length) {
++    const size_t end = next(bytes, length, pos);
++    if (measure(0, end) > max_width) break;
++    pos = end;
++  }
++  return pos;
++}
++
++}  // namespace jellii_text
++
