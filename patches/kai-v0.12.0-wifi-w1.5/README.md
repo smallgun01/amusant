@@ -34,10 +34,10 @@ From the Amusant repository root:
 ```sh
 git clone --no-tags https://github.com/zbruceli/kai.git kai
 git -C kai checkout --detach 1681fb3c11acd28525d8987bba4b9bf4bc2a288f
-git -C kai apply patches/kai-v0.12.0-jellii/kai-v0.12.0-jellii.patch
-git -C kai apply patches/kai-v0.12.0-wifi-w1/kai-v0.12.0-wifi-w1.patch
-git -C kai apply --check patches/kai-v0.12.0-wifi-w1.5/kai-v0.12.0-wifi-w1.5.patch
-git -C kai apply patches/kai-v0.12.0-wifi-w1.5/kai-v0.12.0-wifi-w1.5.patch
+git -C kai apply ../patches/kai-v0.12.0-jellii/kai-v0.12.0-jellii.patch
+git -C kai apply ../patches/kai-v0.12.0-wifi-w1/kai-v0.12.0-wifi-w1.patch
+git -C kai apply --check ../patches/kai-v0.12.0-wifi-w1.5/kai-v0.12.0-wifi-w1.5.patch
+git -C kai apply ../patches/kai-v0.12.0-wifi-w1.5/kai-v0.12.0-wifi-w1.5.patch
 ```
 
 Build only; do not upload or flash:
@@ -67,7 +67,7 @@ The exact pinned `sticks3` build completed successfully:
 
 The W1.5 image uses 57.1% of the 3,342,336-byte application partition. The linker RAM number is static image usage; NimBLE is configured for internal memory, but dynamic BLE heap/free-heap, scan time, power, and sleep behavior need the separately authorized physical acceptance and are not inferred from a build. The local build used the exact checked-out Opus commit `c02de6316dddbb9dffdf976c159c4eaacecdf12f` because this Windows host's Git credential provider refused the HTTPS fetch. The temporary build config pointed to that local checkout and the installed pioarduino platform; the tracked `platformio.ini` was unchanged.
 
-> Review revision results: PlatformIO `sticks3` build **PASS** (Arduino-ESP32 3.3.12 / ESP-IDF libraries 5.5.5); canonical W1 USB-helper tests **5/5 PASS** locally; GitHub Actions W1.5 host workflow **PASS** (run 39045696340, including C++ fake-NVS/native-manager/retry/LCD-layout tests and ordered patch application); repository Fast Voice / Relay / TLS-PSK CI **PASS** (run 39045696336). This workstation has no host C++ compiler.
+> Latest review revision: PlatformIO `sticks3` build **PASS locally** (Arduino-ESP32 3.3.12 / ESP-IDF libraries 5.5.5; this was not a GitHub Actions job); canonical W1 USB-helper tests **5/5 PASS** locally; GitHub Actions W1.5 host workflow **PASS** (run [39045951899](https://github.com/smallgun01/amusant/actions/runs/39045951899), including C++ fake-NVS/native-manager/retry/LCD-layout tests and ordered patch application); repository Fast Voice / Relay / TLS-PSK CI **PASS** (run [39045951883](https://github.com/smallgun01/amusant/actions/runs/39045951883)). This workstation has no host C++ compiler.
 
 ## Limits and rollback
 
@@ -76,7 +76,7 @@ This is a compile-tested, offline-flow PoC. It does not claim Android-to-device 
 Rollback W1.5 by reversing only this patch:
 
 ```sh
-git -C kai apply -R patches/kai-v0.12.0-wifi-w1.5/kai-v0.12.0-wifi-w1.5.patch
+git -C kai apply -R ../patches/kai-v0.12.0-wifi-w1.5/kai-v0.12.0-wifi-w1.5.patch
 ```
 
 The merged W1 code, its USB recovery commands, its one-profile NVS data, and the Relay configuration remain in place. No AWS, Relay, or cloud ingress files are part of this package.
