@@ -141,20 +141,6 @@ def poc_container_stats():
         return ["unavailable:" + type(exc).__name__]
 
 
-def poc_container_stats():
-    try:
-        ids = compose("ps", "-q", "hermes", "fake-provider", check=False).stdout.split()
-        if not ids:
-            return []
-        result = subprocess.run(
-            ["docker", "stats", "--no-stream", "--format", "{{.Name}} {{.CPUPerc}} {{.MemUsage}} {{.MemPerc}}", *ids],
-            capture_output=True, text=True, timeout=10,
-        )
-        return result.stdout.strip().splitlines() if result.returncode == 0 else ["unavailable"]
-    except Exception as exc:
-        return ["unavailable:" + type(exc).__name__]
-
-
 def main():
     run_tag = COMPOSE_ENV["POC_RUN_TAG"]
     gates = {}
