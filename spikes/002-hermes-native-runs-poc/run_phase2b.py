@@ -204,6 +204,7 @@ def main():
             # Focused compatibility gate against the pinned Hermes HTTP server.
             # Its source returns 200 {status: stopping} for an active Run; GET is
             # still required to observe a terminal state before slot release.
+            stop_stage = "submit"
             try:
                 stop_submit = client(
                     "submit",
@@ -212,11 +213,17 @@ def main():
                 )
                 stop_run_id = stop_submit.get("run_id")
                 require(stop_submit.get("http_status", 500) < 400 and stop_run_id, "stop-contract Run was not created")
+                stop_stage = "wait_for_active_fake_provider"
                 wait_for_provider_case_active("stop_contract", timeout=20)
+                stop_stage = "get_running_before_stop"
                 before_stop = client("get", "--run-id", stop_run_id)
+                stop_stage = "post_stop"
                 stop_ack = client("stop", "--run-id", stop_run_id)
+                stop_stage = "get_after_stop"
                 after_stop = client("get", "--run-id", stop_run_id)
+                stop_stage = "poll_terminal_get"
                 terminal = client("get", "--run-id", stop_run_id, "--wait", "--timeout", "45")
+                stop_stage = "count_fake_provider_requests"
                 stop_requests = [
                     row for row in provider_stats().get("requests", [])
                     if row.get("slow_case") == "stop_contract"
@@ -249,6 +256,7 @@ def main():
                     "status": "FAIL",
                     "source_tag": HERMES_SOURCE_TAG,
                     "source_commit": HERMES_SOURCE_COMMIT,
+                    "stage": stop_stage,
                     "error_type": type(exc).__name__,
                 }
         except Exception as exc:
