@@ -17,7 +17,7 @@ Run with Python 3 and Docker Compose v2: python3 run_poc.py
 
 ## Phase 2B — Relay adapter POC
 
-Phase 2B imports the actual Relay adapter and TaskStore into a disposable container. It keeps delegate_task, check_task_status, AsyncDispatcher, the existing task ledger and Inbox. The default remains OpenAB ACP; Hermes is selected only by the server-owned AMUSANT_SLOW_EXECUTOR=hermes_runs setting plus the required Hermes URL and API key. No client/model field selects a URL, key, executor, or session key.
+Phase 2B imports the actual Relay adapter and TaskStore into a disposable container. It keeps delegate_task, check_task_status, AsyncDispatcher, the existing task ledger and Inbox. **Hermes Native Runs is the Relay product default** when `AMUSANT_SLOW_EXECUTOR` is unset. Startup requires both server-owned `AMUSANT_HERMES_RUNS_URL` and `AMUSANT_HERMES_API_KEY`; if missing, startup fails closed rather than silently falling back to OpenAB. The old OpenAB ACP backend is available only by explicitly setting `AMUSANT_SLOW_EXECUTOR=openab_acp` (with its existing ACP configuration). The backend selector is server-owned, never client/model-controlled. **Changing the code default does not authorize changing any deployed environment, launching Hermes, or cutting over production.** No client/model field selects a URL, key, executor, or session key.
 
 The adapter sends one POST /v1/runs with Idempotency-Key=task_id, persists the returned Run ID write-once on the existing task, and polls GET /v1/runs/{id}. It derives an opaque stable Hermes session key from the authenticated Relay owner identity. A resumed task with a known Run ID issues GET only. Ambiguous submission without a durably confirmed Run ID becomes uncertain and is not replayed.
 
@@ -47,6 +47,14 @@ The fake provider recorded multiple provider completions during each Hermes Run 
 Run Phase 2B locally with: python3 run_phase2b.py
 
 A harness-only initial attempt failed because the new SQLite volume was root-owned; the runner now initializes that isolated volume for UID 10000. That setup failure was not an API/Relay behavior result. The current summary contains only sanitized metrics; attempt files are ignored by Git.
+
+## Hermes product default and activation gate
+
+- **Product direction:** Hermes Native Runs is the selected target Slow Brain. OpenAB ACP is an explicit legacy/rollback executor only. An unset `AMUSANT_SLOW_EXECUTOR` selects `hermes_runs`; `AMUSANT_SLOW_EXECUTOR=openab_acp` selects the legacy path. Missing Hermes URL/API key fails startup; no silent fallback.
+- **PR #45 scope:** adapter foundation only, currently **Draft**. It does not establish live Agent, hosting, memory, notification, security, or production readiness. No production environment/configuration changes, merge or Ready-for-Review transition are implied.
+- **Known blocker for long-running Hermes:** `AMUSANT_HERMES_TIMEOUT_SECONDS` defaults to **120 seconds** (max **600 seconds**). It is a **per-invocation polling budget**, not a durable overall Run execution deadline. If the budget expires while Hermes is still running, the current Dispatcher marks the Relay task **uncertain** even with a saved Run ID. This is not a resumable nonterminal poll timeout. [Issue #58](https://github.com/smallgun01/amusant/issues/58) owns durable polling, queue/run deadlines and capacity before long-running activation.
+- The existing 8 pending / 600s queue / 120s OpenAB-era execution figures are **not approved Hermes product requirements**. Candidate replacement values in #58 are subject to Owner approval.
+- Legacy rollback is **explicit configuration**, not automatic fallback. A production cutover and rollback runbook require separate review; #45 merge is not that approval.
 
 ## Limits and safety
 
