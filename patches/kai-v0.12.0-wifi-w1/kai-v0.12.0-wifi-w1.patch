@@ -1,0 +1,671 @@
+diff --git a/firmware/src/main.cpp b/firmware/src/main.cpp
+index 0bc678e..c5e1898 100644
+--- a/firmware/src/main.cpp
++++ b/firmware/src/main.cpp
+@@ -17,8 +17,11 @@
+ 
+ #include "audio.h"
+ #include "face.h"
++#include "power_policy.h"
+ #include "secrets.h"
+ #include "voice_codec.h"
++#include "wifi_config.h"
++#include "wifi_console.h"
+ 
+ // libopus (fixed point) keeps sizeable frames on the stack; Arduino's default 8 KB loop stack is too tight.
+ SET_LOOP_TASK_STACK_SIZE(16 * 1024);
+@@ -76,6 +79,11 @@ RTC_DATA_ATTR static uint8_t cachedBssid[6];
+ RTC_DATA_ATTR static int32_t cachedChannel = 0;
+ RTC_DATA_ATTR static uint32_t cachedRelayIp = 0;
+ RTC_DATA_ATTR static uint8_t untouchedTimerWakes = 0;  // timer wakes in a row with no button press
++static wifi_config::Profile activeWifiProfile = {};
++static wifi_config::LoadResult wifiProfileState = wifi_config::LoadResult::Missing;
++static bool wifiConfigured = false;
++static wifi_console::Parser wifiConsole;
++static uint32_t lastRelayTry = 0;
+ #ifdef KAI_TELEMETRY
+ RTC_DATA_ATTR static int64_t sleptAtUs = 0;  // RTC wall clock keeps running through deep sleep
+ RTC_DATA_ATTR static int16_t sleptMv = 0;
+@@ -243,16 +251,16 @@ static void powerSave(uint32_t now) {
+     if (mode == Mode::Idle) face::setExpr(Expr::Sleeping);
+     dimmed = true;
+   }
+-  if (audio::onUsbPower()) {
++  const bool usbPower = audio::onUsbPower();
++  uint32_t sleepAfter = DEEP_SLEEP_AFTER_MS;
++  if (wokeByTimer && !touched) sleepAfter = mode == Mode::Offline ? TIMER_WAKE_CONNECT_MS : TIMER_WAKE_IDLE_MS;
++  if (power_policy::shouldEnterDeepSleep(usbPower, idle, sleepAfter)) goToDeepSleep();
++  if (usbPower) {
+     if (!screenOff && idle > SCREEN_OFF_AFTER_MS) {
+       backlight(0);
+       M5.Display.sleep();
+       screenOff = true;
+     }
+-  } else {
+-    uint32_t sleepAfter = DEEP_SLEEP_AFTER_MS;
+-    if (wokeByTimer && !touched) sleepAfter = mode == Mode::Offline ? TIMER_WAKE_CONNECT_MS : TIMER_WAKE_IDLE_MS;
+-    if (idle > sleepAfter) goToDeepSleep();
+   }
+ }
+ 
+@@ -510,14 +518,17 @@ static void onWsEvent(WStype_t type, uint8_t* payload, size_t length) {
+ // ---- connectivity ----------------------------------------------------------
+ 
+ static void startWifi() {
++  if (!wifiConfigured) return;
++  WiFi.persistent(false);  // The Amusant profile is the sole credential store.
+   WiFi.mode(WIFI_STA);
+   WiFi.setAutoReconnect(true);
+   wifiBeganAt = millis();
+   if (cachedChannel > 0) {
+-    WiFi.begin(WIFI_SSID, WIFI_PASS, cachedChannel, cachedBssid);  // skips the channel scan
++    WiFi.begin(activeWifiProfile.ssid, activeWifiProfile.password, cachedChannel, cachedBssid);
++    // The profile is loaded from NVS and matches the cache from the preceding deep-sleep session.
+     usedWifiCache = true;
+   } else {
+-    WiFi.begin(WIFI_SSID, WIFI_PASS);
++    WiFi.begin(activeWifiProfile.ssid, activeWifiProfile.password);
+   }
+ }
+ 
+@@ -566,15 +577,16 @@ static void startRelayConnection() {
+ }
+ 
+ static void maintainConnection() {
+-  static uint32_t lastTry = 0;
+   const uint32_t now = millis();
+ 
++  if (!wifiConfigured) return;  // USB recovery remains available without starting radio retries.
++
+   if (WiFi.status() != WL_CONNECTED) {
+     if (usedWifiCache && now - wifiBeganAt > 5000) {  // access point moved: fall back to a full scan
+       usedWifiCache = false;
+       cachedChannel = 0;
+       WiFi.disconnect();
+-      WiFi.begin(WIFI_SSID, WIFI_PASS);
++      WiFi.begin(activeWifiProfile.ssid, activeWifiProfile.password);
+     }
+     if (!earlyTalk) {
+       if (mode == Mode::Listening) audio::stopMic(discardMic);
+@@ -598,20 +610,117 @@ static void maintainConnection() {
+     ws.disconnect();
+     wsStarted = false;
+     cachedRelayIp = 0;
+-    lastTry = 0;
++    lastRelayTry = 0;
+   }
+-  if (!wsStarted && (lastTry == 0 || now - lastTry > 5000)) {
+-    lastTry = now;
++  if (!wsStarted && (lastRelayTry == 0 || now - lastRelayTry > 5000)) {
++    lastRelayTry = now;
+     startRelayConnection();
+   }
+ }
+ 
++static void invalidateNetworkHints() {
++  memset(cachedBssid, 0, sizeof(cachedBssid));
++  cachedChannel = 0;
++  cachedRelayIp = 0;
++  wifiCached = false;
++  usedWifiCache = false;
++  usedRelayCache = false;
++  lastRelayTry = 0;
++}
++
++static void stopNetworkForProfileChange() {
++  if (wsStarted || wsConnected) ws.disconnect();
++  wsStarted = false;
++  wsConnected = false;
++  connectedSinceBegin = false;
++  WiFi.disconnect(true, false);
++}
++
++static void onWifiConsoleEvent(const wifi_console::Event& event) {
++  switch (event.type) {
++    case wifi_console::EventType::Status:
++      Serial.println(wifi_console::statusResponse(
++          wifiConfigured, wifiProfileState == wifi_config::LoadResult::Invalid, WiFi.status() == WL_CONNECTED));
++      Serial.printf("WIFI MEM %lu %lu\n",
++                    static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
++                    static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
++      break;
++
++    case wifi_console::EventType::Clear:
++      if (!wifi_config::clear()) {
++        Serial.println("WIFI ERR STORAGE");
++        break;
++      }
++      wifiConfigured = false;
++      wifiProfileState = wifi_config::LoadResult::Missing;
++      memset(&activeWifiProfile, 0, sizeof(activeWifiProfile));
++      stopNetworkForProfileChange();
++      invalidateNetworkHints();
++      setMode(Mode::Offline);
++      face::setStatusText("USB Wi-Fi setup");
++      Serial.println("WIFI OK CLEARED");
++      break;
++
++    case wifi_console::EventType::Set:
++      if (!wifi_config::save(event.profile)) {
++        Serial.println("WIFI ERR STORAGE");
++        break;
++      }
++      activeWifiProfile = event.profile;
++      wifiConfigured = true;
++      wifiProfileState = wifi_config::LoadResult::Valid;
++      stopNetworkForProfileChange();
++      invalidateNetworkHints();
++      startWifi();
++      setMode(Mode::Offline);
++      face::setStatusText("connecting wifi...");
++      Serial.println("WIFI OK SAVED");
++      break;
++
++    case wifi_console::EventType::SetReady:
++      Serial.println("WIFI READY");
++      break;
++
++    case wifi_console::EventType::Timeout:
++      Serial.println("WIFI ERR TIMEOUT");
++      break;
++
++    case wifi_console::EventType::Error:
++      Serial.println("WIFI ERR COMMAND");
++      break;
++
++    case wifi_console::EventType::None:
++      break;
++  }
++}
++
++static void serviceWifiConsole() {
++  wifi_console::Event timeoutEvent = {};
++  if (wifiConsole.poll(millis(), timeoutEvent)) onWifiConsoleEvent(timeoutEvent);
++
++  uint8_t processed = 0;
++  while (Serial.available() > 0 && processed < 128) {
++    const int input = Serial.read();
++    if (input < 0) break;
++    wifi_console::Event event = {};
++    if (wifiConsole.feed(static_cast<uint8_t>(input), millis(), event)) onWifiConsoleEvent(event);
++    ++processed;
++  }
++}
++
+ // ---- buttons ---------------------------------------------------------------
+ 
+ static void showStatus() {
+   Card c;
+   c.title = "Jellii status";
+-  c.lines[c.count++] = String("WiFi ") + WiFi.localIP().toString() + " " + String(WiFi.RSSI()) + "dB";
++  if (!wifiConfigured) {
++    c.lines[c.count++] = wifiProfileState == wifi_config::LoadResult::Invalid ? "WiFi config invalid"
++                                                                              : "WiFi unconfigured";
++  } else if (WiFi.status() == WL_CONNECTED) {
++    c.lines[c.count++] = String("WiFi ") + WiFi.localIP().toString() + " " + String(WiFi.RSSI()) + "dB";
++  } else {
++    c.lines[c.count++] = "WiFi offline";
++  }
+   c.lines[c.count++] = String("Relay ") + (wsConnected ? "connected" : "offline");
+   c.lines[c.count++] = String("Battery ") + String(M5.Power.getBatteryLevel()) + "%" +
+                        (audio::onUsbPower() ? " on USB" : "");
+@@ -688,7 +797,9 @@ void setup() {
+     if (untouchedTimerWakes < 255) untouchedTimerWakes++;
+   }
+ 
+-  startWifi();
++  wifiProfileState = wifi_config::load(activeWifiProfile);
++  wifiConfigured = wifiProfileState == wifi_config::LoadResult::Valid;
++  if (wifiConfigured) startWifi();
+   face::begin();
+   backlight(BRIGHTNESS_AWAKE);
+   if (!audio::begin()) log_e("PSRAM allocation failed: check board_build.arduino.memory_type");
+@@ -700,13 +811,19 @@ void setup() {
+   if (wokeToTalk && M5.BtnA.isPressed()) {
+     startEarlyTalk();
+   } else {
+-    face::setStatusText(wokeFromSleep ? "waking up..." : "connecting wifi...");
++    if (wifiConfigured)
++      face::setStatusText(wokeFromSleep ? "waking up..." : "connecting wifi...");
++    else
++      face::setStatusText(wifiProfileState == wifi_config::LoadResult::Invalid ? "Wi-Fi config invalid"
++                                                                               : "USB Wi-Fi setup");
+     setMode(Mode::Offline);
+   }
++  Serial.println("WIFI USB READY");
+ }
+ 
+ void loop() {
+   M5.update();
++  serviceWifiConsole();
+   maintainConnection();
+   if (wsStarted) ws.loop();
+   if (connectBoost && (wsConnected || millis() - wsBeganAt > CONNECT_BOOST_MS)) {
+diff --git a/firmware/src/power_policy.h b/firmware/src/power_policy.h
+new file mode 100644
+index 0000000..ebaba25
+--- /dev/null
++++ b/firmware/src/power_policy.h
+@@ -0,0 +1,13 @@
++#pragma once
++
++#include <stdint.h>
++
++namespace power_policy {
++
++// USB-powered provisioning remains live. On battery, keep the existing idle timeout
++// so a deliberate button wake opens another bounded configuration window.
++inline bool shouldEnterDeepSleep(bool usbPower, uint32_t idleMs, uint32_t sleepAfterMs) {
++  return !usbPower && idleMs > sleepAfterMs;
++}
++
++}  // namespace power_policy
+diff --git a/firmware/src/secrets.example.h b/firmware/src/secrets.example.h
+index 41c90dd..ceeffeb 100644
+--- a/firmware/src/secrets.example.h
++++ b/firmware/src/secrets.example.h
+@@ -1,9 +1,6 @@
+ // Copy to secrets.h (git-ignored) and fill in.
+ #pragma once
+ 
+-#define WIFI_SSID "your-ssid"
+-#define WIFI_PASS "your-password"
+-
+ // The home server running kai-relay: its LAN IP (reserve it in your router), or a "*.local" name if the
+ // server runs mDNS (avahi).
+ #define RELAY_HOST "192.168.1.50"
+diff --git a/firmware/src/wifi_config.cpp b/firmware/src/wifi_config.cpp
+new file mode 100644
+index 0000000..170e685
+--- /dev/null
++++ b/firmware/src/wifi_config.cpp
+@@ -0,0 +1,147 @@
++#include "wifi_config.h"
++
++#include <Preferences.h>
++#include <string.h>
++
++namespace wifi_config {
++namespace {
++
++constexpr char kNamespace[] = "amu_wifi";
++constexpr char kKey[] = "profile";
++constexpr size_t kSsidOffset = 7;
++constexpr size_t kPasswordOffset = kSsidOffset + 32;
++constexpr size_t kChecksumOffset = kPasswordOffset + 63;
++constexpr size_t kRecordSize = kChecksumOffset + 4;
++constexpr uint8_t kVersion = 1;
++constexpr uint8_t kMagic[] = {'A', 'W', 'F', '1'};
++
++uint32_t crc32(const uint8_t* data, size_t length) {
++  uint32_t crc = 0xFFFFFFFFu;
++  for (size_t i = 0; i < length; ++i) {
++    crc ^= data[i];
++    for (uint8_t bit = 0; bit < 8; ++bit)
++      crc = (crc & 1u) ? ((crc >> 1) ^ 0xEDB88320u) : (crc >> 1);
++  }
++  return crc ^ 0xFFFFFFFFu;
++}
++
++void wipe(void* value, size_t length) {
++  volatile uint8_t* bytes = static_cast<volatile uint8_t*>(value);
++  while (length--) *bytes++ = 0;
++}
++
++uint32_t readU32(const uint8_t* data) {
++  return uint32_t(data[0]) | (uint32_t(data[1]) << 8) | (uint32_t(data[2]) << 16) |
++         (uint32_t(data[3]) << 24);
++}
++
++void writeU32(uint8_t* data, uint32_t value) {
++  data[0] = uint8_t(value);
++  data[1] = uint8_t(value >> 8);
++  data[2] = uint8_t(value >> 16);
++  data[3] = uint8_t(value >> 24);
++}
++
++bool allZero(const uint8_t* data, size_t length) {
++  for (size_t i = 0; i < length; ++i)
++    if (data[i] != 0) return false;
++  return true;
++}
++
++}  // namespace
++
++bool validProfile(const Profile& profile) {
++  if (profile.ssidLength == 0 || profile.ssidLength > 32 ||
++      profile.passwordLength < 8 || profile.passwordLength > 63)
++    return false;
++  if (profile.ssid[profile.ssidLength] != '\0' ||
++      profile.password[profile.passwordLength] != '\0')
++    return false;
++
++  for (size_t i = 0; i < profile.ssidLength; ++i) {
++    const uint8_t c = static_cast<uint8_t>(profile.ssid[i]);
++    if (c < 0x20 || c == 0x7F) return false;
++  }
++  for (size_t i = 0; i < profile.passwordLength; ++i) {
++    const uint8_t c = static_cast<uint8_t>(profile.password[i]);
++    if (c < 0x20 || c > 0x7E) return false;
++  }
++  return true;
++}
++
++LoadResult load(Profile& profile) {
++  wipe(&profile, sizeof(profile));
++
++  Preferences preferences;
++  if (!preferences.begin(kNamespace, true)) return LoadResult::Invalid;
++  const size_t storedLength = preferences.getBytesLength(kKey);
++  if (storedLength == 0) {
++    preferences.end();
++    return LoadResult::Missing;
++  }
++
++  uint8_t record[kRecordSize] = {};
++  const bool readOk = storedLength == sizeof(record) &&
++                      preferences.getBytes(kKey, record, sizeof(record)) == sizeof(record);
++  preferences.end();
++  if (!readOk) {
++    wipe(record, sizeof(record));
++    return LoadResult::Invalid;
++  }
++
++  bool valid = memcmp(record, kMagic, sizeof(kMagic)) == 0 && record[4] == kVersion;
++  const uint8_t ssidLength = record[5];
++  const uint8_t passwordLength = record[6];
++  valid = valid && ssidLength > 0 && ssidLength <= 32 &&
++          passwordLength >= 8 && passwordLength <= 63;
++  valid = valid && crc32(record, kChecksumOffset) == readU32(record + kChecksumOffset);
++  if (valid) {
++    valid = allZero(record + kSsidOffset + ssidLength, 32 - ssidLength) &&
++            allZero(record + kPasswordOffset + passwordLength, 63 - passwordLength);
++  }
++
++  if (valid) {
++    memcpy(profile.ssid, record + kSsidOffset, ssidLength);
++    memcpy(profile.password, record + kPasswordOffset, passwordLength);
++    profile.ssid[ssidLength] = '\0';
++    profile.password[passwordLength] = '\0';
++    profile.ssidLength = ssidLength;
++    profile.passwordLength = passwordLength;
++    valid = validProfile(profile);
++  }
++
++  wipe(record, sizeof(record));
++  if (!valid) wipe(&profile, sizeof(profile));
++  return valid ? LoadResult::Valid : LoadResult::Invalid;
++}
++
++bool save(const Profile& profile) {
++  if (!validProfile(profile)) return false;
++
++  uint8_t record[kRecordSize] = {};
++  memcpy(record, kMagic, sizeof(kMagic));
++  record[4] = kVersion;
++  record[5] = profile.ssidLength;
++  record[6] = profile.passwordLength;
++  memcpy(record + kSsidOffset, profile.ssid, profile.ssidLength);
++  memcpy(record + kPasswordOffset, profile.password, profile.passwordLength);
++  writeU32(record + kChecksumOffset, crc32(record, kChecksumOffset));
++
++  Preferences preferences;
++  const bool opened = preferences.begin(kNamespace, false);
++  const bool written = opened && preferences.putBytes(kKey, record, sizeof(record)) == sizeof(record);
++  if (opened) preferences.end();
++  wipe(record, sizeof(record));
++  return written;
++}
++
++bool clear() {
++  Preferences preferences;
++  if (!preferences.begin(kNamespace, false)) return false;
++  const bool exists = preferences.getBytesLength(kKey) != 0;
++  const bool removed = !exists || preferences.remove(kKey);
++  preferences.end();
++  return removed;
++}
++
++}  // namespace wifi_config
+diff --git a/firmware/src/wifi_config.h b/firmware/src/wifi_config.h
+new file mode 100644
+index 0000000..26313b6
+--- /dev/null
++++ b/firmware/src/wifi_config.h
+@@ -0,0 +1,25 @@
++#pragma once
++
++#include <stddef.h>
++#include <stdint.h>
++
++namespace wifi_config {
++
++constexpr size_t kSsidCapacity = 33;
++constexpr size_t kPasswordCapacity = 64;
++
++struct Profile {
++  char ssid[kSsidCapacity];
++  char password[kPasswordCapacity];
++  uint8_t ssidLength;
++  uint8_t passwordLength;
++};
++
++enum class LoadResult : uint8_t { Missing, Valid, Invalid };
++
++bool validProfile(const Profile& profile);
++LoadResult load(Profile& profile);
++bool save(const Profile& profile);
++bool clear();
++
++}  // namespace wifi_config
+diff --git a/firmware/src/wifi_console.cpp b/firmware/src/wifi_console.cpp
+new file mode 100644
+index 0000000..57ede26
+--- /dev/null
++++ b/firmware/src/wifi_console.cpp
+@@ -0,0 +1,157 @@
++#include "wifi_console.h"
++
++#include <string.h>
++
++namespace wifi_console {
++namespace {
++
++constexpr uint32_t kInputTimeoutMs = 15000;
++
++void wipe(void* value, size_t length) {
++  volatile uint8_t* bytes = static_cast<volatile uint8_t*>(value);
++  while (length--) *bytes++ = 0;
++}
++
++bool parseLength(const char*& cursor, uint8_t maximum, uint8_t& value) {
++  if (*cursor < '0' || *cursor > '9') return false;
++  uint16_t parsed = 0;
++  do {
++    parsed = uint16_t(parsed * 10 + uint8_t(*cursor - '0'));
++    if (parsed > maximum) return false;
++    ++cursor;
++  } while (*cursor >= '0' && *cursor <= '9');
++  value = static_cast<uint8_t>(parsed);
++  return true;
++}
++
++}  // namespace
++
++Parser::Parser() { reset(); }
++
++const char* statusResponse(bool configured, bool invalid, bool connected) {
++  if (configured) return connected ? "WIFI OK CONFIGURED CONNECTED" : "WIFI OK CONFIGURED OFFLINE";
++  return invalid ? "WIFI OK INVALID OFFLINE" : "WIFI OK UNCONFIGURED OFFLINE";
++}
++
++void Parser::reset() {
++  state_ = State::Line;
++  wipe(line_, sizeof(line_));
++  lineLength_ = 0;
++  discardLine_ = false;
++  wipe(payload_, sizeof(payload_));
++  payloadLength_ = 0;
++  payloadRead_ = 0;
++  expectedSsidLength_ = 0;
++  expectedPasswordLength_ = 0;
++  lastByteAtMs_ = 0;
++}
++
++bool Parser::processLine(uint32_t nowMs, Event& event) {
++  if (strcmp(line_, "WIFI STATUS") == 0) {
++    event.type = EventType::Status;
++    reset();
++    return true;
++  }
++  if (strcmp(line_, "WIFI CLEAR") == 0) {
++    event.type = EventType::Clear;
++    reset();
++    return true;
++  }
++
++  static const char kSetPrefix[] = "WIFI SET ";
++  if (strncmp(line_, kSetPrefix, sizeof(kSetPrefix) - 1) != 0) {
++    event.type = EventType::Error;
++    reset();
++    return true;
++  }
++
++  const char* cursor = line_ + sizeof(kSetPrefix) - 1;
++  uint8_t ssidLength = 0;
++  uint8_t passwordLength = 0;
++  if (!parseLength(cursor, 32, ssidLength) || *cursor++ != ' ' ||
++      !parseLength(cursor, 63, passwordLength) || *cursor != '\0' ||
++      ssidLength == 0 || passwordLength < 8) {
++    event.type = EventType::Error;
++    reset();
++    return true;
++  }
++
++  expectedSsidLength_ = ssidLength;
++  expectedPasswordLength_ = passwordLength;
++  payloadLength_ = uint8_t(ssidLength + passwordLength);
++  payloadRead_ = 0;
++  state_ = State::Payload;
++  lastByteAtMs_ = nowMs;
++  event.type = EventType::SetReady;
++  return true;
++}
++
++bool Parser::poll(uint32_t nowMs, Event& event) {
++  event.type = EventType::None;
++  wipe(&event.profile, sizeof(event.profile));
++  const bool active = state_ == State::Payload || lineLength_ != 0 || discardLine_;
++  if (!active || uint32_t(nowMs - lastByteAtMs_) < kInputTimeoutMs) return false;
++  reset();
++  event.type = EventType::Timeout;
++  return true;
++}
++
++bool Parser::feed(uint8_t byte, uint32_t nowMs, Event& event) {
++  if (poll(nowMs, event)) {
++    // Treat a late byte as the beginning of a new frame. This preserves the first byte of
++    // the next command while still reporting the expired partial command to the caller.
++    Event ignored = {};
++    consumeByte(byte, nowMs, ignored);
++    wipe(&ignored.profile, sizeof(ignored.profile));
++    return true;
++  }
++  return consumeByte(byte, nowMs, event);
++}
++
++bool Parser::consumeByte(uint8_t byte, uint32_t nowMs, Event& event) {
++  event.type = EventType::None;
++  wipe(&event.profile, sizeof(event.profile));
++
++  if (state_ == State::Payload) {
++    lastByteAtMs_ = nowMs;
++    payload_[payloadRead_++] = byte;
++    if (payloadRead_ < payloadLength_) return false;
++
++    event.profile.ssidLength = expectedSsidLength_;
++    event.profile.passwordLength = expectedPasswordLength_;
++    memcpy(event.profile.ssid, payload_, expectedSsidLength_);
++    memcpy(event.profile.password, payload_ + expectedSsidLength_, expectedPasswordLength_);
++    event.profile.ssid[expectedSsidLength_] = '\0';
++    event.profile.password[expectedPasswordLength_] = '\0';
++    const bool valid = wifi_config::validProfile(event.profile);
++    reset();
++    event.type = valid ? EventType::Set : EventType::Error;
++    if (!valid) wipe(&event.profile, sizeof(event.profile));
++    return true;
++  }
++
++  lastByteAtMs_ = nowMs;
++  if (byte == '\r') return false;
++  if (byte == '\n') {
++    if (discardLine_) {
++      reset();
++      event.type = EventType::Error;
++      return true;
++    }
++    if (lineLength_ == 0) return false;
++    return processLine(nowMs, event);
++  }
++  if (byte < 0x20 || byte > 0x7E) {
++    discardLine_ = true;
++    return false;
++  }
++  if (lineLength_ >= sizeof(line_) - 1) {
++    discardLine_ = true;
++    return false;
++  }
++  line_[lineLength_++] = static_cast<char>(byte);
++  line_[lineLength_] = '\0';
++  return false;
++}
++
++}  // namespace wifi_console
+diff --git a/firmware/src/wifi_console.h b/firmware/src/wifi_console.h
+new file mode 100644
+index 0000000..a538b30
+--- /dev/null
++++ b/firmware/src/wifi_console.h
+@@ -0,0 +1,42 @@
++#pragma once
++
++#include <stdint.h>
++
++#include "wifi_config.h"
++
++namespace wifi_console {
++
++enum class EventType : uint8_t { None, Status, Clear, SetReady, Set, Error, Timeout };
++
++struct Event {
++  EventType type;
++  wifi_config::Profile profile;
++};
++
++class Parser {
++ public:
++  Parser();
++  bool feed(uint8_t byte, uint32_t nowMs, Event& event);
++  bool poll(uint32_t nowMs, Event& event);
++
++ private:
++  enum class State : uint8_t { Line, Payload };
++  void reset();
++  bool consumeByte(uint8_t byte, uint32_t nowMs, Event& event);
++  bool processLine(uint32_t nowMs, Event& event);
++
++  State state_;
++  char line_[40];
++  uint8_t lineLength_;
++  bool discardLine_;
++  uint8_t payload_[95];
++  uint8_t payloadLength_;
++  uint8_t payloadRead_;
++  uint8_t expectedSsidLength_;
++  uint8_t expectedPasswordLength_;
++  uint32_t lastByteAtMs_;
++};
++
++const char* statusResponse(bool configured, bool invalid, bool connected);
++
++}  // namespace wifi_console
