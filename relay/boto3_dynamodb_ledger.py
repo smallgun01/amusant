@@ -28,6 +28,7 @@ _CONDITIONS = {
     "claimed_started_run_id_absent": "outbox_state = :claimed AND attribute_exists(dispatch_started_at) AND attribute_not_exists(backend_run_id)",
     "claimed_started_run_known": "outbox_state = :claimed AND attribute_exists(dispatch_started_at) AND attribute_exists(backend_run_id)",
     "pending_queued": "outbox_state = :pending AND #status = :queued",
+    "pending_running_known_run": "outbox_state = :pending AND #status = :running AND attribute_exists(backend_run_id)",
     "delivery_can_speak": (
         "attribute_exists(pk) AND #status = :completed AND attribute_exists(speak) AND "
         "(attribute_not_exists(delivery_state) OR delivery_state <> :ds_spoken)"
@@ -199,6 +200,8 @@ class Boto3DynamoLedger:
             values[":pending"] = {"S": "pending"}
         if ":queued" in expression:
             values[":queued"] = {"S": "queued"}
+        if ":running" in expression:
+            values[":running"] = {"S": "running"}
         if ":completed" in expression:
             values[":completed"] = {"S": "completed"}
         if ":ds_spoken" in expression:

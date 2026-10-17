@@ -13,6 +13,8 @@ All four local API gates passed. The sanitized summary is evidence/phase2a-gates
 - G3: a new disposable client recovers the completed result using the saved Run ID.
 - G4: a completed Run survives Hermes restart on the same named volume; an active Run becomes interrupted and is not replayed after Hermes restart.
 
+The runner supplies explicit test-only values for all four timing variables because Compose evaluates the shared Phase 2B service interpolation even for Phase 2A. These values are harness inputs, not approved Hermes product defaults.
+
 Run with Python 3 and Docker Compose v2: python3 run_poc.py
 
 ## Phase 2B — Relay adapter POC
@@ -74,7 +76,7 @@ Named Hermes and Relay state volumes are retained. The runners stop containers b
 ## 58A implementation contract (under independent review)
 
 - Queue TTL, per-request HTTP timeout, per-cycle poll budget, poll interval, and overall Run deadline are distinct controls. Hermes requires explicit timing configuration; no Issue #58 candidate value is installed as a product default.
-- The Run ID, first-dispatch anchor, absolute deadline, next poll time, and attempt count are persisted on the existing Relay task. Known IDs resume GET-only after a poll-cycle yield or Relay restart; transient GET failures schedule another GET.
+- The Run ID, first-dispatch anchor, absolute deadline, next poll time, and attempt count are persisted on the existing Relay task. A deferred cycle releases the local claim; claim_due filters by next_poll_at and the background loop schedules the next wake from persisted poll/deadline state. Known IDs resume GET-only after a yield or repeated Relay restart, and do not consume the first-submission max_attempts budget.
 - Ambiguous POST without a durably stored Run ID remains fail-closed and is never replayed. At the Run deadline, Inbox exposes the Relay policy status `timed_out` while disclosing possible remote activity; no cancellation is claimed unless confirmed.
 - SQLite and DynamoDB use their existing task stores. No #58B capacity/concurrency behavior is included.
 - Local unit/CI/fake-provider evidence is not real-Agent, paid-model, AWS, N100, or production acceptance.

@@ -394,6 +394,13 @@ class HermesRunsExecutorTests(unittest.TestCase):
         self.assertNotIn("amusant-hermes-runs-p2a-v4-home", compose)
         self.assertIn('PROJECT = "amusant-hermes-runs-h1-v1"', run_poc)
         self.assertIn('PROJECT = "amusant-hermes-runs-h1-v1"', run_phase2b)
+        for timing_env in (
+            "POC_RUN_DEADLINE_SECONDS",
+            "POC_POLL_CYCLE_SECONDS",
+            "POC_HTTP_TIMEOUT_SECONDS",
+            "POC_POLL_INTERVAL_SECONDS",
+        ):
+            self.assertIn(f'COMPOSE_ENV["{timing_env}"]', run_poc)
         self.assertIn("agent:\n  disabled_toolsets:\n", config)
         for tool in ("terminal", "file", "code_execution", "browser", "computer_use", "homeassistant"):
             self.assertIn(f"    - {tool}\n", config)

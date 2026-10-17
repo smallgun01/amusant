@@ -90,6 +90,12 @@ def _condition_holds(current: dict[str, object] | None, condition: str) -> bool:
         )
     if condition == "pending_queued":
         return current.get("outbox_state") == "pending" and current.get("status") == "queued"
+    if condition == "pending_running_known_run":
+        return (
+            current.get("outbox_state") == "pending"
+            and current.get("status") == "running"
+            and bool(current.get("backend_run_id"))
+        )
     if condition == "delivery_can_speak":
         return (
             current.get("status") == "completed"
@@ -204,6 +210,7 @@ class DynamoDbTaskStore:
         self._client_id = client_id
         self._max_pending_tasks = max_pending_tasks
         self._lock = threading.Lock()
+        self._next_hermes_wake: datetime | None = None
 
     def _task_rows(self) -> list[dict[str, object]]:
         rows, truncated = self._ledger.query_prefix(self._client_id, TASK_SK_PREFIX)
@@ -299,6 +306,7 @@ class DynamoDbTaskStore:
             return self._recover_locked()
 
     def _recover_locked(self) -> RecoveryCounts:
+        self._next_hermes_wake = None
         requeued = 0
         uncertain = 0
         for row in self._task_rows():
@@ -313,7 +321,7 @@ class DynamoDbTaskStore:
                         sk,
                         {
                             "outbox_state": "pending",
-                            "status": "queued",
+                            "status": "running",
                             "claimed_until": None,
                             "last_error": None,
                         },
@@ -354,6 +362,12 @@ class DynamoDbTaskStore:
                 requeued += 1
         return RecoveryCounts(requeued=requeued, uncertain=uncertain)
 
+    def next_hermes_wake_at(self) -> datetime | None:
+        # _claim_due_locked derives this from its bounded strong Query, avoiding
+        # an additional DynamoDB read on every idle Dispatcher cycle.
+        with self._lock:
+            return self._next_hermes_wake
+
     def claim_due(self, *, now: datetime, lease_seconds: int, limit: int = 1) -> list[ClaimedTask]:
         if type(lease_seconds) is not int or lease_seconds <= 0:
             raise ValueError("lease_seconds must be a positive integer")
@@ -365,18 +379,32 @@ class DynamoDbTaskStore:
             return self._claim_due_locked(now_iso, claimed_until, limit)
 
     def _claim_due_locked(self, now_iso: str, claimed_until: str, limit: int) -> list[ClaimedTask]:
+        rows = self._task_rows()
         eligible = [
             row
-            for row in self._task_rows()
+            for row in rows
             if row.get("outbox_state") == "pending"
-            and row.get("status") == "queued"
             and (
-                str(row.get("expires_at") or "") > now_iso
-                or (row.get("executor_kind") == "hermes_runs" and row.get("backend_run_id"))
+                (
+                    row.get("status") == "queued"
+                    and str(row.get("expires_at") or "") > now_iso
+                    and not (row.get("executor_kind") == "hermes_runs" and row.get("backend_run_id"))
+                )
+                or (
+                    row.get("executor_kind") == "hermes_runs"
+                    and row.get("backend_run_id")
+                    and row.get("status") in {"queued", "running"}
+                    and (
+                        not row.get("next_poll_at")
+                        or str(row.get("next_poll_at")) <= now_iso
+                        or (row.get("run_deadline_at") and str(row.get("run_deadline_at")) <= now_iso)
+                    )
+                )
             )
         ]
         eligible.sort(key=lambda row: str(row.get("created_at") or ""))
         claimed: list[ClaimedTask] = []
+        claimed_ids: set[str] = set()
         for row in eligible[:limit]:
             pk = str(row["pk"])
             sk = str(row["sk"])
@@ -390,10 +418,15 @@ class DynamoDbTaskStore:
                         "attempts": int(row.get("attempts") or 0) + 1,
                         "claimed_until": claimed_until,
                     },
-                    condition="pending_queued",
+                    condition=(
+                        "pending_running_known_run"
+                        if row.get("status") == "running" and row.get("backend_run_id")
+                        else "pending_queued"
+                    ),
                 )
             except LedgerConditionFailed:
                 continue
+            claimed_ids.add(str(row["task_id"]))
             claimed.append(
                 ClaimedTask(
                     task_id=str(updated["task_id"]),
@@ -414,6 +447,27 @@ class DynamoDbTaskStore:
                     poll_attempts=int(updated.get("poll_attempts") or 0),
                 )
             )
+        wake_candidates: list[datetime] = []
+        for row in rows:
+            if (
+                str(row.get("task_id") or "") in claimed_ids
+                or row.get("outbox_state") != "pending"
+                or row.get("executor_kind") != "hermes_runs"
+                or not row.get("backend_run_id")
+                or row.get("status") not in {"queued", "running"}
+            ):
+                continue
+            for value in (row.get("next_poll_at"), row.get("run_deadline_at")):
+                if not isinstance(value, str) or not value:
+                    continue
+                try:
+                    parsed = datetime.fromisoformat(value)
+                except ValueError:
+                    raise AdmissionUnavailable("hermes_poll_schedule_unavailable") from None
+                if parsed.tzinfo is None or parsed.utcoffset() is None:
+                    raise AdmissionUnavailable("hermes_poll_schedule_unavailable")
+                wake_candidates.append(parsed.astimezone(timezone.utc))
+        self._next_hermes_wake = min(wake_candidates) if wake_candidates else None
         return claimed
 
     def mark_dispatch_started(self, task_id: str, *, now: datetime) -> None:
@@ -544,6 +598,70 @@ class DynamoDbTaskStore:
                         and int(fresh.get("poll_attempts") or 0) == poll_attempts):
                     return
                 raise AdmissionUnknown("hermes_poll_state_unconfirmed") from exc
+
+    def defer_hermes_run(
+        self,
+        task_id: str,
+        *,
+        backend_run_id: str,
+        run_started_at: datetime,
+        run_deadline_at: datetime,
+        next_poll_at: datetime,
+        poll_attempts: int,
+    ) -> None:
+        if not isinstance(backend_run_id, str) or not _RUN_ID_RE.fullmatch(backend_run_id):
+            raise AdmissionUnavailable("invalid_backend_run_id")
+        if type(poll_attempts) is not int or poll_attempts < 0:
+            raise AdmissionUnavailable("invalid_poll_attempts")
+        started_iso = _utc_iso(run_started_at)
+        deadline_iso = _utc_iso(run_deadline_at)
+        next_poll_iso = _utc_iso(next_poll_at)
+        if deadline_iso <= started_iso:
+            raise AdmissionUnavailable("invalid_hermes_run_deadline")
+        with self._lock:
+            key = _task_sk(task_id)
+            try:
+                current = self._ledger.get_item(self._client_id, key, consistent=True)
+                if (
+                    current is None
+                    or current.get("executor_kind") != "hermes_runs"
+                    or current.get("backend_run_id") != backend_run_id
+                    or current.get("run_started_at") != started_iso
+                    or current.get("run_deadline_at") != deadline_iso
+                    or current.get("status") != "running"
+                ):
+                    raise AdmissionUnavailable("hermes_defer_state_unavailable")
+                self._ledger.update_item(
+                    self._client_id,
+                    key,
+                    {
+                        "outbox_state": "pending",
+                        "status": "running",
+                        "claimed_until": None,
+                        "last_error": None,
+                        "next_poll_at": next_poll_iso,
+                        "poll_attempts": poll_attempts,
+                    },
+                    condition="claimed_started_run_known",
+                )
+            except LedgerConditionFailed as exc:
+                raise AdmissionUnavailable("hermes_defer_state_unavailable") from exc
+            except LedgerAmbiguous as exc:
+                try:
+                    fresh = self._ledger.get_item(self._client_id, key, consistent=True)
+                except (AdmissionUnavailable, LedgerAmbiguous):
+                    raise AdmissionUnknown("hermes_defer_state_unconfirmed") from exc
+                if (
+                    fresh is not None
+                    and fresh.get("outbox_state") == "pending"
+                    and fresh.get("backend_run_id") == backend_run_id
+                    and fresh.get("run_started_at") == started_iso
+                    and fresh.get("run_deadline_at") == deadline_iso
+                    and fresh.get("next_poll_at") == next_poll_iso
+                    and int(fresh.get("poll_attempts") or 0) == poll_attempts
+                ):
+                    return
+                raise AdmissionUnknown("hermes_defer_state_unconfirmed") from exc
 
     def complete(self, task_id: str, *, result: BoundedTaskResult | None = None) -> None:
         self._finish(task_id, task_status="completed", outbox_state="sent", error=None, result=result)

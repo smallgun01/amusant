@@ -76,7 +76,6 @@ class AsyncDispatcher:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._running = False
         self._stopping = False
-        self._stop_event = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
 
     def notify(self) -> None:
@@ -109,7 +108,6 @@ class AsyncDispatcher:
             self._wakeup = asyncio.Event()
         self._loop = loop
         self._stopping = False
-        self._stop_event = asyncio.Event()
         await self._store_call(self._store.recover_after_restart)
         self._running = True
         self._task = asyncio.create_task(self._run_loop())
@@ -117,7 +115,6 @@ class AsyncDispatcher:
     async def stop(self) -> None:
         self._running = False
         self._stopping = True
-        self._stop_event.set()
         self._wakeup.set()
         task = self._task
         self._task = None
@@ -158,8 +155,19 @@ class AsyncDispatcher:
                 pass
             if not self._running:
                 return
+            timeout = self._poll_interval_seconds
             try:
-                await asyncio.wait_for(self._wakeup.wait(), timeout=self._poll_interval_seconds)
+                next_wake = await self._store_call(self._store.next_hermes_wake_at)
+                if next_wake is not None and next_wake.tzinfo is not None and next_wake.utcoffset() is not None:
+                    delay = (next_wake.astimezone(timezone.utc) - self._now().astimezone(timezone.utc)).total_seconds()
+                    # A due-but-unclaimable item falls back to the bounded idle poll,
+                    # preventing a corrupt schedule from becoming a busy loop.
+                    if delay > 0:
+                        timeout = min(timeout, delay)
+            except Exception:
+                pass
+            try:
+                await asyncio.wait_for(self._wakeup.wait(), timeout=max(0.001, timeout))
             except asyncio.TimeoutError:
                 continue
 
@@ -170,10 +178,13 @@ class AsyncDispatcher:
             return
 
     async def _dispatch_one(self, task: ClaimedTask) -> None:
-        if task.attempts > self._max_attempts:
+        known_hermes_run = task.executor_kind == "hermes_runs" and bool(task.backend_run_id)
+        # A durable Run ID is a resumable GET-only operation, not a new dispatch
+        # attempt. Restarts must not exhaust the first-submission retry budget.
+        if task.attempts > self._max_attempts and not known_hermes_run:
             await self._safe_store(self._store.fail, task.task_id, code="dispatch_attempts_exhausted")
             return
-        if task.executor_kind != "hermes_runs" or not task.backend_run_id:
+        if not known_hermes_run:
             started_at = self._now()
             try:
                 await self._store_call(
@@ -184,82 +195,73 @@ class AsyncDispatcher:
             except Exception:
                 return
             task = replace(task, dispatch_started_at=started_at.astimezone(timezone.utc).isoformat())
-        while True:
-            if self._stopping:
-                # Leave a claimed Hermes Run with its durable ID for startup recovery.
-                return
-            try:
-                outcome = await self._executor.execute(task)
-            except Exception as exc:
-                code = getattr(exc, "code", "acp_result_unconfirmed")
+        if self._stopping:
+            # Leave claimed work for startup recovery; a known Run keeps its ID.
+            return
+        try:
+            outcome = await self._executor.execute(task)
+        except Exception as exc:
+            code = getattr(exc, "code", "acp_result_unconfirmed")
+            await self._safe_store(
+                self._store.mark_uncertain,
+                task.task_id,
+                code=code,
+            )
+            return
+        if outcome.status == "deferred":
+            if (
+                task.executor_kind != "hermes_runs"
+                or not outcome.backend_run_id
+                or not outcome.run_started_at
+                or not outcome.run_deadline_at
+                or not outcome.next_poll_at
+            ):
                 await self._safe_store(
                     self._store.mark_uncertain,
                     task.task_id,
-                    code=code,
+                    code="hermes_poll_state_unconfirmed",
                 )
                 return
-            if outcome.status == "deferred":
-                if (
-                    task.executor_kind != "hermes_runs"
-                    or not outcome.backend_run_id
-                    or not outcome.run_started_at
-                    or not outcome.run_deadline_at
-                    or not outcome.next_poll_at
-                ):
-                    await self._safe_store(
-                        self._store.mark_uncertain,
-                        task.task_id,
-                        code="hermes_poll_state_unconfirmed",
-                    )
-                    return
-                task = replace(
-                    task,
+            try:
+                run_started = datetime.fromisoformat(outcome.run_started_at)
+                run_deadline = datetime.fromisoformat(outcome.run_deadline_at)
+                next_poll = datetime.fromisoformat(outcome.next_poll_at)
+                if any(value.tzinfo is None or value.utcoffset() is None for value in (run_started, run_deadline, next_poll)):
+                    raise ValueError("poll timestamps must be timezone-aware")
+                await self._store_call(
+                    self._store.defer_hermes_run,
+                    task.task_id,
                     backend_run_id=outcome.backend_run_id,
-                    run_started_at=outcome.run_started_at,
-                    run_deadline_at=outcome.run_deadline_at,
-                    next_poll_at=outcome.next_poll_at,
+                    run_started_at=run_started,
+                    run_deadline_at=run_deadline,
+                    next_poll_at=next_poll,
                     poll_attempts=outcome.poll_attempts,
                 )
-                try:
-                    next_poll = datetime.fromisoformat(outcome.next_poll_at)
-                    run_deadline = datetime.fromisoformat(outcome.run_deadline_at)
-                    if next_poll.tzinfo is None or run_deadline.tzinfo is None:
-                        raise ValueError("poll timestamps must be timezone-aware")
-                except (TypeError, ValueError):
-                    await self._safe_store(
-                        self._store.mark_uncertain,
-                        task.task_id,
-                        code="hermes_poll_state_unconfirmed",
-                    )
-                    return
-                wake_at = min(next_poll.astimezone(timezone.utc), run_deadline.astimezone(timezone.utc))
-                delay = max(0.0, (wake_at - self._now().astimezone(timezone.utc)).total_seconds())
-                if delay > 0:
-                    try:
-                        await asyncio.wait_for(self._stop_event.wait(), timeout=delay)
-                    except asyncio.TimeoutError:
-                        pass
-                if self._stopping:
-                    return
-                continue
-            try:
-                if outcome.status == "completed":
-                    await self._store_call(self._store.complete, task.task_id, result=outcome.result)
-                    return
-                if outcome.status == "uncertain":
-                    await self._store_call(
-                        self._store.mark_uncertain,
-                        task.task_id,
-                        code=outcome.code or "dispatch_result_unconfirmed",
-                    )
-                    return
-                await self._store_call(self._store.fail, task.task_id, code=outcome.code or "dispatch_failed")
-                return
             except Exception:
-                code = "hermes_result_unconfirmed" if task.executor_kind == "hermes_runs" else "acp_result_unconfirmed"
                 await self._safe_store(
                     self._store.mark_uncertain,
                     task.task_id,
-                    code=code,
+                    code="hermes_poll_state_unconfirmed",
+                )
+            # Return the local claim immediately. The durable next_poll_at is
+            # the scheduler; the next iteration claims this Run only when due.
+            return
+        try:
+            if outcome.status == "completed":
+                await self._store_call(self._store.complete, task.task_id, result=outcome.result)
+                return
+            if outcome.status == "uncertain":
+                await self._store_call(
+                    self._store.mark_uncertain,
+                    task.task_id,
+                    code=outcome.code or "dispatch_result_unconfirmed",
                 )
                 return
+            await self._store_call(self._store.fail, task.task_id, code=outcome.code or "dispatch_failed")
+        except Exception:
+            code = "hermes_result_unconfirmed" if task.executor_kind == "hermes_runs" else "acp_result_unconfirmed"
+            await self._safe_store(
+                self._store.mark_uncertain,
+                task.task_id,
+                code=code,
+            )

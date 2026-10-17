@@ -146,6 +146,19 @@ class TaskStore(Protocol):
         self, task_id: str, *, next_poll_at: datetime, poll_attempts: int
     ) -> None: ...
 
+    def defer_hermes_run(
+        self,
+        task_id: str,
+        *,
+        backend_run_id: str,
+        run_started_at: datetime,
+        run_deadline_at: datetime,
+        next_poll_at: datetime,
+        poll_attempts: int,
+    ) -> None: ...
+
+    def next_hermes_wake_at(self) -> datetime | None: ...
+
     def complete(self, task_id: str, *, result: BoundedTaskResult | None = None) -> None: ...
 
     def fail(self, task_id: str, *, code: str) -> None: ...
@@ -538,7 +551,7 @@ class SQLiteTaskStore:
             connection.execute(
                 "UPDATE slow_tasks SET status='queued' WHERE task_id IN ("
                 "SELECT task_id FROM dispatch_outbox WHERE state='pending')"
-                "AND status='running'"
+                "AND status='running' AND NOT (executor_kind='hermes_runs' AND backend_run_id IS NOT NULL)"
             )
             connection.execute("COMMIT")
             transaction_open = False
@@ -553,6 +566,31 @@ class SQLiteTaskStore:
                 except sqlite3.Error:
                     pass
             raise AdmissionUnavailable("task_store_unavailable") from None
+        finally:
+            connection.close()
+
+    def next_hermes_wake_at(self) -> datetime | None:
+        connection = self._connect()
+        try:
+            row = connection.execute(
+                "SELECT MIN(CASE "
+                "WHEN t.next_poll_at IS NULL THEN t.run_deadline_at "
+                "WHEN t.run_deadline_at IS NULL THEN t.next_poll_at "
+                "WHEN t.next_poll_at <= t.run_deadline_at THEN t.next_poll_at "
+                "ELSE t.run_deadline_at END) "
+                "FROM slow_tasks AS t JOIN dispatch_outbox AS o USING(task_id) "
+                "WHERE o.state='pending' AND t.status IN ('queued','running') "
+                "AND t.executor_kind='hermes_runs' AND t.backend_run_id IS NOT NULL"
+            ).fetchone()
+            value = row[0] if row else None
+            if value is None:
+                return None
+            parsed = datetime.fromisoformat(value)
+            if parsed.tzinfo is None or parsed.utcoffset() is None:
+                raise ValueError("Hermes wake timestamp must include timezone")
+            return parsed.astimezone(timezone.utc)
+        except (sqlite3.Error, TypeError, ValueError):
+            raise AdmissionUnavailable("hermes_poll_schedule_unavailable") from None
         finally:
             connection.close()
 
@@ -574,10 +612,14 @@ class SQLiteTaskStore:
                 "t.task_text,t.task_kind,t.backend,t.executor_kind,t.backend_run_id,"
                 "t.run_started_at,t.run_deadline_at,t.next_poll_at,t.poll_attempts,o.dispatch_started_at,o.attempts "
                 "FROM slow_tasks AS t JOIN dispatch_outbox AS o USING(task_id) "
-                "WHERE o.state='pending' AND t.status='queued' "
-                "AND (t.expires_at>? OR (t.executor_kind='hermes_runs' AND t.backend_run_id IS NOT NULL)) "
+                "WHERE o.state='pending' AND ("
+                "(t.status='queued' AND t.expires_at>? "
+                "AND NOT (t.executor_kind='hermes_runs' AND t.backend_run_id IS NOT NULL)) "
+                "OR (t.executor_kind='hermes_runs' AND t.backend_run_id IS NOT NULL "
+                "AND t.status IN ('queued','running') AND (t.next_poll_at IS NULL OR t.next_poll_at<=? "
+                "OR (t.run_deadline_at IS NOT NULL AND t.run_deadline_at<=?)))) "
                 "ORDER BY o.created_at ASC LIMIT ?",
-                (_utc_iso(now), limit),
+                (_utc_iso(now), _utc_iso(now), _utc_iso(now), limit),
             ).fetchall()
             for row in rows:
                 connection.execute(
@@ -737,6 +779,66 @@ class SQLiteTaskStore:
             if not updated:
                 connection.execute("ROLLBACK")
                 raise AdmissionUnavailable("hermes_poll_state_unavailable")
+            connection.execute("COMMIT")
+        except AdmissionUnavailable:
+            raise
+        except sqlite3.Error:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise AdmissionUnavailable("task_store_unavailable") from None
+        finally:
+            connection.close()
+
+    def defer_hermes_run(
+        self,
+        task_id: str,
+        *,
+        backend_run_id: str,
+        run_started_at: datetime,
+        run_deadline_at: datetime,
+        next_poll_at: datetime,
+        poll_attempts: int,
+    ) -> None:
+        if not isinstance(backend_run_id, str) or not _RUN_ID_RE.fullmatch(backend_run_id):
+            raise AdmissionUnavailable("invalid_backend_run_id")
+        if type(poll_attempts) is not int or poll_attempts < 0:
+            raise AdmissionUnavailable("invalid_poll_attempts")
+        started_iso = _utc_iso(run_started_at)
+        deadline_iso = _utc_iso(run_deadline_at)
+        next_poll_iso = _utc_iso(next_poll_at)
+        if deadline_iso <= started_iso:
+            raise AdmissionUnavailable("invalid_hermes_run_deadline")
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            task = connection.execute(
+                "SELECT backend_run_id,run_started_at,run_deadline_at,status FROM slow_tasks "
+                "WHERE task_id=? AND executor_kind='hermes_runs'",
+                (task_id,),
+            ).fetchone()
+            if (
+                not task
+                or task[0] != backend_run_id
+                or task[1] != started_iso
+                or task[2] != deadline_iso
+                or task[3] != "running"
+            ):
+                connection.execute("ROLLBACK")
+                raise AdmissionUnavailable("hermes_defer_state_unavailable")
+            updated = connection.execute(
+                "UPDATE slow_tasks SET next_poll_at=?,poll_attempts=? "
+                "WHERE task_id=? AND executor_kind='hermes_runs' AND backend_run_id=? "
+                "AND run_started_at=? AND run_deadline_at=? AND status='running'",
+                (next_poll_iso, poll_attempts, task_id, backend_run_id, started_iso, deadline_iso),
+            ).rowcount
+            released = connection.execute(
+                "UPDATE dispatch_outbox SET state='pending',claimed_until=NULL,last_error=NULL "
+                "WHERE task_id=? AND state='claimed' AND dispatch_started_at IS NOT NULL",
+                (task_id,),
+            ).rowcount
+            if not updated or not released:
+                connection.execute("ROLLBACK")
+                raise AdmissionUnavailable("hermes_defer_state_unavailable")
             connection.execute("COMMIT")
         except AdmissionUnavailable:
             raise

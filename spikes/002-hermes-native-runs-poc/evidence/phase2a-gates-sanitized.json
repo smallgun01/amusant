@@ -1,10 +1,10 @@
 {
   "phase": "2A local Hermes Native Runs API POC",
-  "validatedAtUtc": "2026-10-17T01:40:53.333591Z",
-  "repoBase": "b27b61067b1eb60677f50e4c884b460be3a473d5",
-  "branch": "spike/hermes-runs-phase-2a",
+  "validatedAtUtc": "2026-10-17T08:51:20.824001Z",
+  "repoHead": "2ef6b84b5c1c7791a88c0750327d60b341027ad4",
+  "branch": "feat/hermes-durable-polling-58a",
   "workingTreeDirtyAtTest": true,
-  "testedChanges": "H1.1 local worktree changes based on repoBase; no commit was present during the run",
+  "testedChanges": "PR #60 review fixes present in the local worktree; no commit was present during this run",
   "hermesImage": "docker.io/nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7",
   "platform": "linux/amd64",
   "credentials": {
@@ -21,6 +21,12 @@
     "kind": "deterministic local fake OpenAI-compatible endpoint",
     "realModelCalls": false
   },
+  "testOnlyTimingSeconds": {
+    "runDeadline": 60,
+    "pollCycle": 2,
+    "httpTimeout": 3,
+    "pollInterval": 0.05
+  },
   "gates": {
     "G1": {
       "status": "PASS",
@@ -32,7 +38,10 @@
       "status": "PASS",
       "sameKeySamePayloadReusedRun": true,
       "sameKeyChangedPayloadHttpStatus": 409,
-      "fakeCompletionCountBeforeAfter": [2, 2]
+      "fakeCompletionCountBeforeAfter": [
+        1,
+        1
+      ]
     },
     "G3": {
       "status": "PASS",
@@ -46,24 +55,18 @@
       "status": "PASS",
       "completedRunRecoveredAfterHermesRestart": true,
       "activeRunStatusAfterHermesRestart": "interrupted",
-      "fakeRequestsBeforeAfterRestart": [1, 1],
+      "fakeRequestsBeforeAfterRestart": [
+        1,
+        1
+      ],
       "persistentVolumeReused": true
     }
   },
-  "shutdown": {
-    "hermesExitCode": 137,
-    "fakeProviderExitCode": 137,
-    "oomKilled": false,
-    "hermesServicesLoggedStopped": true,
-    "fakeProviderHadDelayedSyntheticRequestAtStop": true,
-    "volumesRetained": true
-  },
+  "setupError": null,
+  "hermesVolumeRetained": true,
   "limits": [
-    "Local Docker volume only; no Fargate/EFS or AWS validation.",
-    "The configured 65,536 context_length is a startup compatibility setting for the fake provider; it is not evidence of a real model context window.",
-    "No production Amusant Relay, real model/Gemini call, cancellation, SSE replay, 30-day retention, or cross-owner isolation test.",
-    "A single synthetic owner/session key was used; runs shared session context during the test, so multi-owner isolation remains untested.",
-    "Hermes logged that its API listener used a local unsandboxed terminal backend. The test used an internal-only network, no published ports, ephemeral keys, and a fake model that issued no tool calls.",
-    "Hermes API status/idempotency retention remains separate from Amusant 30-day Inbox retention."
+    "Local Docker/internal network only; no paid or real model, AWS, N100, or production validation.",
+    "The configured 65,536 context_length is a startup compatibility setting for the fake provider only, not evidence of a real model context window.",
+    "No cancellation, SSE replay, 30-day retention, cross-owner isolation, or production tool-isolation test was performed."
   ]
 }

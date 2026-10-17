@@ -190,6 +190,66 @@ class Boto3DynamoLedgerTests(unittest.TestCase):
             self.assertEqual(inbox["status"], "completed")
             self.assertEqual(inbox["speak"], "Done.")
 
+    def test_deferred_known_run_releases_claim_and_reclaims_only_at_persisted_due_time(self):
+        try:
+            import boto3
+            from moto import mock_aws
+        except ImportError:
+            self.skipTest("moto/boto3 not installed")
+        with mock_aws():
+            client = boto3.client("dynamodb", region_name="us-east-1")
+            _create_table(client)
+            from relay.boto3_dynamodb_ledger import Boto3DynamoLedger
+
+            task_id = str(uuid4())
+            store = DynamoDbTaskStore(
+                Boto3DynamoLedger(client, TABLE), client_id=CLIENT, max_pending_tasks=8
+            )
+            store.admit(TaskAdmissionRequest(
+                task_id=task_id,
+                client_id=CLIENT,
+                conversation_id="conv",
+                turn_id=1,
+                call_id="deferred-poll-1",
+                task="Synthetic deferred Run",
+                task_kind="research",
+                backend="server-selected",
+                created_at=NOW,
+                expires_at=NOW + timedelta(milliseconds=10),
+                executor_kind="hermes_runs",
+            ))
+            claimed = store.claim_due(now=NOW, lease_seconds=30, limit=1)[0]
+            started = NOW
+            deadline = NOW + timedelta(seconds=60)
+            store.mark_dispatch_started(task_id, now=started)
+            store.save_backend_run_id(
+                task_id,
+                "run-boto-deferred",
+                run_started_at=started,
+                run_deadline_at=deadline,
+                next_poll_at=NOW,
+            )
+            next_poll = NOW + timedelta(seconds=5)
+            store.defer_hermes_run(
+                task_id,
+                backend_run_id="run-boto-deferred",
+                run_started_at=started,
+                run_deadline_at=deadline,
+                next_poll_at=next_poll,
+                poll_attempts=1,
+            )
+            row = store.get_by_task_id(task_id)
+            self.assertEqual((row["status"], row["dispatch_state"]), ("running", "pending"))
+            self.assertEqual(row["run_deadline_at"], deadline.isoformat())
+            self.assertEqual(row["next_poll_at"], next_poll.isoformat())
+            self.assertEqual(store.claim_due(now=NOW + timedelta(seconds=4), lease_seconds=30), [])
+            self.assertEqual(store.next_hermes_wake_at(), next_poll)
+            resumed = store.claim_due(now=next_poll, lease_seconds=30, limit=1)
+            self.assertEqual(len(resumed), 1)
+            self.assertEqual(resumed[0].backend_run_id, "run-boto-deferred")
+            self.assertEqual(resumed[0].run_deadline_at, deadline.isoformat())
+            self.assertEqual(resumed[0].attempts, claimed.attempts + 1)
+
     def test_spoken_marker_does_not_recreate_deleted_task_after_strong_read(self):
         try:
             import boto3

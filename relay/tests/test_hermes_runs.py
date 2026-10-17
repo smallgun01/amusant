@@ -55,6 +55,83 @@ def complete_hermes_task(store, task_id: str, client_id: str = CLIENT) -> None:
     )
 
 
+def exercise_multiple_known_run_restarts(store_factory, task_id: str) -> None:
+    store = store_factory()
+    now = [NOW]
+    deadline = NOW + timedelta(seconds=60)  # test fixture only; not a product default
+    run_id = "run-multi-restart-" + task_id
+    store.admit(request(task_id, expires_at=NOW + timedelta(milliseconds=10)))
+    store.claim_due(now=NOW, lease_seconds=30)
+    store.mark_dispatch_started(task_id, now=NOW)
+    store.save_backend_run_id(
+        task_id,
+        run_id,
+        run_started_at=NOW,
+        run_deadline_at=deadline,
+        next_poll_at=NOW,
+    )
+    replies = [
+        {"status": "running"},
+        {"status": "running"},
+        {"status": "completed", "output": "Recovered after repeated Relay restarts."},
+    ]
+    calls = []
+
+    def request_json(method, path, body, headers):
+        calls.append((method, path))
+        if method != "GET" or not path.endswith("/" + run_id):
+            raise AssertionError("known Run must resume by GET of the persisted ID")
+        return 200, replies.pop(0)
+
+    for cycle in range(8):
+        # Each iteration opens a fresh TaskStore/Dispatcher/Executor, mirroring
+        # repeated Relay process replacement over the same durable database.
+        if cycle:
+            store = store_factory()
+        store.recover_after_restart()
+        executor = HermesRunsExecutor(
+            url="http://127.0.0.1:8642",
+            api_key="local-test-api-key-123",
+            save_backend_run_id=store.save_backend_run_id,
+            update_poll_state=store.update_hermes_poll_state,
+            run_deadline_seconds=30,
+            poll_cycle_seconds=5,
+            http_timeout_seconds=2,
+            poll_interval_seconds=10,
+            allow_plaintext=True,
+            clock=lambda: now[0],
+            request_json=request_json,
+        )
+        dispatcher = AsyncDispatcher(store, executor, max_attempts=1, now=lambda: now[0])
+        handled = asyncio.run(dispatcher.dispatch_available())
+        assert handled == 1
+        row = store.get_by_task_id(task_id)
+        assert row["backend_run_id"] == run_id
+        assert row["dispatch_started_at"] == NOW.isoformat()
+        assert row["run_started_at"] == NOW.isoformat()
+        assert row["run_deadline_at"] == deadline.isoformat()
+        assert row["attempts"] >= 2
+        if row["status"] == "completed":
+            break
+        assert row["status"] == "running"
+        assert row["dispatch_state"] == "pending"
+        next_poll = datetime.fromisoformat(row["next_poll_at"])
+        assert store.next_hermes_wake_at() == next_poll
+        # Queue TTL has expired, and a claim before persisted next_poll_at must
+        # not be repeated or increment the durable attempt count.
+        attempts = row["attempts"]
+        assert store.claim_due(now=now[0] + timedelta(seconds=5), lease_seconds=30) == []
+        assert store.get_by_task_id(task_id)["attempts"] == attempts
+        now[0] = next_poll
+    else:
+        raise AssertionError("known Run did not complete within repeated restart attempts")
+
+    assert calls == [("GET", "/v1/runs/" + run_id)] * 3
+    result = store.get_result(task_id)
+    assert result is not None and result["speak"] == "Recovered after repeated Relay restarts."
+    assert store.next_hermes_wake_at() is None
+
+
 class SQLiteHermesMappingTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -92,7 +169,8 @@ class SQLiteHermesMappingTests(unittest.TestCase):
         self.assertEqual(row["next_poll_at"], (NOW + timedelta(seconds=5)).isoformat())
         self.assertEqual(row["poll_attempts"], 2)
 
-        resumed = reopened.claim_due(now=NOW + timedelta(seconds=1), lease_seconds=30)[0]
+        self.assertEqual(reopened.claim_due(now=NOW + timedelta(seconds=1), lease_seconds=30), [])
+        resumed = reopened.claim_due(now=NOW + timedelta(seconds=5), lease_seconds=30)[0]
         self.assertEqual(resumed.task_id, claim.task_id)
         self.assertEqual(resumed.executor_kind, "hermes_runs")
         self.assertEqual(resumed.backend_run_id, "run-phase2b-001")
@@ -128,10 +206,13 @@ class SQLiteHermesMappingTests(unittest.TestCase):
         counts = store.recover_after_restart()
         self.assertEqual((counts.requeued, counts.uncertain), (1, 0))
         waiting_for_resume = store.lookup_inbox(client_id=CLIENT, task_id=task_id, now=after_queue_deadline)
-        self.assertEqual(waiting_for_resume["status"], "queued")
+        self.assertEqual(waiting_for_resume["status"], "running")
         resumed = store.claim_due(now=after_queue_deadline, lease_seconds=30)
         self.assertEqual(len(resumed), 1)
         self.assertEqual(resumed[0].backend_run_id, "run-queue-deadline")
+
+    def test_sqlite_known_run_survives_multiple_restarts_without_post_or_deadline_reset(self):
+        exercise_multiple_known_run_restarts(self.store, str(uuid4()))
 
     def test_sqlite_openab_running_expiry_preserves_legacy_behavior(self):
         store = self.store()
@@ -359,10 +440,15 @@ class DynamoHermesMappingTests(unittest.TestCase):
         counts = store.recover_after_restart()
         self.assertEqual((counts.requeued, counts.uncertain), (1, 0))
         waiting_for_resume = store.lookup_inbox(client_id=CLIENT, task_id=task_id, now=after_queue_deadline)
-        self.assertEqual(waiting_for_resume["status"], "queued")
+        self.assertEqual(waiting_for_resume["status"], "running")
         resumed = store.claim_due(now=after_queue_deadline, lease_seconds=30)
         self.assertEqual(len(resumed), 1)
         self.assertEqual(resumed[0].backend_run_id, "run-ddb-queue-deadline")
+
+    def test_dynamo_known_run_survives_multiple_restarts_without_post_or_deadline_reset(self):
+        ledger = InMemoryDynamoLedger()
+        factory = lambda: DynamoDbTaskStore(ledger, client_id=CLIENT, max_pending_tasks=8)
+        exercise_multiple_known_run_restarts(factory, str(uuid4()))
 
     def test_dynamo_openab_running_expiry_preserves_legacy_behavior(self):
         ledger = InMemoryDynamoLedger()
@@ -406,7 +492,8 @@ class DynamoHermesMappingTests(unittest.TestCase):
         self.assertEqual(row["run_deadline_at"], deadline.isoformat())
         self.assertEqual(row["next_poll_at"], (NOW + timedelta(seconds=5)).isoformat())
         self.assertEqual(row["poll_attempts"], 2)
-        resumed = reopened.claim_due(now=NOW + timedelta(seconds=1), lease_seconds=30)[0]
+        self.assertEqual(reopened.claim_due(now=NOW + timedelta(seconds=1), lease_seconds=30), [])
+        resumed = reopened.claim_due(now=NOW + timedelta(seconds=5), lease_seconds=30)[0]
         self.assertEqual(resumed.backend_run_id, "run-phase2b-ddb-001")
         self.assertEqual(resumed.run_deadline_at, deadline.isoformat())
         self.assertEqual(resumed.dispatch_started_at, NOW.isoformat())
