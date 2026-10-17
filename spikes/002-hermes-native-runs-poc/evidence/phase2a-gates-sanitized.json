@@ -1,8 +1,10 @@
 {
   "phase": "2A local Hermes Native Runs API POC",
-  "validatedAtUtc": "2026-10-16T03:49:49Z",
-  "repoBase": "aaf7c80a5791f279f491ab3a0a8e372d77b22bf2",
+  "validatedAtUtc": "2026-10-17T01:40:53.333591Z",
+  "repoBase": "b27b61067b1eb60677f50e4c884b460be3a473d5",
   "branch": "spike/hermes-runs-phase-2a",
+  "workingTreeDirtyAtTest": true,
+  "testedChanges": "H1.1 local worktree changes based on repoBase; no commit was present during the run",
   "hermesImage": "docker.io/nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7",
   "platform": "linux/amd64",
   "credentials": {
@@ -30,10 +32,7 @@
       "status": "PASS",
       "sameKeySamePayloadReusedRun": true,
       "sameKeyChangedPayloadHttpStatus": 409,
-      "fakeCompletionCountBeforeAfter": [
-        2,
-        2
-      ]
+      "fakeCompletionCountBeforeAfter": [2, 2]
     },
     "G3": {
       "status": "PASS",
@@ -47,12 +46,17 @@
       "status": "PASS",
       "completedRunRecoveredAfterHermesRestart": true,
       "activeRunStatusAfterHermesRestart": "interrupted",
-      "fakeRequestsBeforeAfterRestart": [
-        1,
-        1
-      ],
+      "fakeRequestsBeforeAfterRestart": [1, 1],
       "persistentVolumeReused": true
     }
+  },
+  "shutdown": {
+    "hermesExitCode": 137,
+    "fakeProviderExitCode": 137,
+    "oomKilled": false,
+    "hermesServicesLoggedStopped": true,
+    "fakeProviderHadDelayedSyntheticRequestAtStop": true,
+    "volumesRetained": true
   },
   "limits": [
     "Local Docker volume only; no Fargate/EFS or AWS validation.",

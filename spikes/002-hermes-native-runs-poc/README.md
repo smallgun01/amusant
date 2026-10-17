@@ -21,7 +21,15 @@ Phase 2B imports the actual Relay adapter and TaskStore into a disposable contai
 
 The adapter sends one POST /v1/runs with Idempotency-Key=task_id, persists the returned Run ID write-once on the existing task, and polls GET /v1/runs/{id}. It derives an opaque stable Hermes session key from the authenticated Relay owner identity. A resumed task with a known Run ID issues GET only. Ambiguous submission without a durably confirmed Run ID becomes uncertain and is not replayed.
 
-Final local Docker outcomes are in evidence/phase2b-gates-sanitized.json:
+### H1.1 structured result contract (offline code only)
+
+The Relay now sends the bounded task plus a HermesRunResult schema_version=1 instruction, then maps only speak/card/details_md into the existing BoundedTaskResult limits (240-char speak, title 80, 4 lines of 120, details 4,096). Plain text and known legacy text fields use a bounded fallback; empty, partial, or unsupported output without a safe text field never becomes completed. Unknown result keys such as status, owner, task_id or tool instructions never alter Relay state. The check_task_status tool warns that saved Agent text is untrusted. This does not prove a model will obey the warning or produce correct schema output.
+
+The local fake-provider harness disables high-risk toolsets, denies unattended/cron approvals and uses an internal-only network with no published ports. Static config checks are not production tool-sandbox acceptance.
+
+H1.1 local verification (2026-10-17) re-ran both Phase 2A and Phase 2B Docker/fake-provider gates. Sanitized summaries are in evidence/phase2a-gates-sanitized.json and evidence/phase2b-gates-sanitized.json. The runs used the PR #45 worktree based at b27b610 with uncommitted H1.1 changes; Phase 2B records working_tree_dirty_at_test=true. These are local fake-provider results, not GitHub CI or production acceptance.
+
+The exact repository CI commands also passed locally in the isolated Python 3.13 environment: Fast Voice 74/74, Relay 220/220, and TLS-PSK/Opus WSS loopback 10/10.
 
 - relay_submit_mapping: PASS — one Relay POST; Run ID persisted while fake execution was active.
 - relay_process_restart_recovery: PASS — a new Relay process recovered the result from the same SQLite volume; all recorded Relay HTTP calls after restart were GET, with no second POST.
@@ -37,8 +45,11 @@ A harness-only initial attempt failed because the new SQLite volume was root-own
 
 - Local Docker/fake-provider evidence is not production acceptance or AWS/Fargate evidence.
 - No real model, billing, end-user tool effects, AWS, Fargate, or EFS behavior was tested.
+- The local Hermes config denies terminal/file/code/browser/computer-use and other high-risk toolsets, requires manual approvals, and denies cron/unattended/single-query approval modes. The Compose network is internal-only with no published ports. Static configuration coverage is not proof of a production tool sandbox or owner-isolation boundary.
+- H1.1 uses fresh named volumes amusant-hermes-runs-h1-v1-home/state and leaves the prior p2a-v4/p2b volumes untouched. The config seeder fails closed if an existing persistent Hermes volume lacks this exact safety policy; it never overwrites that volume. Do not run docker compose down -v or delete retained volumes to bypass the check.
 - Hermes Run status/idempotency retention is not a substitute for Relay's existing Inbox retention; the 30-day Relay result policy remains Relay-owned.
 - No SSE replay, cancellation API, 30-day retention, multi-owner live access-control test, EFS/WAL safety, or Hermes agent restart reattachment for in-flight work is established here.
+- Hermes source opens its Run idempotency database under HERMES_HOME but falls back to in-memory storage if SQLite cannot open. The local G4 restart/readback is evidence for the named POC volume only; a successful POST/202 is not proof the deployed store is durable. Production acceptance must prove Run status/readback across restart on the selected persistent storage.
 - An ambiguous POST with no stored Run ID can leave an orphan Run on Hermes. Relay deliberately reports uncertain rather than risk duplicate side effects.
 - The DynamoDB 100-TASK-row scan bound and Dispatcher remain unchanged.
 

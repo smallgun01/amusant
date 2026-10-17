@@ -69,3 +69,10 @@ An initial harness setup attempt failed because the new isolated SQLite volume w
 **Recommend a separately approved Phase 3 feasibility gate, not a production cutover.** First verify Hermes API auth/owner scope, documented status retention and restart behavior against the pinned server version; then assess Fargate/EFS or other durable storage and recovery/backup mechanics without changing AWS. Only after that should a bounded, explicitly cost-capped real-model test be requested. The current evidence does not authorize any real-model call, AWS change, SPEC/ADR edit, deployment, PR merge, Dispatcher deletion, or DynamoDB refactor.
 
 Phase 2B stops here. Further work requires Arthur's explicit approval.
+
+## H1.1 offline hardening (2026-10-17)
+
+- Adds HermesRunResult schema_version=1 and a bounded mapping into Amusant's existing BoundedTaskResult; normal text uses a safe fallback, while unsupported/empty structured results stay unconfirmed. API Run status—not fields inside generated output—remains the control source.
+- Adds offline cases for malformed/oversized/empty/partial/tool-error output, wrong-owner TaskStore lookups, the shared API bearer versus per-client session namespace, public-DNS rejection, and the local fake-provider network/tool policy.
+- The local Compose runners now use fresh H1-v1 named volumes; the old P2A/P2B volumes are preserved. The seeder refuses to overwrite an old persistent Hermes config lacking the H1.1 safety settings.
+- H1.1 source edits were exercised by the exact Python 3.13 CI commands locally (Fast Voice 74/74, Relay 220/220, TLS-PSK/Opus WSS loopback 10/10) and by local Docker/fake-provider G1–G4 plus all three Phase 2B adapter gates (all PASS). These runs used the PR #45 worktree based at b27b610 with uncommitted H1.1 changes; sanitized Phase 2B evidence records that boundary. The Hermes process ran only inside the internal-only local test network with a deterministic fake provider. No real model/Agent, AWS, hosting, or device E2E was used. Production tool isolation, persistent HERMES_HOME and cross-owner behavior remain acceptance gates.

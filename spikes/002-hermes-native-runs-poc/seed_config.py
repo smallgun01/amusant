@@ -19,6 +19,8 @@ if destination.exists():
         b"api_mode: chat_completions",
         b"streaming: false",
         b"context_length: 65536",
+        b"agent:\n  disabled_toolsets:\n    - terminal\n    - file\n    - code_execution\n    - browser\n    - computer_use\n    - image_gen\n    - vision\n    - tts\n    - clarify\n    - video\n    - video_gen\n    - homeassistant\n    - spotify\n    - kanban",
+        b"approvals:\n  mode: manual\n  cron_mode: deny\n  unattended_mode: deny\n  single_query_mode: deny",
     )
     if not all(item in current for item in required):
         raise SystemExit("Refusing to overwrite Hermes config: existing persistent POC config is incompatible")

@@ -13,15 +13,14 @@ from dataclasses import dataclass
 from typing import Any, Callable
 from urllib.parse import quote, urlparse
 
-from .acp_client import normalize_agent_text
 from .dispatcher import ExecutionOutcome
+from .hermes_result import build_hermes_run_prompt, parse_hermes_run_result
 from .task_store import ClaimedTask
 
 DEFAULT_TIMEOUT_SECONDS = 120.0
 MAX_TIMEOUT_SECONDS = 600.0
 DEFAULT_POLL_SECONDS = 0.5
 MAX_RESPONSE_BYTES = 1024 * 1024
-MAX_INPUT_CHARS = 4096
 _RFC1918 = (ipaddress.ip_network("10.0.0.0/8"), ipaddress.ip_network("172.16.0.0/12"), ipaddress.ip_network("192.168.0.0/16"))
 _TERMINAL_SUCCESS = {"completed"}
 _TERMINAL_FAILURE = {"failed"}
@@ -167,7 +166,10 @@ class HermesRunsExecutor:
         }
         run_id = task.backend_run_id
         if run_id is None:
-            prompt = f"Task kind: {task.task_kind}\n\n{task.task}"[:MAX_INPUT_CHARS]
+            try:
+                prompt = build_hermes_run_prompt(task)
+            except ValueError as exc:
+                return ExecutionOutcome(status="failed", code=str(exc))
             try:
                 status, payload = await asyncio.to_thread(
                     self._request_json, "POST", "/v1/runs", {"input": prompt},
@@ -207,11 +209,13 @@ class HermesRunsExecutor:
                 raise HermesRequestError("Hermes Run status is unconfirmed")
             state = state.lower()
             if state in _TERMINAL_SUCCESS:
+                if payload.get("partial") is True or payload.get("interrupted") is True:
+                    return ExecutionOutcome(status="uncertain", code="hermes_result_unconfirmed")
                 output = _extract_output(payload)
                 if output is None:
                     return ExecutionOutcome(status="uncertain", code="hermes_result_unconfirmed")
                 try:
-                    result = normalize_agent_text(output)
+                    result = parse_hermes_run_result(output)
                 except ValueError:
                     return ExecutionOutcome(status="uncertain", code="hermes_result_unconfirmed")
                 return ExecutionOutcome(status="completed", result=result)

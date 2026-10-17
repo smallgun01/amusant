@@ -9,17 +9,17 @@ from pathlib import Path
 from uuid import uuid4
 
 from relay.dynamodb_task_store import DynamoDbTaskStore, InMemoryDynamoLedger
-from relay.task_store import AdmissionConflict, TaskAdmissionRequest, SQLiteTaskStore
+from relay.task_store import AdmissionConflict, AdmissionUnavailable, BoundedTaskResult, TaskAdmissionRequest, SQLiteTaskStore
 
 NOW = datetime(2026, 10, 16, 12, 0, tzinfo=timezone.utc)
 CLIENT = "phase2b-test-owner"
 CONVERSATION = "phase2b-test-conversation"
 
 
-def request(task_id: str, executor_kind: str = "hermes_runs") -> TaskAdmissionRequest:
+def request(task_id: str, executor_kind: str = "hermes_runs", client_id: str = CLIENT) -> TaskAdmissionRequest:
     return TaskAdmissionRequest(
         task_id=task_id,
-        client_id=CLIENT,
+        client_id=client_id,
         conversation_id=CONVERSATION,
         turn_id=1,
         call_id="phase2b-call-1",
@@ -29,6 +29,21 @@ def request(task_id: str, executor_kind: str = "hermes_runs") -> TaskAdmissionRe
         created_at=NOW,
         expires_at=NOW + timedelta(seconds=600),
         executor_kind=executor_kind,
+    )
+
+
+def complete_hermes_task(store, task_id: str, client_id: str = CLIENT) -> None:
+    store.admit(request(task_id, client_id=client_id))
+    store.claim_due(now=NOW, lease_seconds=30)
+    store.mark_dispatch_started(task_id, now=NOW)
+    store.save_backend_run_id(task_id, "run-" + task_id)
+    store.complete(
+        task_id,
+        result=BoundedTaskResult(
+            speak="Safe result.",
+            card={"title": "Safe", "lines": ["Owner result"]},
+            details_md="Bounded details.",
+        ),
     )
 
 
@@ -72,6 +87,16 @@ class SQLiteHermesMappingTests(unittest.TestCase):
         store.save_backend_run_id(task_id, "run-phase2b-001")
         with self.assertRaises(AdmissionConflict):
             store.save_backend_run_id(task_id, "run-other")
+
+    def test_hermes_result_lookup_is_scoped_to_the_authenticated_owner(self):
+        store = self.store()
+        task_id = str(uuid4())
+        complete_hermes_task(store, task_id)
+        owner_result = store.lookup_inbox(client_id=CLIENT, task_id=task_id)
+        other_result = store.lookup_inbox(client_id="client-b", task_id=task_id)
+        self.assertEqual(owner_result["status"], "completed")
+        self.assertEqual(owner_result["speak"], "Safe result.")
+        self.assertIsNone(other_result)
 
     def test_v4_database_migrates_with_openab_default(self):
         connection = sqlite3.connect(self.db)
@@ -121,6 +146,16 @@ class SQLiteHermesMappingTests(unittest.TestCase):
 
 
 class DynamoHermesMappingTests(unittest.TestCase):
+    def test_hermes_result_lookup_rejects_wrong_owner_partition(self):
+        ledger = InMemoryDynamoLedger()
+        owner_store = DynamoDbTaskStore(ledger, client_id=CLIENT, max_pending_tasks=8)
+        task_id = str(uuid4())
+        complete_hermes_task(owner_store, task_id)
+        with self.assertRaises(AdmissionUnavailable):
+            owner_store.lookup_inbox(client_id="client-b", task_id=task_id)
+        other_store = DynamoDbTaskStore(ledger, client_id="client-b", max_pending_tasks=8)
+        self.assertIsNone(other_store.lookup_inbox(client_id="client-b", task_id=task_id))
+
     def test_backend_run_id_survives_restart_recovery_without_replay(self):
         ledger = InMemoryDynamoLedger()
         first = DynamoDbTaskStore(ledger, client_id=CLIENT, max_pending_tasks=8)

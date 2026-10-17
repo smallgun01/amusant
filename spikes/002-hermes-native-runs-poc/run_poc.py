@@ -13,7 +13,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 REPO_ROOT = ROOT.parents[1]
 COMPOSE = ROOT / "compose.yaml"
-PROJECT = "amusant-hermes-runs-p2a-v4"
+PROJECT = "amusant-hermes-runs-h1-v1"
 IMAGE = "docker.io/nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7"
 _DOCKER_ENV_KEYS = ("PATH", "HOME", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_CERT_PATH", "DOCKER_TLS_VERIFY", "XDG_RUNTIME_DIR")
 COMPOSE_ENV = {key: os.environ[key] for key in _DOCKER_ENV_KEYS if key in os.environ}
@@ -190,7 +190,7 @@ def main():
             require(complete.get("status") == "completed" and complete.get("result_marker_seen") is True, "setup run for restart test did not complete")
             completed_run_id = complete.get("run_id")
             volume_before = hermes_volume_name()
-            require(volume_before == "amusant-hermes-runs-p2a-v4-home", "expected named persistent Hermes volume not mounted")
+            require(volume_before == "amusant-hermes-runs-h1-v1-home", "expected named persistent Hermes volume not mounted")
             compose("restart", "--timeout", "3", "hermes")
             wait_health(timeout=60)
             recovered = client("get", "--run-id", completed_run_id, "--wait", "--timeout", "20")
