@@ -45,6 +45,8 @@ MAX_PENDING_TASKS_ENV = "AMUSANT_MAX_PENDING_TASKS"
 ACCEPTANCE_TIMEOUT_ENV = "AMUSANT_ACCEPTANCE_TIMEOUT_SECONDS"
 DISPATCHER_POLL_INTERVAL_ENV = "AMUSANT_DISPATCHER_POLL_INTERVAL_SECONDS"
 SLOW_EXECUTOR_ENV = "AMUSANT_SLOW_EXECUTOR"
+# Product default: Hermes Native Runs. OpenAB ACP is an explicit legacy/rollback choice.
+DEFAULT_SLOW_EXECUTOR = "hermes_runs"
 DEFAULT_TASK_KIND = "research"
 DEFAULT_MAX_TASK_TTL_SECONDS = 600
 DEFAULT_MAX_PENDING_TASKS = 8
@@ -120,7 +122,7 @@ def load_relay_process_config(
     default_task_kind = default_task_kind.strip()
     if default_task_kind not in TASK_KINDS:
         raise ValueError("AMUSANT_DEFAULT_TASK_KIND must be research, compare, or summarize")
-    slow_executor_kind = (environ.get(SLOW_EXECUTOR_ENV) or "openab_acp").strip().lower() or "openab_acp"
+    slow_executor_kind = (environ.get(SLOW_EXECUTOR_ENV) or DEFAULT_SLOW_EXECUTOR).strip().lower() or DEFAULT_SLOW_EXECUTOR
     if slow_executor_kind not in {"openab_acp", "hermes_runs"}:
         raise ValueError(f"{SLOW_EXECUTOR_ENV} must be openab_acp or hermes_runs")
     store_kind = (environ.get(TASK_STORE_ENV) or "sqlite").strip().lower() or "sqlite"
@@ -182,7 +184,7 @@ def build_relay_handler(
     conversation_id_factory: ConversationIdFactory | None = None,
     post_tool_ack_timeout_seconds: float = POST_TOOL_ACK_TIMEOUT_SECONDS,
     post_tool_ack_max_duration_seconds: float = POST_TOOL_ACK_MAX_DURATION_SECONDS,
-    executor_kind: str = "openab_acp",
+    executor_kind: str = DEFAULT_SLOW_EXECUTOR,
 ):
     """Compose Live tool declaration + per-authenticated-session admission.
 
