@@ -1,0 +1,34 @@
+name: WiFi W1.5 host tests
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/wifi-w1.5-host-tests.yml"
+      - "patches/kai-v0.12.0-jellii/**"
+      - "patches/kai-v0.12.0-wifi-w1/**"
+      - "patches/kai-v0.12.0-wifi-w1.5/**"
+
+permissions:
+  contents: read
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch pinned Kai and apply downstream patches
+        env:
+          KAI_REVISION: 1681fb3c11acd28525d8987bba4b9bf4bc2a288f
+        run: |
+          git clone --no-tags https://github.com/zbruceli/kai.git kai
+          git -C kai checkout --detach "$KAI_REVISION"
+          git -C kai apply --check "$GITHUB_WORKSPACE/patches/kai-v0.12.0-jellii/kai-v0.12.0-jellii.patch"
+          git -C kai apply "$GITHUB_WORKSPACE/patches/kai-v0.12.0-jellii/kai-v0.12.0-jellii.patch"
+          git -C kai apply --check "$GITHUB_WORKSPACE/patches/kai-v0.12.0-wifi-w1/kai-v0.12.0-wifi-w1.patch"
+          git -C kai apply "$GITHUB_WORKSPACE/patches/kai-v0.12.0-wifi-w1/kai-v0.12.0-wifi-w1.patch"
+          git -C kai apply --check "$GITHUB_WORKSPACE/patches/kai-v0.12.0-wifi-w1.5/kai-v0.12.0-wifi-w1.5.patch"
+          git -C kai apply "$GITHUB_WORKSPACE/patches/kai-v0.12.0-wifi-w1.5/kai-v0.12.0-wifi-w1.5.patch"
+
+      - name: Run C++ and Python offline tests
+        run: python3 patches/kai-v0.12.0-wifi-w1.5/tests/run_host_tests.py --firmware-root kai/firmware
