@@ -24,7 +24,7 @@
 
 | ID | Nature | Entry / exit criterion | Dependents |
 |---|---|---|---|
-| **H0/G0** | Functional PASS, UX not fully accepted | #31 10/10 real-device local FAST; finalize p50/p95 **actual audible onset**, wake/reconnect and battery evidence/owner Go/No-Go; #33 avatar + audio PASS, power regression separate. | WiFi H1 firmware go/no-go |
+| **H0/G0** | Functional PASS, UX not fully accepted | #31 10/10 real-device local FAST; finalize p50/p95 **actual audible onset**, wake/reconnect and battery evidence/owner Go/No-Go; #33 avatar + audio PASS, power regression separate. | W1/W1.5 limited GO on functional G0; full H0 UX separately OPEN |
 | **B0** | **Architecture decision, OPEN** | Compare OpenAB ACP and Hermes native Runs with representative long/research tasks, real tool quality, lifecycle/retention, least privilege, hosting **ECS vs VM vs isolated N100** and costs; time-box research. Formal signoff + SPEC/ADR if changing. | Agent production deployment and S1 final backend |
 | **PR-C** | **Hard A2 live gate** | Must handle >100 retained completed TASK rows as specified by #30 A1 without breaking admission, pending capacity, dispatch, latest Inbox or dedup; keep query/read costs bounded (TTL alone is insufficient). A 500-row run may be an optional stress characterization, not a new acceptance threshold unless #30 is revised. | Persistent A2 live |
 | **PR-D** | **Hard A2 live gate** | Bounded graceful shutdown with uncertain post-send behavior, restart recovery; Python 3.13/TLS-PSK capability; real persistent entrypoint, ECS health, non-root. | Persistent A2 live |
@@ -57,7 +57,7 @@ flowchart TD
 ## Execution waves (dependencies, not invented calendar dates)
 
 1. **Wave 0 — PM hygiene:** reconcile STATUS/PLAN; freeze the S1/G3a/G3b definitions; map issues/PRs; distinguish implemented vs live-proven. #26 one-off accepted evidence remains, no re-run. #33 avatar/physical PTT completed; power testing tracked at #14. Open PR #39 is a docs plan whose A/B slices were already delivered by #40/#41.
-2. **Wave 1 — parallel:** WS2 B0 product contract and backend/hosting bake-off; WS4 PR-C then PR-D as small reviewed PRs; WS3 G1 read-only/offline transport and #35 A2.0/A2.1 (do not prematurely hardwire agent); WS1 #42 Stage D and H0 UX/latency. WiFi-W1/W1.5 may start after H0 firmware go/no-go, with local Relay frozen.
+2. **Wave 1 — parallel:** WS2 B0 product contract and backend/hosting bake-off; WS4 PR-C then PR-D as small reviewed PRs; WS3 G1 read-only/offline transport and #35 A2.0/A2.1 (do not prematurely hardwire agent); WS1 #42 Stage D and H0 UX/latency. WiFi-W1 implementation and W1.5 offline feasibility may start now under the 2026-10-17 limited Owner GO (#36), with local Relay frozen; full H0 UX remains open, and flashing/live tests require separate approval.
 3. **Wave 2 — service and software E2E:** owner-approved A2.2 cloud canary **after** hard gates and B0; #46 S1 with software client and selected backend; device edge G1 live proof separately.
 4. **Wave 3 — physical join:** G2 single-Wi-Fi cloud FAST; G3a real StickS3 Slow→durable Inbox→next-session spoken result.
 5. **Wave 4 — companion mobility:** WiFi-W2a/W2b, G3b; then notes, reminders, proactive unread cues and opt-in memory under separately reviewed product/security contracts.

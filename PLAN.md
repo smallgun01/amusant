@@ -11,7 +11,7 @@
 
 | Execution lane | Immediate work | Blocking scope |
 |---|---|---|
-| WS1 Edge Device & Fast UX | #42 Jellii persona/Zephyr/Search real test; #31 H0 latency/power; #36 WiFi-W1→W1.5 BLE→W2a→W2b | Firmware H1 owner Go/No-Go; **not** blocked by Agent selection |
+| WS1 Edge Device & Fast UX | #42 Jellii persona/Zephyr/Search real test; #31 H0 latency/power; #36 WiFi-W1→W1.5 BLE→W2a→W2b | W1/W1.5 limited PoC Owner GO (2026-10-17); H0 UX remains open; **not** blocked by Agent selection |
 | WS2 Backend Agent | #44/#45 Hermes-vs-OpenAB capability/hosting bake-off; B0 Slow contract and choice | **B0 blocks final selected Agent production deployment and S1 live**, not local FAST/G1 offline |
 | WS3 Placement/E2E | #27 G1 offline edge transport, #35 A2 design, #46 S1; then G2 (known Wi-Fi) → G3a physical Slow → G3b mobility | A2 live requires WS4 PR-C/D and B0; G2 requires A2+G1; **G2 does not require Wi-Fi phone provisioning** |
 | WS4 Reliability/Operations | #30 PR-C (>100 history) and PR-D (bounded shutdown/persistent service packaging), least privilege/secrets/cost | Hard gates for A2 live; not blockers for local WS1 functional work |
@@ -102,7 +102,7 @@
 | S1 #46 | **雲端軟體 FAST→SLOW→Inbox spoken 未驗** | 選型＋A2 後在核准的 live 環境執行；與實體 G2 分開 |
 | G2 #27/#35 | **實體 S3→AWS FAST 未驗** | A2+G1，**單一已知 Wi-Fi** 即可（不依賴 WiFi-W2b） |
 | G3a | **實體 S3→Agent→Inbox spoken 未驗** | S1 + G2 |
-| WiFi-W1→W1.5→W2a→W2b #36 | **均未實作** | H0/H1 Go/No-Go；W1.5 安全 BLE 官方 App PoC 後，W2b **BLE 或 SoftAP** 二擇一 |
+| WiFi-W1→W1.5→W2a→W2b #36 | **均未實作** | W1 已獲 limited implementation GO（#31 G0 functional PASS）；H0 UX 不阻擋 W1，Flash 仍須逐次核准；W1.5 安全 BLE 官方 App PoC 後，W2b **BLE 或 SoftAP** 二擇一 |
 | G3b | **多網路場景未驗** | G3a + 已驗證 provisioning 與 Wi-Fi switching |
 
 **隔離規則：** 一個 Gate 只變動一層；WiFi 開發固定經 G0 驗證的 local Relay；S1 不需實體裝置；G2 不需手機配網。裝置 Edge TLS 與 Relay→Agent private ACP WSS 是獨立 trust boundaries。

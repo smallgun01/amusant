@@ -1,7 +1,7 @@
 # Amusant — Cross-track Hardware / AWS Integration Roadmap
 
 > Active technical integration view refreshed 2026-10-16, subordinate to [WS1–WS4 delivery index](../project-management/workstreams.md), [PLAN](../../PLAN.md), [STATUS](../../STATUS.md), and accepted [SPEC](../../SPEC.md). #31 G0 device FAST functional PASS and #33 avatar physical PASS are **not** the same as formal H0 latency/battery UX acceptance. No Cloud/flash/live authorization is implied.
-> **H1 authorization:** local G0 functional PASS does not authorize firmware changes or flashing; require Owner H0 Go/No-Go, then separate approval for each firmware build/flash per #36.
+> **H1 authorization:** local G0 functional PASS does not authorize firmware changes or flashing; Owner 2026-10-17 granted limited W1 implementation/offline PR and W1.5 offline feasibility GO on the G0 functional baseline; formal H0 UX remains OPEN. Any real device flash/live test still requires separate approval per #36.
 
 ## Verified baseline vs outstanding gates
 
@@ -63,7 +63,7 @@ ECS A   --[existing private TLS/ACP NGINX sidecar, separate credentials]-----> E
 
 ## Ownership and next actions — current
 
-- **WS1** #31 G0 is functionally PASS; finish H0 audible-latency/battery/UX evidence (#14), Stage D PR #42 live validation, and only approved firmware WiFi-W1→W1.5→W2a→W2b #36.
+- **WS1** #31 G0 is functionally PASS; finish H0 audible-latency/battery/UX evidence (#14), Stage D PR #42 live validation, and W1 offline implementation now approved (#36); W1.5 offline feasibility may follow, while physical flash/live test and full H0 UX remain separate gates.
 - **WS2** #44/#48: time-box Agent selection B0; PR #45 is an isolated PoC, not production authorization.
 - **WS3** #27 G1 offline edge selection and #35 A2 design in parallel. After WS4 PR-C/D and owner B0, request separate live A2+S1 and G1+G2 approvals. Open narrow G3a, then G3b execution tickets when prerequisites pass.
 - **WS4** #30 PR-C/D are hard A2 live gates; monitor data/security/cost and rollback evidence. #26 remains the historical T4b bounded proof.
