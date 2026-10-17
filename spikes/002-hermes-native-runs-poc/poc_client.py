@@ -93,6 +93,8 @@ def main():
     get.add_argument("--run-id", required=True)
     get.add_argument("--wait", action="store_true")
     get.add_argument("--timeout", type=float, default=60.0)
+    stop = sub.add_parser("stop")
+    stop.add_argument("--run-id", required=True)
     sub.add_parser("stats")
     args = parser.parse_args()
     if args.command == "health":
@@ -111,6 +113,10 @@ def main():
             code, value = poll(run_id, args.timeout)
         print(json.dumps(summary(code, value), separators=(",", ":")))
         return 0
+    if args.command == "stop":
+        code, value = request_json(API_BASE, "POST", "/v1/runs/" + quote(args.run_id, safe="") + "/stop")
+        print(json.dumps(summary(code, value), separators=(",", ":")))
+        return 0 if code < 400 else 2
     code, value = run_status(args.run_id)
     if code < 400 and args.wait:
         code, value = poll(args.run_id, args.timeout)

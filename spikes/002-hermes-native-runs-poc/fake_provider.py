@@ -8,6 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 CLIENT_DELAY = float(os.environ.get("FAKE_CLIENT_DELAY_SECONDS", "4"))
 RESTART_DELAY = float(os.environ.get("FAKE_RESTART_DELAY_SECONDS", "40"))
+STOP_DELAY = float(os.environ.get("FAKE_STOP_DELAY_SECONDS", "40"))
 MARKER = "POC_RESULT: deterministic-local-stub"
 
 
@@ -87,7 +88,10 @@ class Handler(BaseHTTPRequestHandler):
                     latest_user_text = "\n".join(text_parts(message.get("content", "")))
         slow_case = "none"
         delay = 0.0
-        if "POC_HERMES_RESTART" in latest_user_text:
+        if "POC_STOP_CONTRACT" in latest_user_text:
+            slow_case = "stop_contract"
+            delay = STOP_DELAY
+        elif "POC_HERMES_RESTART" in latest_user_text:
             slow_case = "hermes_restart"
             delay = RESTART_DELAY
         elif "POC_CLIENT_RESTART" in latest_user_text:

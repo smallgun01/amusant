@@ -399,15 +399,15 @@ class DynamoDbTaskStore:
             and not task.get("dispatch_started_at")
             and str(task.get("expires_at") or "") <= now_iso
         ):
-            self._expire_unsubmitted(task)
-            self._release_slot_if_matches(task_id)
-            return self._ledger.get_item(self._client_id, _slot_sk(), consistent=True)
+            if self._expire_unsubmitted(task):
+                self._release_slot_if_matches(task_id)
+                return self._ledger.get_item(self._client_id, _slot_sk(), consistent=True)
         return slot
 
-    def _expire_unsubmitted(self, task: dict[str, object]) -> None:
+    def _expire_unsubmitted(self, task: dict[str, object]) -> bool:
         key = str(task["sk"])
         try:
-            self._ledger.update_item(
+            updated = self._ledger.update_item(
                 self._client_id,
                 key,
                 {
@@ -421,8 +421,16 @@ class DynamoDbTaskStore:
                 },
                 condition="pending_queued",
             )
+            return bool(updated and updated.get("status") == "failed" and updated.get("outbox_state") == "failed")
         except LedgerConditionFailed:
-            return
+            current = self._ledger.get_item(self._client_id, key, consistent=True)
+            return bool(
+                current
+                and (
+                    (current.get("status") == "completed" and current.get("outbox_state") == "sent")
+                    or (current.get("status") == "failed" and current.get("outbox_state") == "failed")
+                )
+            )
 
     def _slot_ready(self) -> bool:
         return self._ledger.get_item(self._client_id, _slot_ready_sk(), consistent=True) is not None
@@ -961,7 +969,12 @@ class DynamoDbTaskStore:
                     or current.get("status") != "running"
                 ):
                     raise AdmissionUnavailable("hermes_defer_state_unavailable")
-                effective_poll_iso = min(next_poll_iso, str(current["stop_requested_at"])) if current.get("stop_requested_at") else next_poll_iso
+                # A stop requested during an already-running poll gets one immediate
+                # wake; after a stop attempt/ack, keep the durable retry or GET schedule.
+                effective_poll_iso = next_poll_iso
+                if (current.get("stop_requested_at") and int(current.get("stop_attempts") or 0) == 0
+                        and not current.get("stop_accepted_at")):
+                    effective_poll_iso = min(next_poll_iso, str(current["stop_requested_at"]))
                 self._ledger.update_item(
                     self._client_id,
                     key,

@@ -14,13 +14,15 @@ A new Slow Task is accepted only when its authenticated owner has no outstanding
 | uncertain | Remote activity or persistence outcome cannot be confirmed | Held; operator reconciliation required |
 | terminal | Confirmed result/failure/stop, or a known pre-POST rejection/cancel | Released |
 
+A Hermes GET that confirms remote `completed` but has missing, partial, malformed, or unsupported output becomes failed with `hermes_invalid_result`; the untrusted payload is never stored or spoken, and the confirmed terminal Run releases the owner slot. A transport failure or expired/unresolved Run remains uncertain and busy.
+
 A distinct admission while busy returns structured slow_busy and may include active_task_id; it creates no task, outbox, or Inbox row and sends no Hermes POST. Duplicate trusted call identity plus identical payload is resolved before the busy check and returns its original receipt; a changed payload remains a conflict. Busy applies to new Slow Tasks, not FAST conversation, status lookup, or cancel.
 
 ## Cancellation and Hermes contract boundary
 
 FAST exposes an owner-scoped cancel_task tool with only task_id as model-supplied input. Relay derives the owner from authenticated server identity. The tool records cancellation durably and reports stopping; it does not assert that the remote Run has stopped.
 
-For a known Run, Relay proposes the backward-compatible Hermes operation POST /v1/runs/{run_id}/stop using the existing bearer/session headers, then polls GET /v1/runs/{run_id}. A successful stop response is an acknowledgement only. Only a terminal GET result releases the reservation. Existing /v1/runs submission and GET behavior remain unchanged. This repository tests the Relay client against a fake provider; it does **not** prove that a Hermes server implements this stop endpoint. No firmware/client change is included.
+For a known Run, Relay sends POST /v1/runs/{run_id}/stop with the existing bearer/session headers, then polls GET /v1/runs/{run_id}. Source was checked at Hermes tag v2026.9.24, commit f97608f178d1ffeca59860195ab7da295f7c8e5f (pinned image docker.io/nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7; local OCI revision label matches the source commit, but a signed build attestation was not independently checked). In gateway/platforms/api_server_runs.py, the active Run stop handler returns HTTP 200 with status=stopping; already-terminal Runs return their current status, and a nonterminal Run without an active in-process agent/task returns 409 run_not_active. Any 2xx is persisted only as stop-request acknowledgement, including an empty 202; only a terminal GET releases the reservation. The focused Phase 2B gate exercises the pinned image; until that gate passes, runtime compatibility remains pending. No firmware/client change is included.
 
 Timeout follows the same path: retain the #58A persisted Run deadline, record run_deadline as the stop reason, request stop, and keep the slot through bounded retry/backoff and GET confirmation. If stop grace/retry bounds are exhausted, persist uncertain and require operator action; elapsed time alone never unlocks the owner.
 

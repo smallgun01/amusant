@@ -335,15 +335,17 @@ class HermesRunsExecutor:
 
         def terminal(state: str, payload: dict[str, Any]) -> ExecutionOutcome | None:
             if state in _TERMINAL_SUCCESS:
+                # The API has confirmed a terminal remote Run. Invalid output is
+                # a local result failure, not evidence of possible remote activity.
                 if payload.get("partial") is True or payload.get("interrupted") is True:
-                    return ExecutionOutcome(status="uncertain", code="hermes_result_unconfirmed")
+                    return ExecutionOutcome(status="failed", code="hermes_invalid_result")
                 output = _extract_output(payload)
                 if output is None:
-                    return ExecutionOutcome(status="uncertain", code="hermes_result_unconfirmed")
+                    return ExecutionOutcome(status="failed", code="hermes_invalid_result")
                 try:
                     result = parse_hermes_run_result(output)
                 except ValueError:
-                    return ExecutionOutcome(status="uncertain", code="hermes_result_unconfirmed")
+                    return ExecutionOutcome(status="failed", code="hermes_invalid_result")
                 return ExecutionOutcome(status="completed", result=result)
             if state in _TERMINAL_FAILURE:
                 return ExecutionOutcome(status="failed", code=f"hermes_{state}")
@@ -396,18 +398,13 @@ class HermesRunsExecutor:
                 if stop_http >= 400 and stop_http not in {404, 409, 410}:
                     await persist_stop_state(accepted_at=stop_accepted_at, next_at=self._clock())
                     return ExecutionOutcome(status="uncertain", code="hermes_stop_rejected")
-                if stop_http < 400:
-                    stop_status = stop_payload.get("status")
-                    if isinstance(stop_status, str):
-                        stop_status = stop_status.lower()
-                        terminal_result = terminal(stop_status, stop_payload)
-                        if terminal_result is not None:
-                            return terminal_result
-                        if stop_status not in _NONTERMINAL:
-                            await persist_stop_state(accepted_at=stop_accepted_at, next_at=self._clock())
-                            return ExecutionOutcome(status="uncertain", code="hermes_stop_unconfirmed")
-                        stop_accepted_at = self._clock()
-                        await persist_stop_state(accepted_at=stop_accepted_at, next_at=stop_accepted_at)
+                if 200 <= stop_http < 300:
+                    # Any 2xx confirms that the stop request was accepted, not that
+                    # the Run terminated. Hermes v2026.9.24 returns 200 with
+                    # {status: stopping}; tolerate 202/empty JSON too. Only GET
+                    # status below may establish the terminal outcome.
+                    stop_accepted_at = self._clock()
+                    await persist_stop_state(accepted_at=stop_accepted_at, next_at=stop_accepted_at)
 
             try:
                 status_code, payload = await asyncio.to_thread(
@@ -506,15 +503,18 @@ class HermesRunsExecutor:
                 return ExecutionOutcome(status="uncertain", code="hermes_result_unconfirmed")
             state = state.lower()
             if state in _TERMINAL_SUCCESS:
+                # A confirmed remote terminal with an invalid result is safely
+                # terminal but not speakable; Dispatcher records failed and frees
+                # the slot without storing or reading the untrusted payload.
                 if payload.get("partial") is True or payload.get("interrupted") is True:
-                    return ExecutionOutcome(status="uncertain", code="hermes_result_unconfirmed")
+                    return ExecutionOutcome(status="failed", code="hermes_invalid_result")
                 output = _extract_output(payload)
                 if output is None:
-                    return ExecutionOutcome(status="uncertain", code="hermes_result_unconfirmed")
+                    return ExecutionOutcome(status="failed", code="hermes_invalid_result")
                 try:
                     result = parse_hermes_run_result(output)
                 except ValueError:
-                    return ExecutionOutcome(status="uncertain", code="hermes_result_unconfirmed")
+                    return ExecutionOutcome(status="failed", code="hermes_invalid_result")
                 return ExecutionOutcome(status="completed", result=result)
             if state in _TERMINAL_FAILURE:
                 return ExecutionOutcome(status="failed", code=f"hermes_{state}")

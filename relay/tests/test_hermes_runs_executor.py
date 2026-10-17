@@ -278,7 +278,8 @@ class HermesRunsExecutorTests(unittest.TestCase):
 
         no_result = self.make_executor(lambda *args: (200, {"status": "completed"}), [])
         outcome = asyncio.run(no_result.execute(self.make_task(run_id="run-3")))
-        self.assertEqual((outcome.status, outcome.code), ("uncertain", "hermes_result_unconfirmed"))
+        self.assertEqual((outcome.status, outcome.code), ("failed", "hermes_invalid_result"))
+        self.assertIsNone(outcome.result)
 
         denied_status = self.make_executor(lambda *args: (403, {"error": "forbidden"}), [])
         denied = asyncio.run(denied_status.execute(self.make_task(run_id="run-4")))
@@ -309,16 +310,16 @@ class HermesRunsExecutorTests(unittest.TestCase):
         self.assertEqual(posts[0]["Idempotency-Key"], "task-a")
         self.assertEqual(posts[1]["Idempotency-Key"], "task-b")
 
-    def test_completed_truncated_json_is_not_reported_or_spoken_as_completed(self):
+    def test_completed_truncated_json_is_failed_without_speech(self):
         output = '{"schema_version":1,"speak":"unfinished'
         executor = self.make_executor(
             lambda *args: (200, {"status": "completed", "output": output}), []
         )
         outcome = asyncio.run(executor.execute(self.make_task(run_id="run-truncated-json")))
-        self.assertEqual((outcome.status, outcome.code), ("uncertain", "hermes_result_unconfirmed"))
+        self.assertEqual((outcome.status, outcome.code), ("failed", "hermes_invalid_result"))
         self.assertIsNone(outcome.result)
 
-    def test_completed_partial_payload_is_not_reported_as_completed(self):
+    def test_completed_partial_payload_is_failed_without_speech(self):
         result = json.dumps({
             "schema_version": 1,
             "speak": "Partial result.",
@@ -329,7 +330,8 @@ class HermesRunsExecutorTests(unittest.TestCase):
             lambda *args: (200, {"status": "completed", "partial": True, "output": result}), []
         )
         outcome = asyncio.run(executor.execute(self.make_task(run_id="run-partial")))
-        self.assertEqual((outcome.status, outcome.code), ("uncertain", "hermes_result_unconfirmed"))
+        self.assertEqual((outcome.status, outcome.code), ("failed", "hermes_invalid_result"))
+        self.assertIsNone(outcome.result)
 
     def test_tool_failure_does_not_publish_partial_output(self):
         executor = self.make_executor(
@@ -397,6 +399,8 @@ class HermesRunsExecutorTests(unittest.TestCase):
         seed_config = (repository / "spikes/002-hermes-native-runs-poc/seed_config.py").read_text()
         run_poc = (repository / "spikes/002-hermes-native-runs-poc/run_poc.py").read_text()
         run_phase2b = (repository / "spikes/002-hermes-native-runs-poc/run_phase2b.py").read_text()
+        fake_provider = (repository / "spikes/002-hermes-native-runs-poc/fake_provider.py").read_text()
+        poc_client = (repository / "spikes/002-hermes-native-runs-poc/poc_client.py").read_text()
         self.assertIn("internal: true", compose)
         self.assertNotRegex(compose, r"(?m)^\s*ports\s*:")
         self.assertNotIn("/var/run/docker.sock", compose)
@@ -405,13 +409,22 @@ class HermesRunsExecutorTests(unittest.TestCase):
         self.assertNotIn("amusant-hermes-runs-p2a-v4-home", compose)
         self.assertIn('PROJECT = "amusant-hermes-runs-h1-v1"', run_poc)
         self.assertIn('PROJECT = "amusant-hermes-runs-h1-v1"', run_phase2b)
+        self.assertIn("POC_STOP_CONTRACT", fake_provider)
+        self.assertIn('stop = sub.add_parser("stop")', poc_client)
+        self.assertIn('gates["pinned_stop_contract"]', run_phase2b)
+        self.assertIn("v2026.9.24", run_phase2b)
         for timing_env in (
             "POC_RUN_DEADLINE_SECONDS",
             "POC_POLL_CYCLE_SECONDS",
             "POC_HTTP_TIMEOUT_SECONDS",
             "POC_POLL_INTERVAL_SECONDS",
+            "POC_STOP_GRACE_SECONDS",
+            "POC_STOP_MAX_ATTEMPTS",
+            "POC_STOP_RETRY_BASE_SECONDS",
+            "POC_STOP_RETRY_MAX_SECONDS",
         ):
             self.assertIn(f'COMPOSE_ENV["{timing_env}"]', run_poc)
+            self.assertIn(f'COMPOSE_ENV["{timing_env}"]', run_phase2b)
         self.assertIn("agent:\n  disabled_toolsets:\n", config)
         for tool in ("terminal", "file", "code_execution", "browser", "computer_use", "homeassistant"):
             self.assertIn(f"    - {tool}\n", config)

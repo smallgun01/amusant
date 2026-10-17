@@ -50,6 +50,20 @@ def _store(ledger=None, max_pending_tasks=8):
     return backend, DynamoDbTaskStore(backend, client_id=CLIENT, max_pending_tasks=max_pending_tasks)
 
 
+class _ExpiryClaimBarrierLedger(InMemoryDynamoLedger):
+    def __init__(self):
+        super().__init__()
+        self.expiry_attempted = threading.Event()
+        self.allow_expiry = threading.Event()
+
+    def update_item(self, pk, sk, patch, *, condition):
+        if patch.get("last_error") == "slow_queue_expired":
+            self.expiry_attempted.set()
+            if not self.allow_expiry.wait(timeout=5):
+                raise TimeoutError("expiry race test barrier timed out")
+        return super().update_item(pk, sk, patch, condition=condition)
+
+
 class DynamoDbTaskStoreTests(unittest.TestCase):
     def test_latest_lookup_uses_created_at_not_task_id(self):
         ledger, store = _store()
@@ -73,6 +87,67 @@ class DynamoDbTaskStoreTests(unittest.TestCase):
             store.admit(_request(earlier_id, created_at=NOW, call_id="c-early", turn_id=1))
         self.assertEqual(raised.exception.active_task_id, later_id)
         self.assertEqual(store.pending_dispatch_count(), 1)
+
+    def test_expiry_vs_claim_race_never_releases_live_owner_slot(self):
+        ledger = _ExpiryClaimBarrierLedger()
+        first_store = DynamoDbTaskStore(ledger, client_id=CLIENT, max_pending_tasks=8)
+        second_store = DynamoDbTaskStore(ledger, client_id=CLIENT, max_pending_tasks=8)
+        task_id = str(uuid4())
+        active = replace(
+            _request(task_id),
+            expires_at=NOW + timedelta(seconds=1),
+        )
+        first_store.admit(active)
+        next_task_id = str(uuid4())
+        next_request = replace(
+            _request(next_task_id, call_id="race-next", turn_id=2, created_at=NOW + timedelta(seconds=2)),
+        )
+        outcome = []
+
+        def admit_after_expiry_check():
+            try:
+                outcome.append(first_store.admit(next_request))
+            except Exception as exc:
+                outcome.append(exc)
+
+        expirer = threading.Thread(target=admit_after_expiry_check)
+        expirer.start()
+        self.assertTrue(ledger.expiry_attempted.wait(timeout=3))
+        claimed = second_store.claim_due(now=NOW, lease_seconds=30, limit=1)
+        self.assertEqual([row.task_id for row in claimed], [task_id])
+        ledger.allow_expiry.set()
+        expirer.join(timeout=3)
+
+        self.assertFalse(expirer.is_alive())
+        self.assertEqual(len(outcome), 1)
+        self.assertIsInstance(outcome[0], AdmissionBusy)
+        slot = ledger.get_item(CLIENT, "SLOT#SLOW", consistent=True)
+        task = ledger.get_item(CLIENT, "TASK#" + task_id, consistent=True)
+        self.assertEqual(slot["active_task_id"], task_id)
+        self.assertEqual((task["status"], task["outbox_state"]), ("running", "claimed"))
+        self.assertIsNone(ledger.get_item(CLIENT, "TASK#" + next_task_id, consistent=True))
+
+    def test_confirmed_expiry_transition_releases_slot_for_next_admission(self):
+        ledger, store = _store()
+        expired_id = str(uuid4())
+        expired_request = replace(
+            _request(expired_id),
+            expires_at=NOW + timedelta(seconds=1),
+        )
+        store.admit(expired_request)
+        new_id = str(uuid4())
+        new_request = replace(
+            _request(new_id, call_id="after-expiry", turn_id=2, created_at=NOW + timedelta(seconds=2)),
+        )
+
+        receipt = store.admit(new_request)
+        self.assertEqual(receipt.task_id, new_id)
+        self.assertFalse(receipt.duplicate)
+        expired = ledger.get_item(CLIENT, "TASK#" + expired_id, consistent=True)
+        self.assertEqual((expired["status"], expired["outbox_state"], expired["last_error"]),
+                         ("failed", "failed", "slow_queue_expired"))
+        slot = ledger.get_item(CLIENT, "SLOT#SLOW", consistent=True)
+        self.assertEqual(slot["active_task_id"], new_id)
 
     def test_pending_capacity_is_replaced_by_single_flight_busy(self):
         ledger, store = _store(max_pending_tasks=1)

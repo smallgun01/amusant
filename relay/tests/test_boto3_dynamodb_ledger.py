@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+import threading
 from datetime import datetime, timedelta, timezone
 import unittest
 from uuid import uuid4
@@ -118,6 +120,24 @@ class _QueryCaptureClient:
         return getattr(self._inner, name)
 
 
+class _ExpiryUpdateBarrierClient:
+    def __init__(self, inner):
+        self._inner = inner
+        self.expiry_update_started = threading.Event()
+        self.allow_expiry_update = threading.Event()
+
+    def update_item(self, **kwargs):
+        values = kwargs.get("ExpressionAttributeValues") or {}
+        if any(value == {"S": "slow_queue_expired"} for value in values.values()):
+            self.expiry_update_started.set()
+            if not self.allow_expiry_update.wait(timeout=5):
+                raise TimeoutError("expiry race test barrier timed out")
+        return self._inner.update_item(**kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
 class Boto3DynamoLedgerTests(unittest.TestCase):
     def test_has_client_tasks_uses_strong_partition_query(self):
         try:
@@ -204,6 +224,129 @@ class Boto3DynamoLedgerTests(unittest.TestCase):
                 ConsistentRead=True,
             )["Item"]
             self.assertEqual(slot["active_task_id"]["S"], accepted[0])
+
+    def test_two_independent_moto_stores_expiry_claim_race_keeps_live_slot(self):
+        try:
+            import boto3
+            from moto import mock_aws
+        except ImportError:
+            self.skipTest("moto/boto3 not installed")
+        with mock_aws():
+            client = boto3.client("dynamodb", region_name="us-east-1")
+            _create_table(client)
+            from relay.boto3_dynamodb_ledger import Boto3DynamoLedger
+
+            barrier = _ExpiryUpdateBarrierClient(client)
+            expirer = DynamoDbTaskStore(
+                Boto3DynamoLedger(barrier, TABLE), client_id=CLIENT, max_pending_tasks=8
+            )
+            claimer = DynamoDbTaskStore(
+                Boto3DynamoLedger(client, TABLE), client_id=CLIENT, max_pending_tasks=8
+            )
+            task_id = str(uuid4())
+            active = TaskAdmissionRequest(
+                task_id=task_id,
+                client_id=CLIENT,
+                conversation_id="expiry-claim-race",
+                turn_id=1,
+                call_id="expiring-task",
+                task="A task at the queue deadline",
+                task_kind="research",
+                backend="server-selected",
+                created_at=NOW,
+                expires_at=NOW + timedelta(seconds=1),
+                executor_kind="hermes_runs",
+            )
+            expirer.admit(active)
+            next_id = str(uuid4())
+            next_request = TaskAdmissionRequest(
+                task_id=next_id,
+                client_id=CLIENT,
+                conversation_id="expiry-claim-race-next",
+                turn_id=2,
+                call_id="next-task",
+                task="A distinct task",
+                task_kind="research",
+                backend="server-selected",
+                created_at=NOW + timedelta(seconds=2),
+                expires_at=NOW + timedelta(minutes=10),
+                executor_kind="hermes_runs",
+            )
+
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(expirer.admit, next_request)
+                self.assertTrue(barrier.expiry_update_started.wait(timeout=3))
+                claimed = claimer.claim_due(now=NOW, lease_seconds=30, limit=1)
+                self.assertEqual([row.task_id for row in claimed], [task_id])
+                barrier.allow_expiry_update.set()
+                with self.assertRaises(AdmissionBusy):
+                    future.result(timeout=3)
+
+            slot = client.get_item(
+                TableName=TABLE,
+                Key={"pk": {"S": CLIENT}, "sk": {"S": "SLOT#SLOW"}},
+                ConsistentRead=True,
+            )["Item"]
+            active_item = client.get_item(
+                TableName=TABLE,
+                Key={"pk": {"S": CLIENT}, "sk": {"S": "TASK#" + task_id}},
+                ConsistentRead=True,
+            )["Item"]
+            next_item = client.get_item(
+                TableName=TABLE,
+                Key={"pk": {"S": CLIENT}, "sk": {"S": "TASK#" + next_id}},
+                ConsistentRead=True,
+            ).get("Item")
+            self.assertEqual(slot["active_task_id"]["S"], task_id)
+            self.assertEqual((active_item["status"]["S"], active_item["outbox_state"]["S"]), ("running", "claimed"))
+            self.assertIsNone(next_item)
+
+    def test_confirmed_expiry_transition_releases_slot_before_new_admission(self):
+        try:
+            import boto3
+            from moto import mock_aws
+        except ImportError:
+            self.skipTest("moto/boto3 not installed")
+        with mock_aws():
+            client = boto3.client("dynamodb", region_name="us-east-1")
+            _create_table(client)
+            from relay.boto3_dynamodb_ledger import Boto3DynamoLedger
+
+            store = DynamoDbTaskStore(Boto3DynamoLedger(client, TABLE), client_id=CLIENT, max_pending_tasks=8)
+            expired_id = str(uuid4())
+            expired_request = replace(
+                _admit_request(expired_id),
+                expires_at=NOW + timedelta(seconds=1),
+                executor_kind="hermes_runs",
+            )
+            store.admit(expired_request)
+            new_id = str(uuid4())
+            next_request = replace(
+                _admit_request(new_id),
+                conversation_id="after-expiry",
+                turn_id=2,
+                call_id="after-expiry",
+                created_at=NOW + timedelta(seconds=2),
+                expires_at=NOW + timedelta(minutes=10),
+                executor_kind="hermes_runs",
+            )
+
+            receipt = store.admit(next_request)
+            self.assertEqual(receipt.task_id, new_id)
+            self.assertFalse(receipt.duplicate)
+            expired = client.get_item(
+                TableName=TABLE,
+                Key={"pk": {"S": CLIENT}, "sk": {"S": "TASK#" + expired_id}},
+                ConsistentRead=True,
+            )["Item"]
+            self.assertEqual((expired["status"]["S"], expired["outbox_state"]["S"], expired["last_error"]["S"]),
+                             ("failed", "failed", "slow_queue_expired"))
+            slot = client.get_item(
+                TableName=TABLE,
+                Key={"pk": {"S": CLIENT}, "sk": {"S": "SLOT#SLOW"}},
+                ConsistentRead=True,
+            )["Item"]
+            self.assertEqual(slot["active_task_id"]["S"], new_id)
 
     def test_more_than_100_retained_terminal_rows_do_not_block_new_admission(self):
         try:

@@ -2,16 +2,21 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
 import sqlite3
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from uuid import uuid4
 
 from relay.dispatcher import AsyncDispatcher
 from relay.dynamodb_task_store import DynamoDbTaskStore, InMemoryDynamoLedger
+from relay.boto3_dynamodb_ledger import Boto3DynamoLedger
 from relay.hermes_runs_executor import HermesRunsExecutor
 from relay.task_store import (
     AdmissionBusy,
@@ -123,6 +128,151 @@ def seed_legacy_dynamo_task(
     ledger.items[(CLIENT, "TASK#" + task_id)] = item
 
 
+class _ScriptedHermesHandler(BaseHTTPRequestHandler):
+    def log_message(self, _format, *_args):
+        return
+
+    def _respond(self, status, payload):
+        data = b"" if payload is None else json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        if length:
+            self.rfile.read(length)
+        with self.server.script_lock:
+            self.server.script_requests.append((
+                "POST", self.path, self.headers.get("Authorization"),
+                self.headers.get("X-Hermes-Session-Key"),
+            ))
+            if self.path.endswith("/stop") and self.server.stop_responses:
+                response = self.server.stop_responses.pop(0)
+            else:
+                response = (404, {"status": "not_found"})
+            self.server.script_responses.append(("POST", self.path, response[0], response[1]))
+        self._respond(*response)
+
+    def do_GET(self):
+        with self.server.script_lock:
+            self.server.script_requests.append((
+                "GET", self.path, self.headers.get("Authorization"),
+                self.headers.get("X-Hermes-Session-Key"),
+            ))
+            response = self.server.get_responses.pop(0) if self.server.get_responses else (200, {"status": "running"})
+            self.server.script_responses.append(("GET", self.path, response[0], response[1]))
+        self._respond(*response)
+
+
+@contextmanager
+def scripted_hermes_http_server(stop_responses, get_responses):
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _ScriptedHermesHandler)
+    server.stop_responses = list(stop_responses)
+    server.get_responses = list(get_responses)
+    server.script_requests = []
+    server.script_responses = []
+    server.script_lock = threading.Lock()
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server, f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+
+
+def stop_executor(store, url, clock, *, stop_grace_seconds=60.0, stop_max_attempts=4,
+                  stop_retry_base_seconds=0.05, stop_retry_max_seconds=0.1):
+    return HermesRunsExecutor(
+        url=url,
+        api_key="local-test-api-key-123",
+        save_backend_run_id=store.save_backend_run_id,
+        update_poll_state=store.update_hermes_poll_state,
+        update_stop_state=store.update_hermes_stop_state,
+        run_deadline_seconds=600,
+        poll_cycle_seconds=1,
+        http_timeout_seconds=1,
+        poll_interval_seconds=0.01,
+        stop_grace_seconds=stop_grace_seconds,
+        stop_max_attempts=stop_max_attempts,
+        stop_retry_base_seconds=stop_retry_base_seconds,
+        stop_retry_max_seconds=stop_retry_max_seconds,
+        allow_plaintext=True,
+        clock=lambda: clock[0],
+    )
+
+
+def seed_stopping_sqlite_task(store: SQLiteTaskStore, task_id: str, run_id: str, now: datetime) -> None:
+    store.admit(request(task_id))
+    claimed = store.claim_due(now=now, lease_seconds=30, limit=1)
+    assert claimed and claimed[0].task_id == task_id
+    store.mark_dispatch_started(task_id, now=now)
+    deadline = now + timedelta(minutes=10)
+    store.save_backend_run_id(
+        task_id,
+        run_id,
+        run_started_at=now,
+        run_deadline_at=deadline,
+        next_poll_at=now,
+    )
+    store.defer_hermes_run(
+        task_id,
+        backend_run_id=run_id,
+        run_started_at=now,
+        run_deadline_at=deadline,
+        next_poll_at=now,
+        poll_attempts=0,
+    )
+    receipt = store.request_cancel(client_id=CLIENT, task_id=task_id, now=now)
+    assert receipt.status == "stopping"
+
+
+def dispatch_stop_cycle(database_path: Path, url: str, clock: list[datetime], **stop_options):
+    store = SQLiteTaskStore(database_path=database_path, max_pending_tasks=8)
+    store.recover_after_restart()
+    executor = stop_executor(store, url, clock, **stop_options)
+    handled = asyncio.run(
+        AsyncDispatcher(store, executor, max_attempts=1, now=lambda: clock[0]).dispatch_available()
+    )
+    return store, handled
+
+
+def dispatch_invalid_completed_result(store, task_id: str) -> tuple[int, list[tuple[str, str]]]:
+    calls: list[tuple[str, str]] = []
+    malformed_output = '{"schema_version":1,"speak":"unfinished'
+
+    def request_json(method, path, body, headers):
+        calls.append((method, path))
+        if method == "POST":
+            return 202, {"run_id": "run-invalid-result-" + task_id[:8]}
+        return 200, {"status": "completed", "output": malformed_output}
+
+    executor = HermesRunsExecutor(
+        url="http://127.0.0.1:8642",
+        api_key="local-test-api-key-123",
+        save_backend_run_id=store.save_backend_run_id,
+        update_poll_state=store.update_hermes_poll_state,
+        update_stop_state=store.update_hermes_stop_state,
+        run_deadline_seconds=60,
+        poll_cycle_seconds=1,
+        http_timeout_seconds=0.05,
+        poll_interval_seconds=0.01,
+        stop_grace_seconds=30,
+        stop_max_attempts=3,
+        stop_retry_base_seconds=0.01,
+        stop_retry_max_seconds=0.1,
+        allow_plaintext=True,
+        clock=lambda: NOW,
+        request_json=request_json,
+    )
+    handled = asyncio.run(AsyncDispatcher(store, executor, max_attempts=1, now=lambda: NOW).dispatch_available())
+    return handled, calls
+
+
 def complete_hermes_task(store, task_id: str, client_id: str = CLIENT) -> None:
     store.admit(request(task_id, client_id=client_id))
     store.claim_due(now=NOW, lease_seconds=30)
@@ -228,6 +378,175 @@ class SQLiteHermesMappingTests(unittest.TestCase):
 
     def store(self):
         return SQLiteTaskStore(database_path=self.db, max_pending_tasks=8)
+
+    def test_stop_http_2xx_ack_variants_resume_get_only_across_restarts(self):
+        acknowledgements = (
+            (200, {"run_id": "run-stop-http", "status": "stopping"}),
+            (200, {}),
+            (202, {"run_id": "run-stop-http", "status": "stopping"}),
+            (202, {}),
+            (202, None),
+        )
+        for stop_response in acknowledgements:
+            with self.subTest(status=stop_response[0], body=stop_response[1]), tempfile.TemporaryDirectory() as temp:
+                database_path = Path(temp) / "stop.sqlite3"
+                task_id = str(uuid4())
+                run_id = "run-stop-http"
+                clock = [NOW]
+                seed_stopping_sqlite_task(
+                    SQLiteTaskStore(database_path=database_path, max_pending_tasks=8),
+                    task_id,
+                    run_id,
+                    NOW,
+                )
+                with scripted_hermes_http_server(
+                    [stop_response],
+                    [(200, {"status": "running"}), (200, {"status": "stopping"}), (200, {"status": "cancelled"})],
+                ) as (server, url):
+                    first, handled = dispatch_stop_cycle(database_path, url, clock)
+                    self.assertEqual(handled, 1)
+                    row = first.get_by_task_id(task_id)
+                    self.assertEqual(row["stop_attempts"], 1)
+                    self.assertEqual(row["stop_accepted_at"], NOW.isoformat())
+                    self.assertGreater(datetime.fromisoformat(row["next_poll_at"]), NOW)
+                    self.assertEqual((row["status"], row["dispatch_state"]), ("running", "pending"))
+
+                    # A fresh TaskStore/Dispatcher/Executor simulates each Relay restart.
+                    clock[0] = datetime.fromisoformat(row["next_poll_at"]) + timedelta(milliseconds=1)
+                    second, handled = dispatch_stop_cycle(database_path, url, clock)
+                    self.assertEqual(handled, 1)
+                    row = second.get_by_task_id(task_id)
+                    self.assertEqual(row["stop_accepted_at"], NOW.isoformat())
+                    self.assertGreater(datetime.fromisoformat(row["next_poll_at"]), clock[0])
+
+                    clock[0] = datetime.fromisoformat(row["next_poll_at"]) + timedelta(milliseconds=1)
+                    final, handled = dispatch_stop_cycle(database_path, url, clock)
+                    self.assertEqual(handled, 1)
+                    terminal_row = final.get_by_task_id(task_id)
+                    self.assertEqual((terminal_row["status"], terminal_row["last_error"]), ("failed", "hermes_cancelled"))
+                    inbox = final.lookup_inbox(client_id=CLIENT, task_id=task_id, now=clock[0])
+                    self.assertEqual(inbox["status"], "cancelled")
+                    self.assertNotIn("speak", inbox)
+                    methods = [method for method, *_ in server.script_requests]
+                    self.assertEqual(methods, ["POST", "GET", "GET", "GET"])
+                    self.assertEqual(server.script_responses[0], ("POST", "/v1/runs/run-stop-http/stop", *stop_response))
+                    self.assertEqual([body.get("status") for method, _, _, body in server.script_responses if method == "GET"], ["running", "stopping", "cancelled"])
+                    self.assertTrue(all(isinstance(row[2], str) and row[2].startswith("Bearer ") for row in server.script_requests))
+                    self.assertTrue(all(row[3] for row in server.script_requests))
+
+                    next_request = replace(
+                        request(str(uuid4())),
+                        conversation_id="after-http-stop-terminal",
+                        turn_id=2,
+                        call_id="after-http-stop-terminal-call",
+                    )
+                    self.assertFalse(final.admit(next_request).duplicate)
+
+    def test_stop_http_retry_respects_backoff_and_stops_after_get_terminal(self):
+        with tempfile.TemporaryDirectory() as temp:
+            database_path = Path(temp) / "stop-retry.sqlite3"
+            task_id = str(uuid4())
+            clock = [NOW]
+            seed_stopping_sqlite_task(
+                SQLiteTaskStore(database_path=database_path, max_pending_tasks=8),
+                task_id,
+                "run-stop-retry",
+                NOW,
+            )
+            with scripted_hermes_http_server(
+                [(429, {"status": "rate_limited"}), (202, {})],
+                [(200, {"status": "running"}), (200, {"status": "cancelled"})],
+            ) as (server, url):
+                first, handled = dispatch_stop_cycle(
+                    database_path, url, clock,
+                    stop_grace_seconds=60,
+                    stop_retry_base_seconds=0.05,
+                    stop_retry_max_seconds=0.1,
+                )
+                self.assertEqual(handled, 1)
+                row = first.get_by_task_id(task_id)
+                self.assertEqual(row["stop_attempts"], 1)
+                self.assertIsNone(row["stop_accepted_at"])
+                self.assertEqual(datetime.fromisoformat(row["next_poll_at"]), NOW + timedelta(seconds=0.05))
+                self.assertEqual([method for method, *_ in server.script_requests], ["POST"])
+
+                clock[0] = NOW + timedelta(seconds=0.02)
+                _, handled = dispatch_stop_cycle(
+                    database_path, url, clock,
+                    stop_grace_seconds=60,
+                    stop_retry_base_seconds=0.05,
+                    stop_retry_max_seconds=0.1,
+                )
+                self.assertEqual(handled, 0)
+                self.assertEqual([method for method, *_ in server.script_requests], ["POST"])
+
+                clock[0] = NOW + timedelta(seconds=0.06)
+                second, handled = dispatch_stop_cycle(
+                    database_path, url, clock,
+                    stop_grace_seconds=60,
+                    stop_retry_base_seconds=0.05,
+                    stop_retry_max_seconds=0.1,
+                )
+                self.assertEqual(handled, 1)
+                row = second.get_by_task_id(task_id)
+                self.assertEqual(row["stop_attempts"], 2)
+                self.assertEqual(row["stop_accepted_at"], clock[0].isoformat())
+                self.assertGreater(datetime.fromisoformat(row["next_poll_at"]), clock[0])
+
+                clock[0] = datetime.fromisoformat(row["next_poll_at"]) + timedelta(milliseconds=1)
+                final, handled = dispatch_stop_cycle(
+                    database_path, url, clock,
+                    stop_grace_seconds=60,
+                    stop_retry_base_seconds=0.05,
+                    stop_retry_max_seconds=0.1,
+                )
+                self.assertEqual(handled, 1)
+                self.assertEqual(final.get_by_task_id(task_id)["last_error"], "hermes_cancelled")
+                self.assertEqual([method for method, *_ in server.script_requests], ["POST", "POST", "GET", "GET"])
+
+    def test_stop_http_grace_expiry_remains_uncertain_and_keeps_owner_busy(self):
+        with tempfile.TemporaryDirectory() as temp:
+            database_path = Path(temp) / "stop-grace.sqlite3"
+            task_id = str(uuid4())
+            clock = [NOW]
+            seed_stopping_sqlite_task(
+                SQLiteTaskStore(database_path=database_path, max_pending_tasks=8),
+                task_id,
+                "run-stop-grace",
+                NOW,
+            )
+            with scripted_hermes_http_server(
+                [(503, {"status": "unavailable"})],
+                [(200, {"status": "running"})],
+            ) as (server, url):
+                first, handled = dispatch_stop_cycle(
+                    database_path, url, clock,
+                    stop_grace_seconds=0.02,
+                    stop_retry_base_seconds=0.05,
+                    stop_retry_max_seconds=0.1,
+                )
+                self.assertEqual(handled, 1)
+                row = first.get_by_task_id(task_id)
+                self.assertEqual(datetime.fromisoformat(row["next_poll_at"]), NOW + timedelta(seconds=0.05))
+
+                clock[0] = NOW + timedelta(seconds=0.06)
+                final, handled = dispatch_stop_cycle(
+                    database_path, url, clock,
+                    stop_grace_seconds=0.02,
+                    stop_retry_base_seconds=0.05,
+                    stop_retry_max_seconds=0.1,
+                )
+                self.assertEqual(handled, 1)
+                row = final.get_by_task_id(task_id)
+                self.assertEqual((row["status"], row["last_error"]), ("uncertain", "hermes_stop_unconfirmed"))
+                self.assertEqual([method for method, *_ in server.script_requests], ["POST", "GET"])
+                with self.assertRaises(AdmissionBusy):
+                    final.admit(replace(
+                        request(str(uuid4())),
+                        conversation_id="blocked-after-stop-grace",
+                        turn_id=2,
+                        call_id="blocked-after-stop-grace-call",
+                    ))
 
     def test_backend_run_id_survives_store_reopen_and_recovery(self):
         first = self.store()
@@ -364,6 +683,30 @@ class SQLiteHermesMappingTests(unittest.TestCase):
         finally:
             connection.close()
         self.assertEqual(audit, ("operator-1", "INC-61-no-run-check", "no_remote_run"))
+        self.assertFalse(store.admit(next_request).duplicate)
+
+    def test_sqlite_confirmed_completed_invalid_result_fails_and_releases_owner(self):
+        store = self.store()
+        task_id = str(uuid4())
+        store.admit(request(task_id))
+        handled, calls = dispatch_invalid_completed_result(store, task_id)
+
+        self.assertEqual(handled, 1)
+        self.assertEqual([method for method, _ in calls], ["POST", "GET"])
+        row = store.get_by_task_id(task_id)
+        self.assertEqual((row["status"], row["last_error"]), ("failed", "hermes_invalid_result"))
+        self.assertIsNone(store.get_result(task_id))
+        inbox = store.lookup_inbox(client_id=CLIENT, task_id=task_id, now=NOW)
+        self.assertEqual((inbox["status"], inbox["code"]), ("failed", "hermes_invalid_result"))
+        self.assertNotIn("speak", inbox)
+        self.assertNotIn("speak_now", inbox)
+
+        next_request = replace(
+            request(str(uuid4())),
+            conversation_id="after-invalid-terminal-result",
+            turn_id=2,
+            call_id="after-invalid-terminal-result-call",
+        )
         self.assertFalse(store.admit(next_request).duplicate)
 
     def test_sqlite_expired_hermes_queue_before_first_claim_stays_expired(self):
@@ -675,6 +1018,57 @@ class DynamoHermesMappingTests(unittest.TestCase):
         self.assertEqual(audit["manual_reconciled_run_id"], run_id)
         self.assertFalse(store.admit(next_request).duplicate)
 
+    def test_moto_confirmed_completed_invalid_result_fails_and_releases_owner(self):
+        try:
+            import boto3
+            from moto import mock_aws
+        except ImportError:
+            self.skipTest("moto/boto3 not installed")
+        with mock_aws():
+            client = boto3.client("dynamodb", region_name="us-east-1")
+            client.create_table(
+                TableName="issue61-task-ledger",
+                AttributeDefinitions=[
+                    {"AttributeName": "pk", "AttributeType": "S"},
+                    {"AttributeName": "sk", "AttributeType": "S"},
+                ],
+                KeySchema=[
+                    {"AttributeName": "pk", "KeyType": "HASH"},
+                    {"AttributeName": "sk", "KeyType": "RANGE"},
+                ],
+                BillingMode="PAY_PER_REQUEST",
+            )
+            store = DynamoDbTaskStore(
+                Boto3DynamoLedger(client, "issue61-task-ledger"),
+                client_id=CLIENT,
+                max_pending_tasks=8,
+            )
+            task_id = str(uuid4())
+            store.admit(request(task_id))
+            handled, calls = dispatch_invalid_completed_result(store, task_id)
+
+            self.assertEqual(handled, 1)
+            self.assertEqual([method for method, _ in calls], ["POST", "GET"])
+            row = store.get_by_task_id(task_id)
+            self.assertEqual((row["status"], row["last_error"]), ("failed", "hermes_invalid_result"))
+            self.assertIsNone(store.get_result(task_id))
+            inbox = store.lookup_inbox(client_id=CLIENT, task_id=task_id, now=NOW)
+            self.assertEqual((inbox["status"], inbox["code"]), ("failed", "hermes_invalid_result"))
+            self.assertNotIn("speak", inbox)
+            slot = client.get_item(
+                TableName="issue61-task-ledger",
+                Key={"pk": {"S": CLIENT}, "sk": {"S": "SLOT#SLOW"}},
+                ConsistentRead=True,
+            ).get("Item")
+            self.assertIsNone(slot)
+            next_request = replace(
+                request(str(uuid4())),
+                conversation_id="after-moto-invalid-terminal-result",
+                turn_id=2,
+                call_id="after-moto-invalid-terminal-result-call",
+            )
+            self.assertFalse(store.admit(next_request).duplicate)
+
     def test_hermes_result_lookup_rejects_wrong_owner_partition(self):
         ledger = InMemoryDynamoLedger()
         owner_store = DynamoDbTaskStore(ledger, client_id=CLIENT, max_pending_tasks=8)
@@ -705,6 +1099,32 @@ class DynamoHermesMappingTests(unittest.TestCase):
         self.assertEqual(result["code"], "hermes_run_deadline_exceeded")
         self.assertEqual(store.get_by_task_id(task_id)["status"], "uncertain")
         self.assertNotIn("speak", result)
+
+    def test_dynamo_confirmed_completed_invalid_result_fails_and_releases_owner(self):
+        ledger = InMemoryDynamoLedger()
+        store = DynamoDbTaskStore(ledger, client_id=CLIENT, max_pending_tasks=8)
+        task_id = str(uuid4())
+        store.admit(request(task_id))
+        handled, calls = dispatch_invalid_completed_result(store, task_id)
+
+        self.assertEqual(handled, 1)
+        self.assertEqual([method for method, _ in calls], ["POST", "GET"])
+        row = store.get_by_task_id(task_id)
+        self.assertEqual((row["status"], row["last_error"]), ("failed", "hermes_invalid_result"))
+        self.assertIsNone(store.get_result(task_id))
+        inbox = store.lookup_inbox(client_id=CLIENT, task_id=task_id, now=NOW)
+        self.assertEqual((inbox["status"], inbox["code"]), ("failed", "hermes_invalid_result"))
+        self.assertNotIn("speak", inbox)
+        self.assertNotIn("speak_now", inbox)
+        self.assertIsNone(ledger.get_item(CLIENT, "SLOT#SLOW"))
+
+        next_request = replace(
+            request(str(uuid4())),
+            conversation_id="after-invalid-terminal-result",
+            turn_id=2,
+            call_id="after-invalid-terminal-result-call",
+        )
+        self.assertFalse(store.admit(next_request).duplicate)
 
     def test_dynamo_expired_hermes_queue_before_first_claim_stays_expired(self):
         ledger = InMemoryDynamoLedger()

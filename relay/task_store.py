@@ -921,7 +921,8 @@ class SQLiteTaskStore:
         try:
             connection.execute("BEGIN IMMEDIATE")
             task = connection.execute(
-                "SELECT backend_run_id,run_started_at,run_deadline_at,status,stop_requested_at FROM slow_tasks "
+                "SELECT backend_run_id,run_started_at,run_deadline_at,status,stop_requested_at,"
+                "stop_attempts,stop_accepted_at FROM slow_tasks "
                 "WHERE task_id=? AND executor_kind='hermes_runs'",
                 (task_id,),
             ).fetchone()
@@ -934,7 +935,12 @@ class SQLiteTaskStore:
             ):
                 connection.execute("ROLLBACK")
                 raise AdmissionUnavailable("hermes_defer_state_unavailable")
-            effective_poll_iso = min(next_poll_iso, task[4]) if task[4] else next_poll_iso
+            # If cancellation arrived while the old executor invocation was
+            # already polling, wake once immediately to issue the first stop.
+            # Once a stop attempt exists, preserve its persisted backoff/GET interval.
+            effective_poll_iso = next_poll_iso
+            if task[4] and int(task[5] or 0) == 0 and task[6] is None:
+                effective_poll_iso = min(next_poll_iso, task[4])
             updated = connection.execute(
                 "UPDATE slow_tasks SET next_poll_at=?,poll_attempts=? "
                 "WHERE task_id=? AND executor_kind='hermes_runs' AND backend_run_id=? "

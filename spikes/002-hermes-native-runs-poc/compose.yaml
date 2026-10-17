@@ -24,6 +24,7 @@ services:
     environment:
       FAKE_CLIENT_DELAY_SECONDS: "4"
       FAKE_RESTART_DELAY_SECONDS: "40"
+      FAKE_STOP_DELAY_SECONDS: "40"
     volumes:
       - ./fake_provider.py:/poc/fake_provider.py:ro
     networks:
