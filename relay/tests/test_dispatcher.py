@@ -476,6 +476,47 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertIsNotNone(dispatcher)
 
+    def test_explicit_acp_rollback_ignores_stale_invalid_hermes_configuration(self):
+        env = {
+            "AMUSANT_LIVE_PROVIDER": "gemini",
+            "GEMINI_API_KEY": "offline-test-key",
+            "AMUSANT_CLIENT_ID": CLIENT,
+            "AMUSANT_BACKEND_ID": "server-backend",
+            "AMUSANT_TASK_DB": str(self.db_path),
+            "AMUSANT_SLOW_EXECUTOR": "openab_acp",
+            "AMUSANT_HERMES_RUNS_URL": "http://127.0.0.1:8642",
+            "AMUSANT_HERMES_API_KEY": "local-test-api-key-123",
+            # Pre-58A configuration can remain in a rollback environment.
+            "AMUSANT_HERMES_TIMEOUT_SECONDS": "120",
+        }
+        with patch("relay.application.load_acp_executor", return_value=FakeExecutor()), \\
+             patch("relay.application.build_live_provider", return_value=object()):
+            _handler, dispatcher, _store = build_supported_relay_runtime(
+                expected_device_token="device-token-12",
+                environ=env,
+                sdk_types=FakeSchemaTypes,
+            )
+        self.assertIsNotNone(dispatcher)
+
+    def test_hermes_default_rejects_stale_ambiguous_configuration(self):
+        env = {
+            "AMUSANT_LIVE_PROVIDER": "gemini",
+            "GEMINI_API_KEY": "offline-test-key",
+            "AMUSANT_CLIENT_ID": CLIENT,
+            "AMUSANT_BACKEND_ID": "server-backend",
+            "AMUSANT_TASK_DB": str(self.db_path),
+            "AMUSANT_HERMES_RUNS_URL": "http://127.0.0.1:8642",
+            "AMUSANT_HERMES_API_KEY": "local-test-api-key-123",
+            "AMUSANT_HERMES_TIMEOUT_SECONDS": "120",
+        }
+        with patch("relay.application.load_acp_executor", return_value=FakeExecutor()):
+            with self.assertRaisesRegex(ValueError, "AMUSANT_HERMES_TIMEOUT_SECONDS"):
+                build_supported_relay_runtime(
+                    expected_device_token="device-token-12",
+                    environ=env,
+                    sdk_types=FakeSchemaTypes,
+                )
+
     def test_supported_startup_recovers_started_work_without_executor(self):
         store = self.store()
         store.admit(request_for(TASK_ID))
