@@ -2,6 +2,7 @@
 """Run offline C++ firmware-module tests and provisioning-helper tests."""
 
 import argparse
+import os
 import subprocess
 import sys
 import tempfile
@@ -48,6 +49,7 @@ def main():
 
     subprocess.run(
         [sys.executable, "-m", "unittest", "discover", "-s", str(TESTS), "-p", "test_provision_wifi.py"],
+        env={**os.environ, "AMUSANT_REPOSITORY_ROOT": str(PACKAGE.parents[1].resolve())},
         check=True,
     )
     print("Python provisioning-helper host tests passed.", flush=True)
@@ -55,3 +57,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

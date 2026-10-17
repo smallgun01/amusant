@@ -38,7 +38,7 @@ class Preferences {
     const uint8_t* input = static_cast<const uint8_t*>(source);
     std::vector<uint8_t> bytes(input, input + length);
     values()[composeKey(key)] = bytes;
-    ++writeCount();
+    ++profileWriteCount();
     return length;
   }
 
@@ -52,7 +52,7 @@ class Preferences {
   static void reset() {
     values().clear();
     namespaces().clear();
-    writeCount() = 0;
+    profileWriteCount() = 0;
   }
 
   static void corrupt(const char* nameSpace, const char* key, size_t index) {
@@ -61,7 +61,7 @@ class Preferences {
     if (found != values().end() && index < found->second.size()) found->second[index] ^= 0x5A;
   }
 
-  static size_t writes() { return writeCount(); }
+  static size_t profileWrites() { return profileWriteCount(); }
 
  private:
   std::string composeKey(const char* key) const { return nameSpace_ + "/" + key; }
@@ -76,7 +76,7 @@ class Preferences {
     return opened;
   }
 
-  static size_t& writeCount() {
+  static size_t& profileWriteCount() {
     static size_t count = 0;
     return count;
   }
@@ -84,3 +84,4 @@ class Preferences {
   std::string nameSpace_;
   bool readOnly_;
 };
+

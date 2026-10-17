@@ -1,5 +1,131 @@
+diff --git a/firmware/src/face.cpp b/firmware/src/face.cpp
+index a90672a..6dcde69 100644
+--- a/firmware/src/face.cpp
++++ b/firmware/src/face.cpp
+@@ -1,7 +1,10 @@
+ #include "face.h"
+ 
++#include <string.h>
+ #include <vector>
+ 
++#include "wifi_ble_flow.h"
++
+ namespace face {
+ namespace {
+ 
+@@ -108,6 +111,10 @@ M5Canvas canvas(&M5.Display);
+ Expr expr = Expr::Offline;
+ float level = 0, shownLevel = 0;
+ String statusText;
++char provisioningPopFirst[wifi_ble_flow::kPopLength / 2 + 1] = {};
++char provisioningPopSecond[wifi_ble_flow::kPopLength / 2 + 1] = {};
++String provisioningHint;
++bool provisioningOn = false;
+ int battery = -1;
+ int inbox = 0;  // updates waiting from the background brain
+ 
+@@ -335,6 +342,30 @@ void drawFace(uint32_t now, uint32_t tick, bool newTick) {
+   }
+ }
+ 
++void drawProvisioning() {
++  canvas.setTextDatum(top_center);
++  canvas.setTextColor(T.text);
++  canvas.setFont(&fonts::Font2);
++  canvas.drawString("Secure Wi-Fi setup", W / 2, 10);
++  canvas.setTextColor(T.textSoft);
++  canvas.drawString("Open Espressif BLE app", W / 2, 31);
++
++  canvas.setTextDatum(middle_center);
++  canvas.setTextColor(T.text);
++  canvas.setFont(&fonts::FreeSansBold9pt7b);
++  if (canvas.textWidth(provisioningPopFirst) > W - 16 ||
++      canvas.textWidth(provisioningPopSecond) > W - 16) {
++    canvas.setFont(&fonts::Font2);
++  }
++  canvas.drawString(provisioningPopFirst, W / 2, 61);
++  canvas.drawString(provisioningPopSecond, W / 2, 86);
++
++  canvas.setFont(&fonts::Font2);
++  canvas.setTextColor(T.textSoft);
++  canvas.setTextDatum(bottom_center);
++  canvas.drawString(provisioningHint.length() ? provisioningHint : String("USB recovery: WIFI SET"), W / 2, H - 3);
++}
++
+ // ---- reply view ------------------------------------------------------------------
+ 
+ constexpr int HEADER_H = 38;
+@@ -469,6 +500,43 @@ void setStatusText(const String& text) {
+   dirty |= text != statusText;
+   statusText = text;
+ }
++void showProvisioning(const char* proofOfPossession) {
++  char first[wifi_ble_flow::kPopLength / 2 + 1] = {};
++  char second[wifi_ble_flow::kPopLength / 2 + 1] = {};
++  const bool valid = wifi_ble_flow::splitPopForDisplay(proofOfPossession, first, second);
++  dirty |= !provisioningOn || valid != (provisioningPopFirst[0] != '\0') ||
++           memcmp(provisioningPopFirst, first, sizeof(first)) != 0 ||
++           memcmp(provisioningPopSecond, second, sizeof(second)) != 0;
++  if (valid) {
++    memcpy(provisioningPopFirst, first, sizeof(first));
++    memcpy(provisioningPopSecond, second, sizeof(second));
++  } else {
++    memset(provisioningPopFirst, 0, sizeof(provisioningPopFirst));
++    memset(provisioningPopSecond, 0, sizeof(provisioningPopSecond));
++  }
++  volatile char* firstBytes = first;
++  volatile char* secondBytes = second;
++  for (size_t i = 0; i < sizeof(first); ++i) firstBytes[i] = 0;
++  for (size_t i = 0; i < sizeof(second); ++i) secondBytes[i] = 0;
++  dirty |= provisioningHint != "USB recovery: WIFI SET";
++  provisioningHint = "USB recovery: WIFI SET";
++  provisioningOn = valid;
++}
++
++void setProvisioningHint(const String& text) {
++  dirty |= text != provisioningHint;
++  provisioningHint = text;
++}
++
++void clearProvisioning() {
++  volatile char* first = provisioningPopFirst;
++  volatile char* second = provisioningPopSecond;
++  for (size_t i = 0; i < sizeof(provisioningPopFirst); ++i) first[i] = 0;
++  for (size_t i = 0; i < sizeof(provisioningPopSecond); ++i) second[i] = 0;
++  provisioningHint = "";
++  dirty |= provisioningOn;
++  provisioningOn = false;
++}
+ void setInbox(int count) {
+   dirty |= count != inbox;
+   inbox = count;
+@@ -553,7 +621,9 @@ void render() {
+   shownLevel += (level - shownLevel) * 0.5f;
+ 
+   canvas.fillSprite(T.bg);
+-  if (replyOn) {
++  if (provisioningOn) {
++    drawProvisioning();
++  } else if (replyOn) {
+     drawReply(now, tick);
+   } else {
+     drawFace(now, tick, newTick);
+diff --git a/firmware/src/face.h b/firmware/src/face.h
+index 3b20006..ae9ba01 100644
+--- a/firmware/src/face.h
++++ b/firmware/src/face.h
+@@ -32,6 +32,9 @@ void render();  // call every loop; throttles itself to ~30 fps
+ void setExpr(Expr e);
+ void setLevel(float level);              // drives the sound waves while listening and the mouth while speaking
+ void setStatusText(const String& text);  // small hint under Kai (e.g. "connecting wifi")
++void showProvisioning(const char* proofOfPossession);
++void setProvisioningHint(const String& text);
++void clearProvisioning();
+ void setBattery(int percent);
+ void setInbox(int count);                // badge: updates waiting from the background brain
+ 
 diff --git a/firmware/src/main.cpp b/firmware/src/main.cpp
-index c5e1898..d8a47f5 100644
+index c5e1898..1b744ff 100644
 --- a/firmware/src/main.cpp
 +++ b/firmware/src/main.cpp
 @@ -20,6 +20,7 @@
@@ -10,15 +136,7 @@ index c5e1898..d8a47f5 100644
  #include "wifi_config.h"
  #include "wifi_console.h"
  
-@@ -83,6 +84,7 @@ static wifi_config::Profile activeWifiProfile = {};
- static wifi_config::LoadResult wifiProfileState = wifi_config::LoadResult::Missing;
- static bool wifiConfigured = false;
- static wifi_console::Parser wifiConsole;
-+static bool wifiBleRestartRequested = false;
- static uint32_t lastRelayTry = 0;
- #ifdef KAI_TELEMETRY
- RTC_DATA_ATTR static int64_t sleptAtUs = 0;  // RTC wall clock keeps running through deep sleep
-@@ -579,6 +581,7 @@ static void startRelayConnection() {
+@@ -579,6 +580,7 @@ static void startRelayConnection() {
  static void maintainConnection() {
    const uint32_t now = millis();
  
@@ -26,38 +144,41 @@ index c5e1898..d8a47f5 100644
    if (!wifiConfigured) return;  // USB recovery remains available without starting radio retries.
  
    if (WiFi.status() != WL_CONNECTED) {
-@@ -647,7 +650,10 @@ static void onWifiConsoleEvent(const wifi_console::Event& event) {
+@@ -646,7 +648,10 @@ static void onWifiConsoleEvent(const wifi_console::Event& event) {
+                     static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
        break;
  
-     case wifi_console::EventType::Clear:
-+      wifiBleRestartRequested = wifi_ble_provisioning::active();
+-    case wifi_console::EventType::Clear:
++    case wifi_console::EventType::Clear: {
++      const bool bleWasActive = wifi_ble_provisioning::active();
 +      wifi_ble_provisioning::stop();
++      face::clearProvisioning();
        if (!wifi_config::clear()) {
-+        wifiBleRestartRequested = false;
          Serial.println("WIFI ERR STORAGE");
          break;
-       }
-@@ -659,9 +665,18 @@ static void onWifiConsoleEvent(const wifi_console::Event& event) {
+@@ -659,9 +664,20 @@ static void onWifiConsoleEvent(const wifi_console::Event& event) {
        setMode(Mode::Offline);
        face::setStatusText("USB Wi-Fi setup");
        Serial.println("WIFI OK CLEARED");
-+      if (!wifiBleRestartRequested && audio::onUsbPower() &&
-+          wifi_ble_provisioning::start(false, true, millis())) {
-+        wifiBleRestartRequested = false;
-+        const String pop = wifi_ble_provisioning::proofOfPossession();
-+        face::setStatusText(String("BLE PoP\n") + pop.substring(0, 13) + "\n" + pop.substring(13));
++      if (!bleWasActive && audio::onUsbPower()) {
++        if (wifi_ble_provisioning::start(false, true, millis())) {
++          face::showProvisioning(wifi_ble_provisioning::proofOfPossession());
++        } else if (wifi_ble_provisioning::restartRequiresReboot()) {
++          face::setStatusText("reboot to retry BLE");
++        }
 +      }
        break;
++    }
  
 -    case wifi_console::EventType::Set:
 +    case wifi_console::EventType::Set: {
-+      wifiBleRestartRequested = false;
 +      const bool bleWasActive = wifi_ble_provisioning::active();
 +      wifi_ble_provisioning::stop();
++      face::clearProvisioning();
        if (!wifi_config::save(event.profile)) {
          Serial.println("WIFI ERR STORAGE");
          break;
-@@ -671,11 +686,12 @@ static void onWifiConsoleEvent(const wifi_console::Event& event) {
+@@ -671,11 +687,12 @@ static void onWifiConsoleEvent(const wifi_console::Event& event) {
        wifiProfileState = wifi_config::LoadResult::Valid;
        stopNetworkForProfileChange();
        invalidateNetworkHints();
@@ -71,7 +192,7 @@ index c5e1898..d8a47f5 100644
  
      case wifi_console::EventType::SetReady:
        Serial.println("WIFI READY");
-@@ -708,6 +724,71 @@ static void serviceWifiConsole() {
+@@ -708,6 +725,68 @@ static void serviceWifiConsole() {
    }
  }
  
@@ -93,43 +214,40 @@ index c5e1898..d8a47f5 100644
 +        activeWifiProfile = profile;
 +        wifiConfigured = true;
 +        wifiProfileState = wifi_config::LoadResult::Valid;
-+        wifiBleRestartRequested = false;
 +        Serial.println("WIFI OK SAVED BLE");
++        face::clearProvisioning();
 +        face::setStatusText("BLE saved; finishing");
 +      }
 +      break;
 +
 +    case wifi_ble_provisioning::Event::CredentialsFailed:
 +      Serial.println("WIFI BLE ERR RETRY");
-+      face::setStatusText("BLE failed; retry or USB");
++      face::setProvisioningHint("Wi-Fi failed; retry");
 +      break;
 +
 +    case wifi_ble_provisioning::Event::TimedOut:
 +      Serial.println("WIFI BLE TIMEOUT");
++      face::clearProvisioning();
 +      face::setStatusText("BLE timeout; use USB");
 +      break;
 +
 +    case wifi_ble_provisioning::Event::SessionEnded:
++      face::clearProvisioning();
 +      if (wifiConfigured) {
 +        invalidateNetworkHints();
 +        startWifi();
 +        setMode(Mode::Offline);
 +        face::setStatusText("connecting wifi...");
-+      } else if (wifiBleRestartRequested && audio::onUsbPower()) {
-+        wifiBleRestartRequested = false;
-+        if (wifi_ble_provisioning::start(false, true, millis())) {
-+          const String pop = wifi_ble_provisioning::proofOfPossession();
-+          face::setStatusText(String("BLE PoP\n") + pop.substring(0, 13) + "\n" + pop.substring(13));
-+        } else {
-+          face::setStatusText("USB Wi-Fi setup");
-+        }
 +      } else {
-+        face::setStatusText("USB Wi-Fi setup");
++        face::setStatusText(wifi_ble_provisioning::restartRequiresReboot()
++                                ? "reboot to retry BLE"
++                                : "USB Wi-Fi setup");
 +      }
 +      break;
 +
 +    case wifi_ble_provisioning::Event::Error:
-+      Serial.println("WIFI BLE ERR START");
++      Serial.println("WIFI BLE ERR SERVICE");
++      face::clearProvisioning();
 +      face::setStatusText("BLE unavailable; use USB");
 +      break;
 +
@@ -143,7 +261,7 @@ index c5e1898..d8a47f5 100644
  // ---- buttons ---------------------------------------------------------------
  
  static void showStatus() {
-@@ -807,12 +888,19 @@ void setup() {
+@@ -807,12 +886,18 @@ void setup() {
    face::setBattery(M5.Power.getBatteryLevel());
    lastInteraction = millis();
  
@@ -157,13 +275,12 @@ index c5e1898..d8a47f5 100644
      if (wifiConfigured)
        face::setStatusText(wokeFromSleep ? "waking up..." : "connecting wifi...");
 +    else if (startBleForFirstBoot) {
-+      const String pop = wifi_ble_provisioning::proofOfPossession();
-+      face::setStatusText(String("BLE PoP\n") + pop.substring(0, 13) + "\n" + pop.substring(13));
++      face::showProvisioning(wifi_ble_provisioning::proofOfPossession());
 +    }
      else
        face::setStatusText(wifiProfileState == wifi_config::LoadResult::Invalid ? "Wi-Fi config invalid"
                                                                                 : "USB Wi-Fi setup");
-@@ -824,6 +912,7 @@ void setup() {
+@@ -824,6 +909,7 @@ void setup() {
  void loop() {
    M5.update();
    serviceWifiConsole();
@@ -173,10 +290,10 @@ index c5e1898..d8a47f5 100644
    if (connectBoost && (wsConnected || millis() - wsBeganAt > CONNECT_BOOST_MS)) {
 diff --git a/firmware/src/wifi_ble_flow.cpp b/firmware/src/wifi_ble_flow.cpp
 new file mode 100644
-index 0000000..0135141
+index 0000000..7b17f5a
 --- /dev/null
 +++ b/firmware/src/wifi_ble_flow.cpp
-@@ -0,0 +1,99 @@
+@@ -0,0 +1,122 @@
 +#include "wifi_ble_flow.h"
 +
 +#include <string.h>
@@ -188,16 +305,21 @@ index 0000000..0135141
 +
 +}  // namespace
 +
-+Session::Session() : state_(State::Stopped), startedAtMs_(0), candidate_(), candidateValid_(false) {
++Session::Session()
++    : state_(State::Stopped), startedAtMs_(0), candidate_(), candidateValid_(false), startConsumed_(false) {
 +  clearCandidate();
 +}
 +
 +bool Session::start(uint32_t nowMs, bool profileConfigured, bool usbPowered) {
++  if (startConsumed_) return false;
 +  clearCandidate();
 +  if (profileConfigured || !usbPowered) {
 +    state_ = State::Stopped;
 +    return false;
 +  }
++  // The BLE scheme uses FREE_BLE. Conservatively allow one manager lifetime per boot;
++  // the application can still use USB Serial after the session ends.
++  startConsumed_ = true;
 +  startedAtMs_ = nowMs;
 +  state_ = State::Advertising;
 +  return true;
@@ -249,6 +371,8 @@ index 0000000..0135141
 +
 +State Session::state() const { return state_; }
 +
++bool Session::restartRequiresReboot() const { return startConsumed_ && state_ == State::Stopped; }
++
 +void Session::clearCandidate() {
 +  wifi_config::wipeSensitive(candidate_);
 +  candidateValid_ = false;
@@ -275,13 +399,29 @@ index 0000000..0135141
 +  return outputLength == kPopLength;
 +}
 +
++bool splitPopForDisplay(const char* pop, char first[kPopLength / 2 + 1],
++                        char second[kPopLength / 2 + 1]) {
++  if (first == NULL || second == NULL) return false;
++  memset(first, 0, kPopLength / 2 + 1);
++  memset(second, 0, kPopLength / 2 + 1);
++  if (pop == NULL || strlen(pop) != kPopLength) return false;
++  memcpy(first, pop, kPopLength / 2);
++  memcpy(second, pop + kPopLength / 2, kPopLength / 2);
++  return true;
++}
++
++bool resetAfterCredentialsFailure(Session& session, ProvisioningManager& manager) {
++  session.credentialsFailed();
++  return manager.resetWifiStateAfterFailure();
++}
++
 +}  // namespace wifi_ble_flow
 diff --git a/firmware/src/wifi_ble_flow.h b/firmware/src/wifi_ble_flow.h
 new file mode 100644
-index 0000000..0aa808a
+index 0000000..3aaf52f
 --- /dev/null
 +++ b/firmware/src/wifi_ble_flow.h
-@@ -0,0 +1,41 @@
+@@ -0,0 +1,52 @@
 +#pragma once
 +
 +#include <stddef.h>
@@ -297,6 +437,12 @@ index 0000000..0aa808a
 +
 +enum class State : uint8_t { Stopped, Advertising, CandidateReceived, Succeeded, TimedOut };
 +
++class ProvisioningManager {
++ public:
++  virtual ~ProvisioningManager() {}
++  virtual bool resetWifiStateAfterFailure() = 0;
++};
++
 +class Session {
 + public:
 +  Session();
@@ -310,6 +456,7 @@ index 0000000..0aa808a
 +  bool expire(uint32_t nowMs, bool usbPowered);
 +  void stop();
 +  State state() const;
++  bool restartRequiresReboot() const;
 +
 + private:
 +  void clearCandidate();
@@ -318,17 +465,21 @@ index 0000000..0aa808a
 +  uint32_t startedAtMs_;
 +  wifi_config::Profile candidate_;
 +  bool candidateValid_;
++  bool startConsumed_;
 +};
 +
 +bool formatPop(const uint8_t entropy[kPopEntropyBytes], char output[kPopLength + 1]);
++bool splitPopForDisplay(const char* pop, char first[kPopLength / 2 + 1],
++                        char second[kPopLength / 2 + 1]);
++bool resetAfterCredentialsFailure(Session& session, ProvisioningManager& manager);
 +
 +}  // namespace wifi_ble_flow
 diff --git a/firmware/src/wifi_ble_provisioning.cpp b/firmware/src/wifi_ble_provisioning.cpp
 new file mode 100644
-index 0000000..40dd3e5
+index 0000000..fefef1c
 --- /dev/null
 +++ b/firmware/src/wifi_ble_provisioning.cpp
-@@ -0,0 +1,283 @@
+@@ -0,0 +1,298 @@
 +#include "wifi_ble_provisioning.h"
 +
 +#include <WiFi.h>
@@ -378,6 +529,15 @@ index 0000000..40dd3e5
 +bool managerActive = false;
 +bool stopRequested = false;
 +bool cancelRequested = false;
++
++class NativeProvisioningManager : public wifi_ble_flow::ProvisioningManager {
++ public:
++  bool resetWifiStateAfterFailure() override {
++    return network_prov_mgr_reset_wifi_sm_state_on_failure() == ESP_OK;
++  }
++};
++
++NativeProvisioningManager nativeProvisioningManager;
 +
 +void wipeBytes(void* data, size_t length) {
 +  volatile uint8_t* bytes = static_cast<volatile uint8_t*>(data);
@@ -583,8 +743,12 @@ index 0000000..40dd3e5
 +      if (!session.credentialsReceived(queued.profile)) event = Event::CredentialsFailed;
 +      break;
 +    case ProviderEvent::CredentialsFailed:
-+      session.credentialsFailed();
-+      event = Event::CredentialsFailed;
++      if (wifi_ble_flow::resetAfterCredentialsFailure(session, nativeProvisioningManager)) {
++        event = Event::CredentialsFailed;
++      } else {
++        requestStop();
++        event = Event::Error;
++      }
 +      break;
 +    case ProviderEvent::CredentialsSucceeded:
 +      if (session.credentialsSucceeded(profile)) {
@@ -609,15 +773,17 @@ index 0000000..40dd3e5
 +
 +bool active() { return managerActive; }
 +
++bool restartRequiresReboot() { return session.restartRequiresReboot(); }
++
 +const char* proofOfPossession() { return proofOfPossessionValue; }
 +
 +}  // namespace wifi_ble_provisioning
 diff --git a/firmware/src/wifi_ble_provisioning.h b/firmware/src/wifi_ble_provisioning.h
 new file mode 100644
-index 0000000..8e48fc0
+index 0000000..88a6eab
 --- /dev/null
 +++ b/firmware/src/wifi_ble_provisioning.h
-@@ -0,0 +1,17 @@
+@@ -0,0 +1,18 @@
 +#pragma once
 +
 +#include <stdint.h>
@@ -632,11 +798,12 @@ index 0000000..8e48fc0
 +void stop();
 +void service(uint32_t nowMs, bool usbPowered, Event& event, wifi_config::Profile& profile);
 +bool active();
++bool restartRequiresReboot();
 +const char* proofOfPossession();
 +
 +}  // namespace wifi_ble_provisioning
 diff --git a/firmware/src/wifi_config.cpp b/firmware/src/wifi_config.cpp
-index 170e685..f4d82df 100644
+index 170e685..afc941e 100644
 --- a/firmware/src/wifi_config.cpp
 +++ b/firmware/src/wifi_config.cpp
 @@ -50,6 +50,8 @@ bool allZero(const uint8_t* data, size_t length) {
@@ -648,15 +815,16 @@ index 170e685..f4d82df 100644
  bool validProfile(const Profile& profile) {
    if (profile.ssidLength == 0 || profile.ssidLength > 32 ||
        profile.passwordLength < 8 || profile.passwordLength > 63)
-@@ -73,7 +75,13 @@ LoadResult load(Profile& profile) {
+@@ -73,7 +75,14 @@ LoadResult load(Profile& profile) {
    wipe(&profile, sizeof(profile));
  
    Preferences preferences;
 -  if (!preferences.begin(kNamespace, true)) return LoadResult::Invalid;
 +  if (!preferences.begin(kNamespace, true)) {
-+    // Preferences cannot open a namespace read-only before its first key exists.
-+    // A writable open creates only an in-memory handle until a key is committed.
-+    // Continue through the normal key validation so an existing profile is not
++    // Preferences.begin(..., false) opens this namespace as NVS_READWRITE. The
++    // load path below issues no putBytes/nvs_set or nvs_commit for the profile
++    // key, but an NVS implementation may update namespace metadata while opening.
++    // Continue through ordinary key validation so a readable profile is not
 +    // misclassified if the read-only open failed for another recoverable reason.
 +    if (!preferences.begin(kNamespace, false)) return LoadResult::Invalid;
 +  }
@@ -675,3 +843,4 @@ index 26313b6..2fe827a 100644
  LoadResult load(Profile& profile);
  bool save(const Profile& profile);
  bool clear();
+

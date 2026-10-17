@@ -1,5 +1,6 @@
 import importlib.util
 import io
+import os
 import sys
 import unittest
 from contextlib import redirect_stdout
@@ -8,7 +9,8 @@ from unittest.mock import patch
 from pathlib import Path
 
 
-SCRIPT = Path(__file__).parents[1] / "tools" / "provision_wifi.py"
+REPOSITORY_ROOT = Path(os.environ.get("AMUSANT_REPOSITORY_ROOT", Path(__file__).resolve().parents[3]))
+SCRIPT = REPOSITORY_ROOT / "patches" / "kai-v0.12.0-wifi-w1" / "tools" / "provision_wifi.py"
 SPEC = importlib.util.spec_from_file_location("provision_wifi", SCRIPT)
 provision_wifi = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(provision_wifi)
@@ -121,3 +123,4 @@ class ProvisioningFrameTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
