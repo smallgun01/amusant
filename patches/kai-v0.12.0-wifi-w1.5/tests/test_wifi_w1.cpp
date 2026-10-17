@@ -104,7 +104,7 @@ static void testBleProvisionFlow() {
 
   session.stop();
   assert(session.restartRequiresReboot());
-  assert(!session.start(0, false, true));  // FREE_BLE permits only one manager lifetime per boot.
+  assert(!session.start(0, false, true));  // FREE_BLE permits only one BLE start attempt per boot.
 
   wifi_console::Parser usbRecovery;
   uint32_t usbTime = 0;

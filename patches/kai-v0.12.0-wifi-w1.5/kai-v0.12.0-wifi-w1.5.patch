@@ -290,7 +290,7 @@ index c5e1898..1b744ff 100644
    if (connectBoost && (wsConnected || millis() - wsBeganAt > CONNECT_BOOST_MS)) {
 diff --git a/firmware/src/wifi_ble_flow.cpp b/firmware/src/wifi_ble_flow.cpp
 new file mode 100644
-index 0000000..7b17f5a
+index 0000000..174cd8b
 --- /dev/null
 +++ b/firmware/src/wifi_ble_flow.cpp
 @@ -0,0 +1,122 @@
@@ -317,8 +317,8 @@ index 0000000..7b17f5a
 +    state_ = State::Stopped;
 +    return false;
 +  }
-+  // The BLE scheme uses FREE_BLE. Conservatively allow one manager lifetime per boot;
-+  // the application can still use USB Serial after the session ends.
++  // The BLE scheme uses FREE_BLE. Conservatively allow one BLE start attempt per boot;
++  // the application can still use USB Serial after startup or session failure.
 +  startConsumed_ = true;
 +  startedAtMs_ = nowMs;
 +  state_ = State::Advertising;
