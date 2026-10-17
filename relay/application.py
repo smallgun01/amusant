@@ -28,7 +28,8 @@ from .slow_path import (
     build_relay_tools,
 )
 from .acp_client import load_acp_executor
-from .dispatcher import AsyncDispatcher, MAX_POLL_INTERVAL_SECONDS
+from .dispatcher import AsyncDispatcher, ExecutionOutcome, MAX_POLL_INTERVAL_SECONDS
+from .hermes_runs_executor import load_hermes_runs_executor
 from .store_factory import build_task_store
 from .task_store import TASK_KINDS
 
@@ -43,6 +44,9 @@ MAX_TASK_TTL_ENV = "AMUSANT_MAX_TASK_TTL_SECONDS"
 MAX_PENDING_TASKS_ENV = "AMUSANT_MAX_PENDING_TASKS"
 ACCEPTANCE_TIMEOUT_ENV = "AMUSANT_ACCEPTANCE_TIMEOUT_SECONDS"
 DISPATCHER_POLL_INTERVAL_ENV = "AMUSANT_DISPATCHER_POLL_INTERVAL_SECONDS"
+SLOW_EXECUTOR_ENV = "AMUSANT_SLOW_EXECUTOR"
+# Product default: Hermes Native Runs. OpenAB ACP is an explicit legacy/rollback choice.
+DEFAULT_SLOW_EXECUTOR = "hermes_runs"
 DEFAULT_TASK_KIND = "research"
 DEFAULT_MAX_TASK_TTL_SECONDS = 600
 DEFAULT_MAX_PENDING_TASKS = 8
@@ -64,6 +68,7 @@ class RelayProcessConfig:
     max_pending_tasks: int
     acceptance_timeout_seconds: float
     dispatcher_poll_interval_seconds: float
+    slow_executor_kind: str
 
 
 def _require_env(environ: Mapping[str, str], name: str) -> str:
@@ -117,6 +122,9 @@ def load_relay_process_config(
     default_task_kind = default_task_kind.strip()
     if default_task_kind not in TASK_KINDS:
         raise ValueError("AMUSANT_DEFAULT_TASK_KIND must be research, compare, or summarize")
+    slow_executor_kind = (environ.get(SLOW_EXECUTOR_ENV) or DEFAULT_SLOW_EXECUTOR).strip().lower() or DEFAULT_SLOW_EXECUTOR
+    if slow_executor_kind not in {"openab_acp", "hermes_runs"}:
+        raise ValueError(f"{SLOW_EXECUTOR_ENV} must be openab_acp or hermes_runs")
     store_kind = (environ.get(TASK_STORE_ENV) or "sqlite").strip().lower() or "sqlite"
     if store_kind not in {"sqlite", "dynamodb"}:
         raise ValueError("AMUSANT_TASK_STORE must be sqlite or dynamodb")
@@ -156,6 +164,7 @@ def load_relay_process_config(
             environ, ACCEPTANCE_TIMEOUT_ENV, DEFAULT_ACCEPTANCE_TIMEOUT_SECONDS
         ),
         dispatcher_poll_interval_seconds=dispatcher_poll,
+        slow_executor_kind=slow_executor_kind,
     )
 
 
@@ -175,6 +184,7 @@ def build_relay_handler(
     conversation_id_factory: ConversationIdFactory | None = None,
     post_tool_ack_timeout_seconds: float = POST_TOOL_ACK_TIMEOUT_SECONDS,
     post_tool_ack_max_duration_seconds: float = POST_TOOL_ACK_MAX_DURATION_SECONDS,
+    executor_kind: str = DEFAULT_SLOW_EXECUTOR,
 ):
     """Compose Live tool declaration + per-authenticated-session admission.
 
@@ -225,6 +235,7 @@ def build_relay_handler(
             max_task_ttl_seconds=max_task_ttl_seconds,
             acceptance_timeout_seconds=acceptance_timeout_seconds,
             on_admitted=on_admitted,
+            executor_kind=executor_kind,
         )
 
     return make_handler(
@@ -249,20 +260,42 @@ def build_supported_relay_runtime(
     post_tool_ack_timeout_seconds: float = POST_TOOL_ACK_TIMEOUT_SECONDS,
     post_tool_ack_max_duration_seconds: float = POST_TOOL_ACK_MAX_DURATION_SECONDS,
 ):
-    """Build handler plus optional ACP dispatcher. Missing ACP config skips ACP."""
+    """Build handler plus optional executor dispatcher; no configured executor skips dispatch."""
     config = load_relay_process_config(environ, expected_device_token=expected_device_token)
     store = build_task_store(environ, max_pending_tasks=config.max_pending_tasks)
-    executor = load_acp_executor(environ)
+    acp_executor = load_acp_executor(environ)
+    hermes_executor = load_hermes_runs_executor(
+        environ, save_backend_run_id=store.save_backend_run_id
+    )
+    configured_executors = {
+        "openab_acp": acp_executor,
+        "hermes_runs": hermes_executor,
+    }
+    selected_executor = configured_executors[config.slow_executor_kind]
+    if config.slow_executor_kind == "hermes_runs" and selected_executor is None:
+        raise ValueError("Hermes selection requires AMUSANT_HERMES_RUNS_URL and AMUSANT_HERMES_API_KEY")
+    if selected_executor is None and any(configured_executors.values()):
+        raise ValueError(f"{SLOW_EXECUTOR_ENV} selects an executor without complete server configuration")
+    active_executors = {kind: executor for kind, executor in configured_executors.items() if executor is not None}
+
+    class _ExecutorRouter:
+        async def execute(self, task):
+            selected = active_executors.get(task.executor_kind)
+            if selected is None:
+                state = "uncertain" if task.backend_run_id else "failed"
+                return ExecutionOutcome(status=state, code="executor_unavailable")
+            return await selected.execute(task)
+
     dispatcher = (
         None
-        if executor is None
+        if not active_executors
         else AsyncDispatcher(
             store,
-            executor,
+            _ExecutorRouter(),
             poll_interval_seconds=config.dispatcher_poll_interval_seconds,
         )
     )
-    # The running Dispatcher owns startup recovery. If ACP is unavailable,
+    # The running Dispatcher owns startup recovery. If no executor is configured,
     # still recover once so status lookups report interrupted work honestly.
     if dispatcher is None:
         store.recover_after_restart()
@@ -276,6 +309,7 @@ def build_supported_relay_runtime(
         max_task_ttl_seconds=config.max_task_ttl_seconds,
         acceptance_timeout_seconds=config.acceptance_timeout_seconds,
         on_admitted=None if dispatcher is None else dispatcher.notify,
+        executor_kind=config.slow_executor_kind,
         client_factory=client_factory,
         sdk_types=sdk_types,
         conversation_id_factory=conversation_id_factory,

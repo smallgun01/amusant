@@ -1,0 +1,52 @@
+{
+  "timestamp_utc": "2026-10-17T02:33:41.460471+00:00",
+  "working_tree_dirty_at_test": true,
+  "provider_count_metric": "fake provider completion requests; Relay Run submissions are separately counted from Relay HTTP methods",
+  "hermes_image": "docker.io/nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7",
+  "mode": "local Docker only; internal network; deterministic fake provider; no AWS; no paid model API",
+  "setup_status": "PASS",
+  "setup_error_type": null,
+  "gates": {
+    "relay_submit_mapping": {
+      "status": "PASS",
+      "relay_task_status": "running",
+      "run_id_persisted_before_poll_resume": true,
+      "fake_provider_active_at_relay_exit": true,
+      "relay_submit_count_before_restart": 1
+    },
+    "relay_process_restart_recovery": {
+      "status": "PASS",
+      "task_status": "completed",
+      "result_recovered": true,
+      "existing_run_id_reused": true,
+      "relay_http_methods_after_restart": [
+        "GET",
+        "GET",
+        "GET",
+        "GET",
+        "GET",
+        "GET",
+        "GET"
+      ],
+      "fake_provider_requests_for_task": 2
+    },
+    "ambiguous_submit_fail_closed": {
+      "status": "PASS",
+      "server_accepted_post_but_relay_lost_response": true,
+      "task_status": "uncertain",
+      "run_id_persisted": false,
+      "remains_uncertain_after_restart_recovery": true,
+      "dispatch_after_restart": 0,
+      "relay_http_methods_total": [
+        "POST"
+      ],
+      "fake_provider_request_count_before_after": [
+        2,
+        4
+      ]
+    }
+  },
+  "volumes_retained": true,
+  "external_model_calls": 0,
+  "repo_head": "4170c85ba4a0a17daf846ab12289ff33cd61087c"
+}

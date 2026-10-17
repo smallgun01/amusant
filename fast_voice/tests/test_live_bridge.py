@@ -1137,6 +1137,7 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
                 "GEMINI_API_KEY": "offline-test-key",
                 "AMUSANT_CLIENT_ID": "trusted-owner",
                 "AMUSANT_BACKEND_ID": "openab",
+                "AMUSANT_SLOW_EXECUTOR": "openab_acp",  # explicit legacy fixture
                 "AMUSANT_TASK_DB": str(db_path),
             }
             with patch("relay.application.build_live_provider", return_value=fake):
@@ -1179,6 +1180,7 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
                 "GEMINI_API_KEY": "offline-test-key",
                 "AMUSANT_CLIENT_ID": "trusted-owner",
                 "AMUSANT_BACKEND_ID": "openab",
+                "AMUSANT_SLOW_EXECUTOR": "openab_acp",  # explicit legacy fixture
                 "AMUSANT_TASK_DB": str(db_path),
             }
             with patch("relay.application.build_live_provider", side_effect=provider_builder):
@@ -1924,6 +1926,7 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
                 "GEMINI_API_KEY": "offline-test-key",
                 "AMUSANT_CLIENT_ID": "authenticated-device-1",
                 "AMUSANT_BACKEND_ID": "openab",
+                "AMUSANT_SLOW_EXECUTOR": "openab_acp",  # explicit legacy fixture
                 "AMUSANT_TASK_DB": str(Path(temp_dir) / "dispatcher-wakeup.sqlite3"),
                 "AMUSANT_DISPATCHER_POLL_INTERVAL_SECONDS": "30",
             }

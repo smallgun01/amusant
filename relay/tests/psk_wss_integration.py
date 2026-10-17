@@ -316,6 +316,7 @@ class PskWssIntegrationTests(unittest.IsolatedAsyncioTestCase):
             environ = {
                 "AMUSANT_CLIENT_ID": "h03-owner",
                 "AMUSANT_BACKEND_ID": "openab",
+                "AMUSANT_SLOW_EXECUTOR": "openab_acp",  # explicit legacy no-executor fixture
                 "AMUSANT_TASK_DB": f"{temp_dir}/task-ledger.sqlite3",
                 "AMUSANT_TASK_STORE": "sqlite",
                 "AMUSANT_DEFAULT_TASK_KIND": "research",
