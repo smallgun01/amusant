@@ -28,6 +28,7 @@ Important: **WS1** denotes the workstream; **WiFi-W1** denotes the firmware NVS 
 - [ADR-0001](docs/adr/0001-openab-acp-slow-path.md) — OpenAB ACP Slow Path architecture decision and acceptance gates.
 - [PLAN.md](PLAN.md) — execution sequence and gates.
 - [Cross-track technical roadmap](docs/hardware/cross-track-integration-roadmap.md) — G0 evidence, G1/A2, S1, G2/G3a/G3b and WiFi test isolation (subordinate to the WS1–WS4 execution index).
+- [H0.3 Stage D: Jellii Persona + Zephyr Voice](docs/hardware/sticks3-jellii-voice-stage-d.md) — opt-in Gemini Live voice/persona, Google Search Grounding, offline tests, and rollback.
 - [STATUS.md](STATUS.md) — current verified state.
 - [P4-T4b Live acceptance](docs/p4-t4b-live-acceptance.md) — deployed WSS/ACP evidence, after-stop DynamoDB result and recorded exceptions.
 - [`pyproject.toml`](pyproject.toml) + [`uv.lock`](uv.lock) — Python runtime dependencies and reproducible lock.

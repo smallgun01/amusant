@@ -1613,7 +1613,13 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
                 expected_device_token=TOKEN,
                 authenticated_client_id="authenticated-device-1",
                 task_store=store,
-                provider_environ={"AMUSANT_LIVE_PROVIDER": "gemini", "GEMINI_API_KEY": "offline-test-key"},
+                provider_environ={
+                    "AMUSANT_LIVE_PROVIDER": "gemini",
+                    "GEMINI_API_KEY": "offline-test-key",
+                    "AMUSANT_PERSONA_PROFILE": "jellii",
+                    "AMUSANT_GEMINI_VOICE": "Zephyr",
+                    "AMUSANT_GEMINI_GOOGLE_SEARCH": "1",
+                },
                 backend_id="openab",
                 default_task_kind="research",
                 max_task_ttl_seconds=600,
@@ -1633,6 +1639,13 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
                 await tool_provider.callbacks["tool_batch_complete"]()
                 self.assertIn("tool_declarations", provider_kwargs[0])
                 self.assertNotIn("tool_declarations", provider_kwargs[1])
+                self.assertIs(provider_kwargs[1]["allow_google_search"], False)
+                # Jellii is consistent across the tool-enabled and tool-free sessions.
+                self.assertIn("Jellii", provider_kwargs[0]["system_instruction"])
+                self.assertEqual(
+                    provider_kwargs[0]["system_instruction"],
+                    provider_kwargs[1]["system_instruction"],
+                )
                 # A teardown/late error from the retired session cannot fail the new epoch.
                 await tool_provider.callbacks["error"](
                     ProviderError("gemini", "late_old_session_error", "sanitized")
