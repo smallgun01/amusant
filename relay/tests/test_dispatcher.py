@@ -54,7 +54,14 @@ class FakeExecutor:
         return self.outcome
 
 
-def request_for(task_id, *, turn_id=1, call_id="call-1", task="Compare current options"):
+def request_for(
+    task_id,
+    *,
+    turn_id=1,
+    call_id="call-1",
+    task="Compare current options",
+    executor_kind="openab_acp",
+):
     return TaskAdmissionRequest(
         task_id=task_id,
         client_id=CLIENT,
@@ -66,6 +73,7 @@ def request_for(task_id, *, turn_id=1, call_id="call-1", task="Compare current o
         backend="openab",
         created_at=NOW,
         expires_at=NOW + timedelta(seconds=600),
+        executor_kind=executor_kind,
     )
 
 
@@ -109,6 +117,44 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
 
     def store(self):
         return SQLiteTaskStore(database_path=self.db_path, max_pending_tasks=8)
+
+    async def test_deferred_known_run_resumes_without_second_dispatch(self):
+        store = self.store()
+        store.admit(request_for(TASK_ID, executor_kind="hermes_runs"))
+
+        class DeferredThenComplete:
+            def __init__(self):
+                self.tasks = []
+
+            async def execute(self, task):
+                self.tasks.append(task)
+                if len(self.tasks) == 1:
+                    return ExecutionOutcome(
+                        status="deferred",
+                        backend_run_id="run-deferred",
+                        run_started_at=NOW.isoformat(),
+                        run_deadline_at=(NOW + timedelta(seconds=60)).isoformat(),
+                        next_poll_at=(NOW + timedelta(seconds=0.05)).isoformat(),
+                        poll_attempts=1,
+                    )
+                return ExecutionOutcome(status="completed")
+
+        executor = DeferredThenComplete()
+        dispatcher = AsyncDispatcher(store, executor, now=lambda: NOW)
+        fast_operation_completed = asyncio.Event()
+
+        async def fast_operation():
+            await asyncio.sleep(0.005)
+            fast_operation_completed.set()
+
+        fast = asyncio.create_task(fast_operation())
+        handled = await dispatcher.dispatch_available()
+        await fast
+        self.assertEqual(handled, 1)
+        self.assertTrue(fast_operation_completed.is_set())
+        self.assertEqual(len(executor.tasks), 2)
+        self.assertEqual(executor.tasks[1].backend_run_id, "run-deferred")
+        self.assertEqual(store.get_by_task_id(TASK_ID)["status"], "completed")
 
     async def test_fake_executor_completes_admitted_task(self):
         store = self.store()

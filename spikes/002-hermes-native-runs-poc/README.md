@@ -51,8 +51,8 @@ A harness-only initial attempt failed because the new SQLite volume was root-own
 ## Hermes product default and activation gate
 
 - **Product direction:** Hermes Native Runs is the selected target Slow Brain. OpenAB ACP is an explicit legacy/rollback executor only. An unset `AMUSANT_SLOW_EXECUTOR` selects `hermes_runs`; `AMUSANT_SLOW_EXECUTOR=openab_acp` selects the legacy path. Missing Hermes URL/API key fails startup; no silent fallback.
-- **PR #45 scope:** adapter foundation only, currently **Draft**. It does not establish live Agent, hosting, memory, notification, security, or production readiness. No production environment/configuration changes, merge or Ready-for-Review transition are implied.
-- **Known blocker for long-running Hermes:** `AMUSANT_HERMES_TIMEOUT_SECONDS` defaults to **120 seconds** (max **600 seconds**). It is a **per-invocation polling budget**, not a durable overall Run execution deadline. If the budget expires while Hermes is still running, the current Dispatcher marks the Relay task **uncertain** even with a saved Run ID. This is not a resumable nonterminal poll timeout. [Issue #58](https://github.com/smallgun01/amusant/issues/58) owns durable polling, queue/run deadlines and capacity before long-running activation.
+- **PR #45 scope:** adapter foundation only; it merged to `main` on 2026-10-17. It does not establish live Agent, hosting, memory, notification, security, or production readiness. Merge did not authorize production changes or cutover.
+- **Pre-58A limitation (merged #45 baseline):** `AMUSANT_HERMES_TIMEOUT_SECONDS` conflated a per-invocation polling budget with the overall Run lifetime and could make a known Run uncertain at the cycle bound. Issue #58 split follow-up work into #58A durable polling/deadline and #58B capacity/concurrency. This POC README records only offline evidence; long-running activation remains gated on reviewed code and separate operational acceptance.
 - The existing 8 pending / 600s queue / 120s OpenAB-era execution figures are **not approved Hermes product requirements**. Candidate replacement values in #58 are subject to Owner approval.
 - Legacy rollback is **explicit configuration**, not automatic fallback. A production cutover and rollback runbook require separate review; #45 merge is not that approval.
 
@@ -69,3 +69,12 @@ A harness-only initial attempt failed because the new SQLite volume was root-own
 - The DynamoDB 100-TASK-row scan bound and Dispatcher remain unchanged.
 
 Named Hermes and Relay state volumes are retained. The runners stop containers but never remove volumes. Do not run docker compose down -v for this POC.
+
+
+## 58A implementation contract (under independent review)
+
+- Queue TTL, per-request HTTP timeout, per-cycle poll budget, poll interval, and overall Run deadline are distinct controls. Hermes requires explicit timing configuration; no Issue #58 candidate value is installed as a product default.
+- The Run ID, first-dispatch anchor, absolute deadline, next poll time, and attempt count are persisted on the existing Relay task. Known IDs resume GET-only after a poll-cycle yield or Relay restart; transient GET failures schedule another GET.
+- Ambiguous POST without a durably stored Run ID remains fail-closed and is never replayed. At the Run deadline, Inbox exposes the Relay policy status `timed_out` while disclosing possible remote activity; no cancellation is claimed unless confirmed.
+- SQLite and DynamoDB use their existing task stores. No #58B capacity/concurrency behavior is included.
+- Local unit/CI/fake-provider evidence is not real-Agent, paid-model, AWS, N100, or production acceptance.

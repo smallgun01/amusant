@@ -9,13 +9,13 @@ from __future__ import annotations
 import asyncio
 import math
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Literal, Protocol
 
 from .task_store import BoundedTaskResult, ClaimedTask, TaskStore
 
-ExecutionStatus = Literal["completed", "failed", "uncertain"]
+ExecutionStatus = Literal["completed", "failed", "uncertain", "deferred"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +23,11 @@ class ExecutionOutcome:
     status: ExecutionStatus
     code: str = "ok"
     result: BoundedTaskResult | None = None
+    backend_run_id: str | None = None
+    run_started_at: str | None = None
+    run_deadline_at: str | None = None
+    next_poll_at: str | None = None
+    poll_attempts: int = 0
 
 
 class TaskExecutor(Protocol):
@@ -70,6 +75,8 @@ class AsyncDispatcher:
         self._wakeup = asyncio.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._running = False
+        self._stopping = False
+        self._stop_event = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
 
     def notify(self) -> None:
@@ -101,12 +108,16 @@ class AsyncDispatcher:
         if self._loop is not None and self._loop is not loop:
             self._wakeup = asyncio.Event()
         self._loop = loop
+        self._stopping = False
+        self._stop_event = asyncio.Event()
         await self._store_call(self._store.recover_after_restart)
         self._running = True
         self._task = asyncio.create_task(self._run_loop())
 
     async def stop(self) -> None:
         self._running = False
+        self._stopping = True
+        self._stop_event.set()
         self._wakeup.set()
         task = self._task
         self._task = None
@@ -133,6 +144,8 @@ class AsyncDispatcher:
                 return handled
             await self._dispatch_one(claimed[0])
             handled += 1
+            if self._stopping:
+                return handled
 
     async def _run_loop(self) -> None:
         while self._running:
@@ -160,40 +173,93 @@ class AsyncDispatcher:
         if task.attempts > self._max_attempts:
             await self._safe_store(self._store.fail, task.task_id, code="dispatch_attempts_exhausted")
             return
-        try:
-            await self._store_call(
-                self._store.mark_dispatch_started,
-                task.task_id,
-                now=self._now(),
-            )
-        except Exception:
-            return
-        try:
-            outcome = await self._executor.execute(task)
-        except Exception as exc:
-            code = getattr(exc, "code", "acp_result_unconfirmed")
-            await self._safe_store(
-                self._store.mark_uncertain,
-                task.task_id,
-                code=code,
-            )
-            return
-        try:
-            if outcome.status == "completed":
-                await self._store_call(self._store.complete, task.task_id, result=outcome.result)
-                return
-            if outcome.status == "uncertain":
+        if task.executor_kind != "hermes_runs" or not task.backend_run_id:
+            started_at = self._now()
+            try:
                 await self._store_call(
+                    self._store.mark_dispatch_started,
+                    task.task_id,
+                    now=started_at,
+                )
+            except Exception:
+                return
+            task = replace(task, dispatch_started_at=started_at.astimezone(timezone.utc).isoformat())
+        while True:
+            if self._stopping:
+                # Leave a claimed Hermes Run with its durable ID for startup recovery.
+                return
+            try:
+                outcome = await self._executor.execute(task)
+            except Exception as exc:
+                code = getattr(exc, "code", "acp_result_unconfirmed")
+                await self._safe_store(
                     self._store.mark_uncertain,
                     task.task_id,
-                    code=outcome.code or "dispatch_result_unconfirmed",
+                    code=code,
                 )
                 return
-            await self._store_call(self._store.fail, task.task_id, code=outcome.code or "dispatch_failed")
-        except Exception:
-            code = "hermes_result_unconfirmed" if task.executor_kind == "hermes_runs" else "acp_result_unconfirmed"
-            await self._safe_store(
-                self._store.mark_uncertain,
-                task.task_id,
-                code=code,
-            )
+            if outcome.status == "deferred":
+                if (
+                    task.executor_kind != "hermes_runs"
+                    or not outcome.backend_run_id
+                    or not outcome.run_started_at
+                    or not outcome.run_deadline_at
+                    or not outcome.next_poll_at
+                ):
+                    await self._safe_store(
+                        self._store.mark_uncertain,
+                        task.task_id,
+                        code="hermes_poll_state_unconfirmed",
+                    )
+                    return
+                task = replace(
+                    task,
+                    backend_run_id=outcome.backend_run_id,
+                    run_started_at=outcome.run_started_at,
+                    run_deadline_at=outcome.run_deadline_at,
+                    next_poll_at=outcome.next_poll_at,
+                    poll_attempts=outcome.poll_attempts,
+                )
+                try:
+                    next_poll = datetime.fromisoformat(outcome.next_poll_at)
+                    run_deadline = datetime.fromisoformat(outcome.run_deadline_at)
+                    if next_poll.tzinfo is None or run_deadline.tzinfo is None:
+                        raise ValueError("poll timestamps must be timezone-aware")
+                except (TypeError, ValueError):
+                    await self._safe_store(
+                        self._store.mark_uncertain,
+                        task.task_id,
+                        code="hermes_poll_state_unconfirmed",
+                    )
+                    return
+                wake_at = min(next_poll.astimezone(timezone.utc), run_deadline.astimezone(timezone.utc))
+                delay = max(0.0, (wake_at - self._now().astimezone(timezone.utc)).total_seconds())
+                if delay > 0:
+                    try:
+                        await asyncio.wait_for(self._stop_event.wait(), timeout=delay)
+                    except asyncio.TimeoutError:
+                        pass
+                if self._stopping:
+                    return
+                continue
+            try:
+                if outcome.status == "completed":
+                    await self._store_call(self._store.complete, task.task_id, result=outcome.result)
+                    return
+                if outcome.status == "uncertain":
+                    await self._store_call(
+                        self._store.mark_uncertain,
+                        task.task_id,
+                        code=outcome.code or "dispatch_result_unconfirmed",
+                    )
+                    return
+                await self._store_call(self._store.fail, task.task_id, code=outcome.code or "dispatch_failed")
+                return
+            except Exception:
+                code = "hermes_result_unconfirmed" if task.executor_kind == "hermes_runs" else "acp_result_unconfirmed"
+                await self._safe_store(
+                    self._store.mark_uncertain,
+                    task.task_id,
+                    code=code,
+                )
+                return

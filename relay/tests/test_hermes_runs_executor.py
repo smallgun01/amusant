@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 import ipaddress
 import json
 import socket
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -20,7 +22,26 @@ from relay.task_store import ClaimedTask
 
 
 class HermesRunsExecutorTests(unittest.TestCase):
-    def make_task(self, *, owner="client-a", run_id=None, task_id="task-01"):
+    def make_task(
+        self,
+        *,
+        owner="client-a",
+        run_id=None,
+        task_id="task-01",
+        dispatch_started_at=None,
+        run_started_at=None,
+        run_deadline_at=None,
+        next_poll_at=None,
+        poll_attempts=0,
+    ):
+        now = datetime.now(timezone.utc)
+        dispatch_started_at = dispatch_started_at or now.isoformat()
+        if run_id is not None:
+            run_started_at = run_started_at or dispatch_started_at
+            run_deadline_at = run_deadline_at or (
+                datetime.fromisoformat(run_started_at) + timedelta(seconds=60)
+            ).isoformat()
+            next_poll_at = next_poll_at or now.isoformat()
         return ClaimedTask(
             task_id=task_id,
             client_id=owner,
@@ -33,17 +54,42 @@ class HermesRunsExecutorTests(unittest.TestCase):
             attempts=1,
             executor_kind="hermes_runs",
             backend_run_id=run_id,
+            dispatch_started_at=dispatch_started_at,
+            run_started_at=run_started_at,
+            run_deadline_at=run_deadline_at,
+            next_poll_at=next_poll_at,
+            poll_attempts=poll_attempts,
         )
 
     def make_executor(self, request, saved, **kwargs):
+        def save_run_id(task_id, run_id, **timing):
+            saved.append((task_id, run_id))
+
+        update_poll_state = kwargs.pop("update_poll_state", lambda *args, **kw: None)
+        kwargs.setdefault("run_deadline_seconds", 60.0)
+        kwargs.setdefault("poll_cycle_seconds", 0.01)
+        kwargs.setdefault("http_timeout_seconds", 0.05)
         return HermesRunsExecutor(
             url="http://127.0.0.1:8642",
             api_key="local-test-api-key-123",
-            save_backend_run_id=lambda task_id, run_id: saved.append((task_id, run_id)),
+            save_backend_run_id=save_run_id,
+            update_poll_state=update_poll_state,
             poll_interval_seconds=0.001,
             request_json=request,
             **kwargs,
         )
+
+    def test_http_timeout_is_configurable_separately_from_run_deadline(self):
+        executor = self.make_executor(
+            lambda *args: (200, {"status": "completed", "output": "ok"}),
+            [],
+            http_timeout_seconds=0.02,
+            poll_cycle_seconds=0.5,
+            run_deadline_seconds=7,
+        )
+        self.assertEqual(executor._http_timeout_seconds, 0.02)
+        self.assertEqual(executor._poll_cycle_seconds, 0.5)
+        self.assertEqual(executor._run_deadline_seconds, 7)
 
     def test_submit_persists_run_id_before_poll_and_bounds_result(self):
         saved = []
@@ -122,10 +168,107 @@ class HermesRunsExecutorTests(unittest.TestCase):
         self.assertEqual((expired_outcome.status, expired_outcome.code), ("uncertain", "hermes_expired"))
         self.assertIsNone(expired_outcome.result)
 
-    def test_missing_run_or_result_confirmation_stays_unknown(self):
-        executor = self.make_executor(lambda *args: (200, {"status": "running"}), [], timeout_seconds=0.01)
-        with self.assertRaises(HermesRequestError):
-            asyncio.run(executor.execute(self.make_task(run_id="run-1")))
+    def test_transient_get_failure_defers_and_resumes_get_only(self):
+        calls = []
+        poll_states = []
+
+        def request(method, path, body, headers):
+            calls.append(method)
+            if len(calls) == 1:
+                raise HermesRequestError("temporary GET failure")
+            return 200, {"status": "completed", "output": "Recovered after transient GET failure."}
+
+        task = self.make_task(run_id="run-transient")
+        executor = self.make_executor(
+            request,
+            [],
+            poll_cycle_seconds=0.05,
+            update_poll_state=lambda task_id, **state: poll_states.append((task_id, state)),
+        )
+        first = asyncio.run(executor.execute(task))
+        self.assertEqual(first.status, "deferred")
+        self.assertEqual(first.backend_run_id, "run-transient")
+        self.assertEqual(len(poll_states), 1)
+
+        resumed = self.make_task(
+            run_id=first.backend_run_id,
+            dispatch_started_at=task.dispatch_started_at,
+            run_started_at=first.run_started_at,
+            run_deadline_at=first.run_deadline_at,
+            next_poll_at=first.next_poll_at,
+            poll_attempts=first.poll_attempts,
+        )
+        second = asyncio.run(executor.execute(resumed))
+        self.assertEqual(second.status, "completed")
+        self.assertEqual(calls, ["GET", "GET"])
+
+    def test_slow_poll_yields_to_a_fast_event_loop_operation(self):
+        def request(method, path, body, headers):
+            time.sleep(0.03)
+            return 200, {"status": "running"}
+
+        executor = self.make_executor(request, [], poll_cycle_seconds=0.001)
+        task = self.make_task(run_id="run-fast-responsiveness")
+
+        async def run_both():
+            fast_done = asyncio.Event()
+
+            async def fast_operation():
+                await asyncio.sleep(0.001)
+                fast_done.set()
+
+            fast = asyncio.create_task(fast_operation())
+            outcome = await executor.execute(task)
+            await fast
+            return outcome, fast_done.is_set()
+
+        outcome, fast_completed = asyncio.run(run_both())
+        self.assertEqual(outcome.status, "deferred")
+        self.assertTrue(fast_completed)
+
+    def test_persisted_run_deadline_does_not_reset_on_poll_resume(self):
+        start = datetime.now(timezone.utc)
+        deadline = start + timedelta(seconds=0.03)
+        calls = []
+
+        def request(method, path, body, headers):
+            calls.append(method)
+            return 200, {"status": "running"}
+
+        task = self.make_task(
+            run_id="run-fixed-deadline",
+            dispatch_started_at=start.isoformat(),
+            run_started_at=start.isoformat(),
+            run_deadline_at=deadline.isoformat(),
+            next_poll_at=start.isoformat(),
+        )
+        executor = self.make_executor(request, [], run_deadline_seconds=60, poll_cycle_seconds=0.005)
+        first = asyncio.run(executor.execute(task))
+        self.assertEqual(first.status, "deferred")
+        self.assertEqual(first.run_deadline_at, deadline.isoformat())
+        time.sleep(max(0.0, (deadline - datetime.now(timezone.utc)).total_seconds()) + 0.005)
+        resumed = self.make_task(
+            run_id=first.backend_run_id,
+            dispatch_started_at=task.dispatch_started_at,
+            run_started_at=first.run_started_at,
+            run_deadline_at=first.run_deadline_at,
+            next_poll_at=first.next_poll_at,
+            poll_attempts=first.poll_attempts,
+        )
+        final = asyncio.run(executor.execute(resumed))
+        self.assertEqual((final.status, final.code), ("uncertain", "hermes_run_deadline_exceeded"))
+        self.assertIn("GET", calls)
+        self.assertNotIn("POST", calls)
+
+    def test_poll_cycle_budget_defers_without_marking_run_uncertain(self):
+        executor = self.make_executor(
+            lambda *args: (200, {"status": "running"}), [], poll_cycle_seconds=0.0001
+        )
+        outcome = asyncio.run(executor.execute(self.make_task(run_id="run-1")))
+        self.assertEqual((outcome.status, outcome.code), ("deferred", "hermes_poll_cycle_complete"))
+        self.assertEqual(outcome.backend_run_id, "run-1")
+        self.assertIsNotNone(outcome.next_poll_at)
+        self.assertIsNotNone(outcome.run_deadline_at)
 
         no_result = self.make_executor(lambda *args: (200, {"status": "completed"}), [])
         outcome = asyncio.run(no_result.execute(self.make_task(run_id="run-3")))
@@ -213,7 +356,12 @@ class HermesRunsExecutorTests(unittest.TestCase):
         executor = HermesRunsExecutor(
             url="https://hermes.example",
             api_key="local-test-api-key-123",
-            save_backend_run_id=lambda *_: None,
+            save_backend_run_id=lambda *args, **kwargs: None,
+            update_poll_state=lambda *args, **kwargs: None,
+            run_deadline_seconds=10,
+            poll_cycle_seconds=1,
+            http_timeout_seconds=0.05,
+            poll_interval_seconds=0.01,
         )
         public_info = (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("8.8.8.8", 443))
         with patch("relay.hermes_runs_executor.socket.getaddrinfo", return_value=[public_info]):
@@ -258,21 +406,52 @@ class HermesRunsExecutorTests(unittest.TestCase):
         # This is a static test-fixture policy check, not production sandbox acceptance.
 
     def test_private_http_and_origin_validation(self):
+        common = {
+            "api_key": "local-test-api-key-123",
+            "save_backend_run_id": lambda *args, **kwargs: None,
+            "update_poll_state": lambda *args, **kwargs: None,
+            "run_deadline_seconds": 10,
+            "poll_cycle_seconds": 1,
+            "http_timeout_seconds": 0.05,
+            "poll_interval_seconds": 0.01,
+        }
         with self.assertRaises(HermesConfigError):
-            HermesRunsExecutor(url="http://hermes.internal:8642", api_key="local-test-api-key-123", save_backend_run_id=lambda *_: None)
+            HermesRunsExecutor(url="http://hermes.internal:8642", **common)
         with self.assertRaises(HermesConfigError):
-            HermesRunsExecutor(url="https://example.com/path", api_key="local-test-api-key-123", save_backend_run_id=lambda *_: None)
+            HermesRunsExecutor(url="https://example.com/path", **common)
         executor = HermesRunsExecutor(
-            url="http://hermes:8642", api_key="local-test-api-key-123",
-            save_backend_run_id=lambda *_: None, allow_plaintext=True,
+            url="http://hermes:8642", allow_plaintext=True,
             request_json=lambda *args: (200, {"status": "completed", "output": "ok"}),
+            **common,
         )
         self.assertIsNotNone(executor)
 
-    def test_loader_requires_pair_and_server_executor_selection_is_bounded(self):
-        self.assertIsNone(load_hermes_runs_executor({}, save_backend_run_id=lambda *_: None))
+    def test_loader_requires_pair_and_separate_timing_configuration(self):
+        no_op = lambda *args, **kwargs: None
+        self.assertIsNone(load_hermes_runs_executor({}, save_backend_run_id=no_op, update_poll_state=no_op))
         with self.assertRaises(HermesConfigError):
-            load_hermes_runs_executor({"AMUSANT_HERMES_API_KEY": "local-test-api-key-123"}, save_backend_run_id=lambda *_: None)
+            load_hermes_runs_executor({"AMUSANT_HERMES_API_KEY": "local-test-api-key-123"}, save_backend_run_id=no_op, update_poll_state=no_op)
+
+        configured = {
+            "AMUSANT_HERMES_RUNS_URL": "http://127.0.0.1:8642",
+            "AMUSANT_HERMES_API_KEY": "local-test-api-key-123",
+            "AMUSANT_HERMES_RUN_DEADLINE_SECONDS": "30",
+            "AMUSANT_HERMES_POLL_CYCLE_SECONDS": "1",
+            "AMUSANT_HERMES_HTTP_TIMEOUT_SECONDS": "0.5",
+            "AMUSANT_HERMES_POLL_INTERVAL_SECONDS": "0.01",
+        }
+        with self.assertRaisesRegex(HermesConfigError, "RUN_DEADLINE"):
+            load_hermes_runs_executor({**configured, "AMUSANT_HERMES_RUN_DEADLINE_SECONDS": ""}, save_backend_run_id=no_op, update_poll_state=no_op)
+        with self.assertRaisesRegex(HermesConfigError, "ambiguous"):
+            load_hermes_runs_executor({**configured, "AMUSANT_HERMES_TIMEOUT_SECONDS": "120"}, save_backend_run_id=no_op, update_poll_state=no_op)
+        loaded = load_hermes_runs_executor(configured, save_backend_run_id=no_op, update_poll_state=no_op)
+        self.assertEqual(loaded._run_deadline_seconds, 30)
+        self.assertEqual(loaded._poll_cycle_seconds, 1)
+        self.assertEqual(loaded._http_timeout_seconds, 0.5)
+        self.assertEqual(loaded._poll_interval, 0.01)
+        for missing in ("AMUSANT_HERMES_POLL_CYCLE_SECONDS", "AMUSANT_HERMES_HTTP_TIMEOUT_SECONDS", "AMUSANT_HERMES_POLL_INTERVAL_SECONDS"):
+            with self.subTest(missing=missing), self.assertRaisesRegex(HermesConfigError, missing):
+                load_hermes_runs_executor({key: value for key, value in configured.items() if key != missing}, save_backend_run_id=no_op, update_poll_state=no_op)
 
         common = {
             "AMUSANT_CLIENT_ID": "client-a",

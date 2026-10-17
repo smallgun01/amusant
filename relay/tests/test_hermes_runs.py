@@ -70,7 +70,15 @@ class SQLiteHermesMappingTests(unittest.TestCase):
         first.admit(request(task_id))
         claim = first.claim_due(now=NOW, lease_seconds=30)[0]
         first.mark_dispatch_started(task_id, now=NOW)
-        first.save_backend_run_id(task_id, "run-phase2b-001")
+        deadline = NOW + timedelta(seconds=30)  # test fixture only; not an approved product default
+        first.save_backend_run_id(
+            task_id,
+            "run-phase2b-001",
+            run_started_at=NOW,
+            run_deadline_at=deadline,
+            next_poll_at=NOW + timedelta(seconds=5),
+            poll_attempts=2,
+        )
 
         reopened = self.store()
         counts = reopened.recover_after_restart()
@@ -78,12 +86,22 @@ class SQLiteHermesMappingTests(unittest.TestCase):
         row = reopened.get_by_task_id(task_id)
         self.assertEqual(row["executor_kind"], "hermes_runs")
         self.assertEqual(row["backend_run_id"], "run-phase2b-001")
-        self.assertFalse(row["dispatch_started"])
+        self.assertTrue(row["dispatch_started"])
+        self.assertEqual(row["run_started_at"], NOW.isoformat())
+        self.assertEqual(row["run_deadline_at"], deadline.isoformat())
+        self.assertEqual(row["next_poll_at"], (NOW + timedelta(seconds=5)).isoformat())
+        self.assertEqual(row["poll_attempts"], 2)
 
         resumed = reopened.claim_due(now=NOW + timedelta(seconds=1), lease_seconds=30)[0]
         self.assertEqual(resumed.task_id, claim.task_id)
         self.assertEqual(resumed.executor_kind, "hermes_runs")
         self.assertEqual(resumed.backend_run_id, "run-phase2b-001")
+        self.assertEqual(resumed.dispatch_started_at, NOW.isoformat())
+        self.assertEqual(resumed.run_deadline_at, deadline.isoformat())
+        reopened.update_hermes_poll_state(
+            task_id, next_poll_at=NOW + timedelta(seconds=10), poll_attempts=3
+        )
+        self.assertEqual(reopened.get_by_task_id(task_id)["next_poll_at"], (NOW + timedelta(seconds=10)).isoformat())
 
     def test_sqlite_expired_hermes_queue_before_first_claim_stays_expired(self):
         store = self.store()
@@ -136,7 +154,13 @@ class SQLiteHermesMappingTests(unittest.TestCase):
         store.admit(request(task_id, expires_at=expires_at))
         store.claim_due(now=NOW, lease_seconds=30)
         store.mark_dispatch_started(task_id, now=NOW)
-        store.save_backend_run_id(task_id, "run-expired-remote")
+        store.save_backend_run_id(
+            task_id,
+            "run-expired-remote",
+            run_started_at=NOW,
+            run_deadline_at=NOW + timedelta(seconds=60),
+            next_poll_at=NOW,
+        )
 
         after_queue_deadline = NOW + timedelta(seconds=2)
         store.recover_after_restart()
@@ -144,7 +168,13 @@ class SQLiteHermesMappingTests(unittest.TestCase):
             url="http://127.0.0.1:8642",
             api_key="local-test-api-key-123",
             save_backend_run_id=store.save_backend_run_id,
+            update_poll_state=store.update_hermes_poll_state,
+            run_deadline_seconds=60,
+            poll_cycle_seconds=0.01,
+            http_timeout_seconds=0.05,
+            poll_interval_seconds=0.001,
             allow_plaintext=True,
+            clock=lambda: after_queue_deadline,
             request_json=lambda *args: (200, {"status": "expired"}),
         )
         handled = asyncio.run(
@@ -153,6 +183,7 @@ class SQLiteHermesMappingTests(unittest.TestCase):
         result = store.lookup_inbox(client_id=CLIENT, task_id=task_id, now=after_queue_deadline)
         self.assertEqual(handled, 1)
         self.assertEqual(result["status"], "uncertain")
+        self.assertEqual(result["code"], "hermes_expired")
         self.assertNotIn("speak", result)
         self.assertNotIn("speak_now", result)
 
@@ -220,7 +251,52 @@ class SQLiteHermesMappingTests(unittest.TestCase):
         self.assertEqual(row["executor_kind"], "openab_acp")
         self.assertIsNone(row["backend_run_id"])
         connection = sqlite3.connect(self.db)
-        self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 5)
+        self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 6)
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(slow_tasks)")}
+        self.assertTrue({"run_started_at", "run_deadline_at", "next_poll_at", "poll_attempts"} <= columns)
+        connection.close()
+
+    def test_v5_known_run_migration_backfills_start_anchor_only(self):
+        connection = sqlite3.connect(self.db)
+        connection.executescript(
+            """
+            CREATE TABLE slow_tasks (
+                task_id TEXT PRIMARY KEY, client_id TEXT NOT NULL, conversation_id TEXT NOT NULL,
+                turn_id INTEGER NOT NULL, call_id TEXT NOT NULL, payload_sha256 TEXT NOT NULL,
+                task_text TEXT NOT NULL, task_kind TEXT NOT NULL, backend TEXT NOT NULL,
+                executor_kind TEXT NOT NULL, backend_run_id TEXT, status TEXT NOT NULL,
+                created_at TEXT NOT NULL, expires_at TEXT NOT NULL,
+                UNIQUE(client_id, conversation_id, turn_id, call_id)
+            );
+            CREATE TABLE dispatch_outbox (
+                task_id TEXT PRIMARY KEY REFERENCES slow_tasks(task_id), state TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
+                claimed_until TEXT, dispatch_started_at TEXT, last_error TEXT
+            );
+            PRAGMA user_version=5;
+            """
+        )
+        task_id = str(uuid4())
+        dispatch_started = NOW.isoformat()
+        connection.execute(
+            "INSERT INTO slow_tasks VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (task_id, CLIENT, CONVERSATION, 1, "legacy-hermes-call", "hash", "old task", "research", "openab", "hermes_runs", "run-legacy", "running", NOW.isoformat(), (NOW + timedelta(seconds=600)).isoformat()),
+        )
+        connection.execute(
+            "INSERT INTO dispatch_outbox(task_id,state,attempts,created_at,dispatch_started_at) VALUES(?,?,?,?,?)",
+            (task_id, "claimed", 1, NOW.isoformat(), dispatch_started),
+        )
+        connection.commit()
+        connection.close()
+
+        store = self.store()
+        row = store.get_by_task_id(task_id)
+        self.assertEqual(row["run_started_at"], dispatch_started)
+        self.assertIsNone(row["run_deadline_at"])
+        self.assertIsNone(row["next_poll_at"])
+        self.assertEqual(row["poll_attempts"], 0)
+        connection = sqlite3.connect(self.db)
+        self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 6)
         connection.close()
 
 
@@ -234,6 +310,27 @@ class DynamoHermesMappingTests(unittest.TestCase):
             owner_store.lookup_inbox(client_id="client-b", task_id=task_id)
         other_store = DynamoDbTaskStore(ledger, client_id="client-b", max_pending_tasks=8)
         self.assertIsNone(other_store.lookup_inbox(client_id="client-b", task_id=task_id))
+
+    def test_dynamo_run_deadline_surfaces_timed_out_without_claiming_cancellation(self):
+        ledger = InMemoryDynamoLedger()
+        store = DynamoDbTaskStore(ledger, client_id=CLIENT, max_pending_tasks=8)
+        task_id = str(uuid4())
+        store.admit(request(task_id))
+        store.claim_due(now=NOW, lease_seconds=30)
+        store.mark_dispatch_started(task_id, now=NOW)
+        store.save_backend_run_id(
+            task_id,
+            "run-ddb-deadline",
+            run_started_at=NOW,
+            run_deadline_at=NOW + timedelta(seconds=30),
+            next_poll_at=NOW,
+        )
+        store.mark_uncertain(task_id, code="hermes_run_deadline_exceeded")
+        result = store.lookup_inbox(client_id=CLIENT, task_id=task_id, now=NOW)
+        self.assertEqual(result["status"], "timed_out")
+        self.assertEqual(result["code"], "hermes_run_deadline_exceeded")
+        self.assertEqual(store.get_by_task_id(task_id)["status"], "uncertain")
+        self.assertNotIn("speak", result)
 
     def test_dynamo_expired_hermes_queue_before_first_claim_stays_expired(self):
         ledger = InMemoryDynamoLedger()
@@ -289,7 +386,15 @@ class DynamoHermesMappingTests(unittest.TestCase):
         first.admit(request(task_id))
         first.claim_due(now=NOW, lease_seconds=30)
         first.mark_dispatch_started(task_id, now=NOW)
-        first.save_backend_run_id(task_id, "run-phase2b-ddb-001")
+        deadline = NOW + timedelta(seconds=30)  # test fixture only; not an approved product default
+        first.save_backend_run_id(
+            task_id,
+            "run-phase2b-ddb-001",
+            run_started_at=NOW,
+            run_deadline_at=deadline,
+            next_poll_at=NOW + timedelta(seconds=5),
+            poll_attempts=2,
+        )
 
         reopened = DynamoDbTaskStore(ledger, client_id=CLIENT, max_pending_tasks=8)
         counts = reopened.recover_after_restart()
@@ -297,8 +402,18 @@ class DynamoHermesMappingTests(unittest.TestCase):
         row = reopened.get_by_task_id(task_id)
         self.assertEqual(row["executor_kind"], "hermes_runs")
         self.assertEqual(row["backend_run_id"], "run-phase2b-ddb-001")
+        self.assertEqual(row["run_started_at"], NOW.isoformat())
+        self.assertEqual(row["run_deadline_at"], deadline.isoformat())
+        self.assertEqual(row["next_poll_at"], (NOW + timedelta(seconds=5)).isoformat())
+        self.assertEqual(row["poll_attempts"], 2)
         resumed = reopened.claim_due(now=NOW + timedelta(seconds=1), lease_seconds=30)[0]
         self.assertEqual(resumed.backend_run_id, "run-phase2b-ddb-001")
+        self.assertEqual(resumed.run_deadline_at, deadline.isoformat())
+        self.assertEqual(resumed.dispatch_started_at, NOW.isoformat())
+        reopened.update_hermes_poll_state(
+            task_id, next_poll_at=NOW + timedelta(seconds=10), poll_attempts=3
+        )
+        self.assertEqual(reopened.get_by_task_id(task_id)["next_poll_at"], (NOW + timedelta(seconds=10)).isoformat())
 
 
 if __name__ == "__main__":

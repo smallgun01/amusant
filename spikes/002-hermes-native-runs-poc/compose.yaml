@@ -82,6 +82,10 @@ services:
       POC_FAKE_BASE: http://fake-provider:8000
       AMUSANT_HERMES_RUNS_URL: http://hermes:8642
       AMUSANT_HERMES_API_KEY: "${POC_API_KEY:?run_poc.py must set POC_API_KEY}"
+      AMUSANT_HERMES_RUN_DEADLINE_SECONDS: "${POC_RUN_DEADLINE_SECONDS:?run_phase2b.py must set test-only deadline}"
+      AMUSANT_HERMES_POLL_CYCLE_SECONDS: "${POC_POLL_CYCLE_SECONDS:?run_phase2b.py must set test-only cycle budget}"
+      AMUSANT_HERMES_HTTP_TIMEOUT_SECONDS: "${POC_HTTP_TIMEOUT_SECONDS:?run_phase2b.py must set test-only HTTP timeout}"
+      AMUSANT_HERMES_POLL_INTERVAL_SECONDS: "${POC_POLL_INTERVAL_SECONDS:?run_phase2b.py must set test-only poll interval}"
       AMUSANT_HERMES_ALLOW_PLAINTEXT: "1"
       PYTHONPATH: /repo
       POC_RUN_TAG: "${POC_RUN_TAG:-p2b-unused}"

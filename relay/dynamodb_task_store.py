@@ -315,7 +315,6 @@ class DynamoDbTaskStore:
                             "outbox_state": "pending",
                             "status": "queued",
                             "claimed_until": None,
-                            "dispatch_started_at": None,
                             "last_error": None,
                         },
                         condition="claimed_started_run_known",
@@ -408,6 +407,11 @@ class DynamoDbTaskStore:
                     attempts=int(updated["attempts"]),
                     executor_kind=str(updated.get("executor_kind") or "openab_acp"),
                     backend_run_id=str(updated["backend_run_id"]) if updated.get("backend_run_id") else None,
+                    dispatch_started_at=str(updated["dispatch_started_at"]) if updated.get("dispatch_started_at") else None,
+                    run_started_at=str(updated["run_started_at"]) if updated.get("run_started_at") else None,
+                    run_deadline_at=str(updated["run_deadline_at"]) if updated.get("run_deadline_at") else None,
+                    next_poll_at=str(updated["next_poll_at"]) if updated.get("next_poll_at") else None,
+                    poll_attempts=int(updated.get("poll_attempts") or 0),
                 )
             )
         return claimed
@@ -428,10 +432,29 @@ class DynamoDbTaskStore:
         except LedgerConditionFailed as exc:
             raise AdmissionUnavailable("dispatch_not_claimed") from exc
 
-    def save_backend_run_id(self, task_id: str, run_id: str) -> None:
-        """Store one Hermes Run ID with an owner-scoped conditional update."""
+    def save_backend_run_id(
+        self,
+        task_id: str,
+        run_id: str,
+        *,
+        run_started_at: datetime | None = None,
+        run_deadline_at: datetime | None = None,
+        next_poll_at: datetime | None = None,
+        poll_attempts: int = 0,
+    ) -> None:
+        """Store one Run ID and its first timing state with owner-scoped conditions."""
         if not isinstance(run_id, str) or not _RUN_ID_RE.fullmatch(run_id):
             raise AdmissionUnavailable("invalid_backend_run_id")
+        if type(poll_attempts) is not int or poll_attempts < 0:
+            raise AdmissionUnavailable("invalid_poll_attempts")
+        timing = (run_started_at, run_deadline_at, next_poll_at)
+        if any(value is not None for value in timing) and not all(value is not None for value in timing):
+            raise AdmissionUnavailable("incomplete_hermes_run_timing")
+        started_iso = _utc_iso(run_started_at) if run_started_at is not None else None
+        deadline_iso = _utc_iso(run_deadline_at) if run_deadline_at is not None else None
+        next_poll_iso = _utc_iso(next_poll_at) if next_poll_at is not None else None
+        if started_iso is not None and deadline_iso <= started_iso:
+            raise AdmissionUnavailable("invalid_hermes_run_deadline")
         with self._lock:
             key = _task_sk(task_id)
             current = self._ledger.get_item(self._client_id, key, consistent=True)
@@ -441,16 +464,41 @@ class DynamoDbTaskStore:
                 raise AdmissionUnavailable("executor_mismatch")
             existing = current.get("backend_run_id")
             if existing is not None:
-                if existing == run_id:
-                    return
-                raise AdmissionConflict("backend_run_id_conflict")
+                if existing != run_id:
+                    raise AdmissionConflict("backend_run_id_conflict")
+                if started_iso is not None and not current.get("run_deadline_at"):
+                    if current.get("dispatch_started_at") and started_iso != current.get("dispatch_started_at"):
+                        raise AdmissionUnavailable("run_start_anchor_mismatch")
+                    patch = {
+                        "run_started_at": current.get("run_started_at") or started_iso,
+                        "run_deadline_at": current.get("run_deadline_at") or deadline_iso,
+                        "next_poll_at": current.get("next_poll_at") or next_poll_iso,
+                        "poll_attempts": int(current.get("poll_attempts") or poll_attempts),
+                    }
+                    self._ledger.update_item(
+                        self._client_id,
+                        key,
+                        patch,
+                        condition="claimed_started_run_known",
+                    )
+                return
             if current.get("outbox_state") != "claimed" or not current.get("dispatch_started_at"):
                 raise AdmissionUnavailable("dispatch_not_claimed")
+            if started_iso is not None and started_iso != current.get("dispatch_started_at"):
+                raise AdmissionUnavailable("run_start_anchor_mismatch")
+            patch = {"backend_run_id": run_id}
+            if started_iso is not None:
+                patch.update({
+                    "run_started_at": started_iso,
+                    "run_deadline_at": deadline_iso,
+                    "next_poll_at": next_poll_iso,
+                    "poll_attempts": poll_attempts,
+                })
             try:
                 self._ledger.update_item(
                     self._client_id,
                     key,
-                    {"backend_run_id": run_id},
+                    patch,
                     condition="claimed_started_run_id_absent",
                 )
             except LedgerConditionFailed as exc:
@@ -465,9 +513,37 @@ class DynamoDbTaskStore:
                     fresh = self._ledger.get_item(self._client_id, key, consistent=True)
                 except (AdmissionUnavailable, LedgerAmbiguous):
                     raise AdmissionUnknown("backend_run_mapping_unconfirmed") from exc
-                if fresh is not None and fresh.get("backend_run_id") == run_id:
+                if (fresh is not None and fresh.get("backend_run_id") == run_id
+                        and (deadline_iso is None or fresh.get("run_deadline_at") == deadline_iso)):
                     return
                 raise AdmissionUnknown("backend_run_mapping_unconfirmed") from exc
+
+    def update_hermes_poll_state(
+        self, task_id: str, *, next_poll_at: datetime, poll_attempts: int
+    ) -> None:
+        if type(poll_attempts) is not int or poll_attempts < 0:
+            raise AdmissionUnavailable("invalid_poll_attempts")
+        next_poll_iso = _utc_iso(next_poll_at)
+        with self._lock:
+            key = _task_sk(task_id)
+            try:
+                self._ledger.update_item(
+                    self._client_id,
+                    key,
+                    {"next_poll_at": next_poll_iso, "poll_attempts": poll_attempts},
+                    condition="claimed_started_run_known",
+                )
+            except LedgerConditionFailed as exc:
+                raise AdmissionUnavailable("hermes_poll_state_unavailable") from exc
+            except LedgerAmbiguous as exc:
+                try:
+                    fresh = self._ledger.get_item(self._client_id, key, consistent=True)
+                except (AdmissionUnavailable, LedgerAmbiguous):
+                    raise AdmissionUnknown("hermes_poll_state_unconfirmed") from exc
+                if (fresh is not None and fresh.get("next_poll_at") == next_poll_iso
+                        and int(fresh.get("poll_attempts") or 0) == poll_attempts):
+                    return
+                raise AdmissionUnknown("hermes_poll_state_unconfirmed") from exc
 
     def complete(self, task_id: str, *, result: BoundedTaskResult | None = None) -> None:
         self._finish(task_id, task_status="completed", outbox_state="sent", error=None, result=result)
@@ -517,6 +593,7 @@ class DynamoDbTaskStore:
             "outbox_state": outbox_state,
             "status": task_status,
             "last_error": error,
+            "next_poll_at": None,
             "retain_until": _retain_until(finished_at),
             "delivery_state": "pending",
             "inbox_updated_at": _utc_iso(finished_at),
@@ -565,9 +642,14 @@ class DynamoDbTaskStore:
             "dispatch_state": row["outbox_state"],
             "attempts": row.get("attempts"),
             "dispatch_started": row.get("dispatch_started_at") is not None,
+            "dispatch_started_at": row.get("dispatch_started_at"),
             "last_error": row.get("last_error"),
             "executor_kind": row.get("executor_kind", "openab_acp"),
             "backend_run_id": row.get("backend_run_id"),
+            "run_started_at": row.get("run_started_at"),
+            "run_deadline_at": row.get("run_deadline_at"),
+            "next_poll_at": row.get("next_poll_at"),
+            "poll_attempts": int(row.get("poll_attempts") or 0),
         }
 
     def lookup_inbox(
@@ -610,6 +692,9 @@ class DynamoDbTaskStore:
                 return None
             row = found
         status = str(row["status"])
+        if status == "uncertain" and row.get("last_error") == "hermes_run_deadline_exceeded":
+            # Surface the Relay policy timeout while preserving possible remote activity.
+            status = "timed_out"
         expires = str(row.get("expires_at") or "")
         if status in {"queued", "running"} and expires <= now_iso:
             # Preserve OpenAB's legacy expiry behavior. For Hermes, this is a queue
@@ -626,7 +711,7 @@ class DynamoDbTaskStore:
                 "details_md": row.get("details_md") or "",
             }
         next_delivery = delivery
-        if status in {"completed", "failed", "uncertain", "expired"}:
+        if status in {"completed", "failed", "uncertain", "timed_out", "expired"}:
             # Lookup only advances pending/notified to read. Spoken is explicit.
             if delivery in {None, "pending", "notified"}:
                 next_delivery = "read"
@@ -649,6 +734,8 @@ class DynamoDbTaskStore:
             "task_kind": row["task_kind"],
             "delivery_state": delivery,
         }
+        if status in {"failed", "uncertain", "timed_out"} and isinstance(row.get("last_error"), str):
+            payload["code"] = row["last_error"]
         if status == "completed" and result is not None:
             payload.update(result)
         if speak and status == "completed" and result is not None:

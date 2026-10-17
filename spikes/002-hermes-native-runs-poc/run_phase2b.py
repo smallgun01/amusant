@@ -22,6 +22,11 @@ COMPOSE_ENV = {key: os.environ[key] for key in _DOCKER_ENV_KEYS if key in os.env
 COMPOSE_ENV["POC_API_KEY"] = "poc-" + secrets.token_urlsafe(24)
 COMPOSE_ENV["POC_FAKE_MODEL_KEY"] = "fake-" + secrets.token_urlsafe(24)
 COMPOSE_ENV["POC_RUN_TAG"] = uuid.uuid4().hex[:12]
+# Explicit test-only timing values; no product/default policy is inferred.
+COMPOSE_ENV["POC_RUN_DEADLINE_SECONDS"] = "60"
+COMPOSE_ENV["POC_POLL_CYCLE_SECONDS"] = "2"
+COMPOSE_ENV["POC_HTTP_TIMEOUT_SECONDS"] = "3"
+COMPOSE_ENV["POC_POLL_INTERVAL_SECONDS"] = "0.05"
 
 
 def compose(*args, check=True):

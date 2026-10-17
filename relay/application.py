@@ -265,7 +265,9 @@ def build_supported_relay_runtime(
     store = build_task_store(environ, max_pending_tasks=config.max_pending_tasks)
     acp_executor = load_acp_executor(environ)
     hermes_executor = load_hermes_runs_executor(
-        environ, save_backend_run_id=store.save_backend_run_id
+        environ,
+        save_backend_run_id=store.save_backend_run_id,
+        update_poll_state=store.update_hermes_poll_state,
     )
     configured_executors = {
         "openab_acp": acp_executor,
