@@ -199,6 +199,16 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["dispatch_state"], "failed")
         self.assertEqual(row["last_error"], "acp_timeout")
 
+    async def test_uncertain_execution_outcome_is_uncertain_not_failed(self):
+        store = self.store()
+        store.admit(request_for(TASK_ID))
+        executor = FakeExecutor(outcome=ExecutionOutcome(status="uncertain", code="hermes_run_interrupted"))
+        await AsyncDispatcher(store, executor, now=lambda: NOW).dispatch_available()
+        row = store.get_by_task_id(TASK_ID)
+        self.assertEqual(row["status"], "uncertain")
+        self.assertEqual(row["dispatch_state"], "uncertain")
+        self.assertEqual(row["last_error"], "hermes_run_interrupted")
+
     async def test_attempts_exhausted_fail_closed_without_executor(self):
         store = self.store()
         store.admit(request_for(TASK_ID))
@@ -260,6 +270,41 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(handled, 1)
         self.assertEqual(store.get_by_task_id(TASK_ID)["dispatch_state"], "sent")
 
+    def test_hermes_default_requires_configuration_and_never_silently_uses_acp(self):
+        env = {
+            "AMUSANT_LIVE_PROVIDER": "gemini",
+            "GEMINI_API_KEY": "offline-test-key",
+            "AMUSANT_CLIENT_ID": CLIENT,
+            "AMUSANT_BACKEND_ID": "server-backend",
+            "AMUSANT_TASK_DB": str(self.db_path),
+        }
+        with patch("relay.application.load_acp_executor", return_value=FakeExecutor()), \
+             patch("relay.application.load_hermes_runs_executor", return_value=None):
+            with self.assertRaisesRegex(ValueError, "Hermes selection requires"):
+                build_supported_relay_runtime(
+                    expected_device_token="device-token-12",
+                    environ=env,
+                    sdk_types=FakeSchemaTypes,
+                )
+
+    def test_hermes_default_selects_configured_executor_without_acp(self):
+        env = {
+            "AMUSANT_LIVE_PROVIDER": "gemini",
+            "GEMINI_API_KEY": "offline-test-key",
+            "AMUSANT_CLIENT_ID": CLIENT,
+            "AMUSANT_BACKEND_ID": "server-backend",
+            "AMUSANT_TASK_DB": str(self.db_path),
+        }
+        with patch("relay.application.load_acp_executor", return_value=None), \
+             patch("relay.application.load_hermes_runs_executor", return_value=FakeExecutor()), \
+             patch("relay.application.build_live_provider", return_value=object()):
+            _handler, dispatcher, _store = build_supported_relay_runtime(
+                expected_device_token="device-token-12",
+                environ=env,
+                sdk_types=FakeSchemaTypes,
+            )
+        self.assertIsNotNone(dispatcher)
+
     def test_supported_startup_recovers_started_work_without_executor(self):
         store = self.store()
         store.admit(request_for(TASK_ID))
@@ -270,6 +315,7 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
             "GEMINI_API_KEY": "offline-test-key",
             "AMUSANT_CLIENT_ID": CLIENT,
             "AMUSANT_BACKEND_ID": "openab",
+            "AMUSANT_SLOW_EXECUTOR": "openab_acp",  # explicit legacy recovery fixture
             "AMUSANT_TASK_DB": str(self.db_path),
         }
         with patch("relay.application.build_live_provider", return_value=object()):
@@ -340,6 +386,7 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
             "GEMINI_API_KEY": "offline-test-key",
             "AMUSANT_CLIENT_ID": CLIENT,
             "AMUSANT_BACKEND_ID": "openab",
+            "AMUSANT_SLOW_EXECUTOR": "openab_acp",  # explicit legacy recovery fixture
             "AMUSANT_TASK_DB": str(self.db_path),
         }
         with patch("relay.application.build_task_store", return_value=counted), \

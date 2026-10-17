@@ -157,7 +157,7 @@ Task completion and result *delivery* are different: a completed result may rema
 ### Store choice and lifecycle
 
 - **P3 local/offline:** Retain PR #8's SQLite durable admission and same-transaction outbox. SQLite remains useful for tests; extend it with completion/results in later implementation slices.
-- **AWS:** An external durable store is required before claiming survival of ECS A replacement. **DynamoDB is the preferred small-store option.** Design: ADR-0002 (proposed). Table/IAM/proof remain separately approved. A container-local SQLite file does not meet AWS restart durability.
+- **AWS:** An external durable store is required before claiming survival of ECS A replacement. **DynamoDB is the accepted AWS ledger** (ADR-0002); 2026-10-12 durability and 2026-10-13 private WSS/T4b bounded live tests proved same-task after-stop readback. Persistent Service A, lifecycle/operations and costs remain separately unverified and unapproved. A container-local SQLite file does not meet AWS restart durability.
 - **SQS:** Not required in the two-Service MVP. The internal Dispatcher may wake immediately on admission and independently recover `queued` records on startup/periodically. If SQS is added in a later design, explicitly preserve atomic dispatch-intent semantics; do not blindly dual-write.
 - The record store belongs to the Relay's *logical responsibility*, even when the bytes live in an AWS managed service. It should remain small and outside the voice critical path.
 
@@ -257,11 +257,11 @@ For a single Relay, a lightweight recovery scan and per-task execution stage are
 - **P3.1:** Existing SQLite `delegate_task` admission and atomic outbox implementation merged. Local CLI now wires the tool declaration and admission handler; ECS/service startup and a replacement-safe store remain.
 - **P3.2:** Application-scoped Async Dispatcher, SQLite lifecycle migration, queued recovery, and fake-executor offline tests. Real ACP remains P3.3; cloud persistence is separately approved.
 - **P3.3:** Relay ACP client for read-only bounded tasks, terminal-result parsing, errors, and uncertain execution. Implemented offline against a fake `/acp` server; live ECS B/Jellii remains separately gated.
-- **P3.4:** Persistent Inbox and voice-session-independent task-status/result lookup. Implemented offline as `check_task_status` on SQLite with independent delivery_state. User-requested speech returns the saved `speak` field and marks `spoken`; a new Gemini tool-disabled Live turn remains unproven. Live ECS stays separately gated.
+- **P3.4 / PR #40:** Persistent Inbox / independent `check_task_status` with bounded speech. PR #40 merged **tool-disabled new-turn delivery guard** and revised marking so `spoken` is not claimed merely because a result was looked up; real new Gemini audio is unproven (#46 S1). PR #41 merged Dispatcher wake/idle polling. Durable DynamoDB bounded live evidence is #26, **not** complete spoken E2E.
 - **P4-A1 code:** ACP `cwd` is a remote runtime path. `wss://` must verify TLS; plaintext `ws://` is an explicit private-network exception, not a certificate bypass.
 - **P4-A1 live one-off:** Recorded PASS 2026-10-12 against Jellii using same-SG plaintext `/acp` as a one-off risk exception. Cleanup returned Jellii to desiredCount 0. This does not approve TLS, an external Task Store, 24/7 Relay, or device ingress. Sanitized timestamps and fields: `STATUS.md`.
-- **P4:** Approve and validate two-ECS staging/production networking, external durable storage, security, deploy/restart behavior, audio latency, cost and operational metrics.
-- **H0/H1:** Dedicated hardware remains gated on demonstrably improved interaction friction.
+- **P4:** #26 2026-10-13 Relay RunTask → Jellii private WSS/TLS + durable DynamoDB **functional PASS with procedural exceptions**; #35 persistent ECS A, live device ingress G1, cloud software S1 (#46), physical G2/G3a and operations remain separately gated. Accepted OpenAB/two-ECS deployment is **not** switched by Hermes #44/PR #45 local fake-provider POC.
+- **H0/H1:** #31 2026-10-15 real StickS3 → **local Amusant Relay** → Gemini FAST functional 10/10 PASS; #33 six Jellii states and real PTT regression PASS. Formal H0 audible-latency/battery/friction approval, #36 WiFi-W1/W1.5 BLE/W2a/W2b and G2 cloud remain distinct OPEN gates.
 
 P3 local mocks remain valid development tools. AWS integration is the **target topology**, but no additional deployment, change to live permissions, or paid calls are authorized by this documentation revision.
 

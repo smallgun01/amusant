@@ -1,52 +1,54 @@
 # Amusant — Cross-track Hardware / AWS Integration Roadmap
 
-> Planning decision: 2026-10-15. **Sequence and acceptance map, not an execution permit.**
-> [SPEC.md](../../SPEC.md) governs requirements; [PLAN.md](../../PLAN.md) governs sequencing; [STATUS.md](../../STATUS.md) records demonstrated evidence only. Nothing here changes the accepted two-ECS architecture.
+> Active technical integration view refreshed 2026-10-16, subordinate to [WS1–WS4 delivery index](../project-management/workstreams.md), [PLAN](../../PLAN.md), [STATUS](../../STATUS.md), and accepted [SPEC](../../SPEC.md). #31 G0 device FAST functional PASS and #33 avatar physical PASS are **not** the same as formal H0 latency/battery UX acceptance. No Cloud/flash/live authorization is implied.
+> **H1 authorization:** local G0 functional PASS does not authorize firmware changes or flashing; Owner 2026-10-17 granted limited W1 implementation/offline PR and W1.5 offline feasibility GO on the G0 functional baseline; formal H0 UX remains OPEN. Any real device flash/live test still requires separate approval per #36.
 
-## Baseline versus target
+## Verified baseline vs outstanding gates
 
-| Workstream | Verified / merged baseline | Still unverified |
+| Component | Evidence | Missing acceptance |
 |---|---|---|
-| Device baseline | Owner H0.2: physical StickS3 with pinned Kai v0.12.0 → local Kai Relay → Gemini Live, battery-only ~8 short turns. Latency informal. | H0 product UX Go/No-Go |
-| Amusant device edge | #31 Stage B / PR #32 merged: opt-in Opus + TLS-PSK adapter, fake-provider tests; PR #34 offline CI merged | **G0** physical StickS3 → local Amusant Relay, audio/wake/reconnect/latency |
-| AWS backend | #26 P4-T4b one-off RunTask → private ACP WSS → Jellii + durable DynamoDB readback; reverted | **A2** persistent ECS Relay Service A, restart, monitoring, cost, production hardening |
-| Public device ingress | #27 read-only audit: shared cloudflared is Gateway sidecar; actual service stopped; Cloudflare control-plane read 403; native Kai TLS-PSK is incompatible with Cloudflare HTTPS WSS termination | **G1** safe standard-WSS client ingress or alternative TCP TLS-PSK transport; Cloudflare routing/identity not proven |
-| Firmware ownership/config | #11 firmware research, unmodified upstream Kai on tested StickS3 | **W1/W2** NVS dynamic profiles + SoftAP; any fork/flash separately authorized |
+| **G0/#31** real StickS3 FAST | **2026-10-15 owner-reported 10/10 PASS**: local Amusant Relay + actual Gemini audio, wake, barge-in, reconnect; relay first-wire sample count 12 (p50 1026.5ms, nearest-rank p95 2265ms) | **H0 UX remains OPEN**: physical speaker audible onset and battery/power regression #14 |
+| **Avatar #33** | Six Jellii UI states and PTT spoken regression PASS, patch #38 merged | Long battery/sleep wake verification via #14 |
+| **Backend OpenAB #26** | One-off AWS RunTask → private TLS WSS/ACP → Jellii/NGINX, after-stop DynamoDB strong readback functional PASS with procedural exceptions, rollback | Persistent ECS Relay A (#35); not 24/7 nor device ingress |
+| **Backend Hermes #44/#45** | Local Docker Native Runs fake-provider POC Phase 2A/2B PASS | WS2 **B0** real Agent quality + host/storage/security/cost decision, not selected |
+| **Device ingress #27** | Offline read-only research; native Kai TLS-PSK incompatible with ordinary Cloudflare HTTPS WSS termination | G1 route, TLS auth, ownership, cost, isolated canary |
+| **Firmware #36** | Stage plan recorded; existing Kai baseline pinned | **WiFi-W1** NVS single profile → **W1.5** official Android BLE PoC → **W2a** up to 5 profiles → **W2b** select secure BLE or SoftAP provisioning |
+| **Operations #30** | PR #34 CI, #40 Inbox safety, #41 Dispatcher wake merged | PR-C >100 history + PR-D bounded shutdown/persistent entrypoint/ops **before A2 live** |
 
-## Work graph (two parallel tracks, then join)
+## Active dependency graph
 
 ```text
-G0  #31  Physical StickS3 -> local Amusant Relay (PINNED KAI FIRMWARE)
- |
- +-- Firmware (new H1 branch; local Relay stays frozen) --+
- |   W1   #36  Dynamic SSID/password in NVS via USB      |
- |   W2a  #36  Up to 5 Wi-Fi profiles / fallback          |
- |   W2b  #36  SoftAP + captive-portal phone setup        |
- |                                                        +--> G3 final multi-network product E2E
- +-- AWS/backend/edge (do not modify tested firmware) ----+
-     A2   #35  Persistent ECS Service A, private ACP     |
-     #27       Choose device edge (TLS-PSK TCP or standard WSS)
-     G1   #27  Offline fake-client WSS, then isolated/cloud canary
-          |
-          +--> G2   Real StickS3 -> AWS Relay (known single Wi-Fi)
-                         |
-                         +-------------------------------> G3
+WS1 Local device FAST G0 (functional PASS) ---+
+                                                +---- G2: StickS3 -> deployed Relay -> Gemini FAST
+WS3 G1 device ingress --------------------------+
+WS2 B0 backend selection ------+                |
+WS4 PR-C / PR-D ---------------+--> WS3 A2 ECS Relay persistent (offline then separately approved live)
+                                |               |
+                                +--------------> S1 #46: cloud software Fast->Agent->durable Inbox->spoken
+G2 + S1 --------------------------------------------------> G3a: physical Slow Inbox
+WS1 WiFi-W1 -> W1.5 BLE -> W2a -> W2b (BLE OR SoftAP) ---+
+G3a ------------------------------------------------------+--> G3b mobility
 ```
 
-G0 should be finished before an H1 *firmware flashing* decision. A2 read-only planning and G1 offline transport research can run in parallel with G0. **G2 does not require W1, W2a or W2b.** If the chosen edge is standard WSS, a *separate transport firmware change* is required before G2; do not combine it with provisioning changes.
+**Important:** G2 needs **A2 + G1 + one known Wi-Fi**, not W1/W1.5/W2a/W2b phone setup. S1 needs B0/Agent and A2, but **no device**. G3a requires S1+G2, G3b requires G3a+accepted Wi-Fi provisioning. WS1 firmware/FAST and WS3 G1 offline can move while B0 is open.
 
-## Gates and test isolation
+## Gate acceptance and test isolation
 
-| Gate | Only moving piece | Acceptance evidence | Owner/approval boundaries |
-|---|---|---|---|
-| **G0**, #31 Stage C | Replace local Kai Relay with local Amusant, same pinned firmware, private LAN credentials/port | Real battery-only PTT ≥10 turns, audible completion, interruption, wake/reconnect, measured release→first-audio p50/p95; rollback to Kai | Owner-supervised physical/live Gemini use with separate authorization; no AWS or reflashing |
-| **A2**, #35 | Replace one-off smoke with persistent AWS Relay ECS Service A, keep proven private ACP backend | desired/running/healthy=1, restart/task replacement, DynamoDB durable recovery, per-service isolation, monitor/cost/rollback | Read-only and offline first; AWS creation/update/spend separately approved |
-| **G1**, #27 | Device-edge *software transport only*, using fake client/provider and then isolated canary | WSS/cert/client-auth or TCP TLS-PSK validity; wrong-key/unauthorized reject; reconnect; no plaintext downgrade; cloud routing/SG/Cloud Map verified if live | Separate cloud/Tunnel approval, do not modify shared Gateway or its LINE/Kasm routes |
-| **W1**, #36 | Dynamic NVS Wi-Fi on own H1 firmware branch, single profile | No baked SSID/password; USB setup survives reboot/deep sleep and reaches same local Relay | No upstream edits or flash without explicit owner approval |
-| **W2a**, #36 | Network profile manager only | Multiple remembered 2.4 GHz SSIDs; bounded failover; RTC BSSID/channel cache profile-bound; local PTT wake latency regression | Same frozen local Relay and transport |
-| **W2b**, #36 | SoftAP / captive portal phone setup only | Add/edit/delete via phone, AP access control, timeout/low power, failure/recovery preserving valid profile | No mobile app/cloud required; no saved-secret disclosure |
-| **G2**, #27+#35 | Physical device to already-verified AWS edge; single *known* Wi-Fi | Device TLS/auth, Opus streaming, Gemini audible reply, reconnect and latency, with the fixed upstream baseline or an explicitly pinned transport-only firmware | Separate owner permission for paid Live, physical firmware flash and cloud canary |
-| **G3**, final | Join proven firmware provisioning + cloud product paths | Home/hotspot switch → AWS FAST PTT/response; separate `delegate_task` → ACP/Jellii → DynamoDB Inbox → next-session retrieval/spoken result; recovery/latency/UX and cost | No automatic production/24x7 approval; record component versions and rollback |
+| Gate | Execution boundary | Required proof / owner approval |
+|---|---|---|
+| **H0/G0** #31 | Frozen known local firmware + Amusant Relay | **functional PASS** 10/10; formal real-speaker latency p50/p95 and battery Go/No-Go pending |
+| **B0** #44/#48 | Slow product contract, Agent + hosting | Real agentic bake-off, storage/run recovery/permissions, ECS/VM/N100 cost; reviewed SPEC/ADR if switching |
+| **PR-C / PR-D** #30 | Durable history and service lifecycle | >100 retained TASK rows per #30 A1; optional 500-row stress characterization, not a separate gate unless #30 is revised; bounded safe shutdown/restart, Python 3.13, health/non-root; **A2 live blockers** |
+| **A2** #35 | From one-off RunTask to persistent Relay Service A | Live canary after B0+PR-C/D, ECS healthy/task replacement, DynamoDB recovery, owner cloud approval |
+| **G1** #27 | Device→Relay edge only, fake client then approved canary | Standard cert WSS or native TCP TLS-PSK choice, auth/reject, no plaintext fallback, SG/routes verified; don't alter shared Gateway Tunnel |
+| **S1** #46 | Cloud software-only Voice→Slow→Inbox→voice | New authorized Gemini tool-disabled spoken turn, durable lookup, truthful delivery/recovery; no physical StickS3 needed |
+| **G2** #27/#35 | StickS3→AWS Relay→Gemini FAST | Known Wi-Fi, real TLS/auth/Opus/reconnect/speaker response, logs and latency with separate live approval |
+| **G3a** | StickS3 FAST+SLOW → durable Inbox spoken | S1+G2 prerequisite; separate physical UX/faults |
+| **WiFi-W1** #36 | Owned Firmware branch; NVS, USB setup | No baked SSID/password, credential protection, stable local PTT after reboot/deep-sleep and approved flash |
+| **WiFi-W1.5** #36 | BLE feasibility PoC, official Android ESP provisioning app | PoP, BLE pairing, Wi-Fi credentials secure, UX/performance/power fit; outcome decides W2b mechanism |
+| **WiFi-W2a** #36 | Multi-SSID profiles (up to ~5) | Bound failover, profile-specific cached BSSID/channel, no wake/latency regression |
+| **WiFi-W2b** #36 | **Select one** phone setup solution | BLE official/custom app OR time-limited authenticated SoftAP+Captive Portal; no need to implement both |
+| **G3b** | Wi-Fi mobility + proven G3a | Home/hotspot switching, recovery, cost/battery/latency, Fast+Slow regression |
 
 **Control variables:** At each gate pin the firmware binary+source SHA, Relay SHA/image digest, TLS mode, Wi-Fi profile scenario, backend revision, and test authorization. Change one main layer at a time, run offline CI after software PRs, and record numerical evidence rather than mark unsupported PASS.
 
@@ -59,12 +61,10 @@ ECS A   --[existing private TLS/ACP NGINX sidecar, separate credentials]-----> E
 
 #27's 2026-10-15 read-only audit makes reuse of the existing Cloudflare Connector **conditional**, not accepted: it is not a standalone live tunnel ECS Service and its routes/policy could not be verified. Native TLS 1.2 ECDHE-PSK cannot terminate at Cloudflare's ordinary HTTPS/WSS edge. Do not silently change Kai PSK to certificate-verified TLS without testing identity/verification and client adapter compatibility.
 
-## Ownership and next actions
+## Ownership and next actions — current
 
-- **First:** owner/agent execute #31 G0 local preflight then supervised device test, maintaining original Kai rollback. Keep #31 open until physical results.
-- **Parallel design (no AWS mutations):** #35 A2.0 and #27 routing/standard-WSS offline feasibility. Decide TCP PSK vs certificate WSS only after cost/security evidence.
-- **After G0 + H0 Go:** #11 selects the H1 firmware basis; #36 W1 → W2a → W2b as separate PRs, with flash approval at each new binary.
-- **Join:** #35 A2 + #27 G1 before #27 G2; W2b is not a G2 blocker. Open a narrow G3 execution ticket only when upstream gates pass.
-- **Out of scope:** firmware vendor/import, app/cloud pairing, paid provider or AWS live executions, persistent service deployment, shared Tunnel edits, real device flash, eFuse/flash-encryption changes, main merges, or adding ECS/SQS infrastructure without explicit later approval.
-
-References: [#31](https://github.com/smallgun01/amusant/issues/31), [#35](https://github.com/smallgun01/amusant/issues/35), [#36](https://github.com/smallgun01/amusant/issues/36), [#27](https://github.com/smallgun01/amusant/issues/27), [#11](https://github.com/smallgun01/amusant/issues/11), [#26](https://github.com/smallgun01/amusant/issues/26), [#14](https://github.com/smallgun01/amusant/issues/14), [#30](https://github.com/smallgun01/amusant/issues/30).
+- **WS1** #31 G0 is functionally PASS; finish H0 audible-latency/battery/UX evidence (#14), Stage D PR #42 live validation, and W1 offline implementation now approved (#36); W1.5 offline feasibility may follow, while physical flash/live test and full H0 UX remain separate gates.
+- **WS2** #44/#48: time-box Agent selection B0; PR #45 is an isolated PoC, not production authorization.
+- **WS3** #27 G1 offline edge selection and #35 A2 design in parallel. After WS4 PR-C/D and owner B0, request separate live A2+S1 and G1+G2 approvals. Open narrow G3a, then G3b execution tickets when prerequisites pass.
+- **WS4** #30 PR-C/D are hard A2 live gates; monitor data/security/cost and rollback evidence. #26 remains the historical T4b bounded proof.
+- **Out of scope without separate approval:** changes to AWS, shared tunnel/public ingress, firmware flash, live paid Gemini/Agent, 24/7 service, eFuse, or accepted SPEC/ADR architecture.

@@ -1,0 +1,29 @@
+model:
+  provider: custom
+  default: local-poc-model
+  base_url: http://fake-provider:8000/v1
+  api_key: ${POC_FAKE_MODEL_KEY}
+  api_mode: chat_completions
+  streaming: false
+  context_length: 65536
+agent:
+  disabled_toolsets:
+    - terminal
+    - file
+    - code_execution
+    - browser
+    - computer_use
+    - image_gen
+    - vision
+    - tts
+    - clarify
+    - video
+    - video_gen
+    - homeassistant
+    - spotify
+    - kanban
+approvals:
+  mode: manual
+  cron_mode: deny
+  unattended_mode: deny
+  single_query_mode: deny

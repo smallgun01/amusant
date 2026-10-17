@@ -1,11 +1,25 @@
 # Project Amusant — Status
 
-> 最後更新：2026-10-14
+> 最後更新：2026-10-16（追補既有證據，未新做 Live 測試）
 > 規格權威：SPEC.md
 > 執行計畫：PLAN.md
 > Repo：Private repository; remote is configured locally.
 
-## 目前狀態
+
+## Workstream status snapshot — 2026-10-16 (documentation reconciliation)
+
+**Index:** [WS1–WS4](docs/project-management/workstreams.md) · [WS1 #47](https://github.com/smallgun01/amusant/issues/47) · [WS2 #48](https://github.com/smallgun01/amusant/issues/48) · [WS3 #49](https://github.com/smallgun01/amusant/issues/49) · [WS4 #50](https://github.com/smallgun01/amusant/issues/50). The dated records below are preserved as historical evidence; this reconciliation **did not perform new live tests**.
+
+| Workstream | Verified evidence | Pending / not claimed |
+|---|---|---|
+| WS1 Edge/Fast | #31 2026-10-15 **owner-observed physical StickS3 → local Amusant Relay → Gemini FAST 10/10 functional PASS**, wake/barge-in/reconnect observed; 12 Relay-side first-wire-audio latency observations, median 1026.5 ms and nearest-rank p95 2265 ms. #33 Jellii six LCD states, build/flash and audible PTT regression **owner-reported PASS**; #38 merged. | Audible-onset UX timing (wire time is not speaker time), larger latency sample/battery verification; #42 Stage D Jellii/Zephyr/Search **Draft CI PASS but not Live accepted**; WiFi-W1/W1.5 BLE/W2a/W2b unimplemented. |
+| WS2 Backend | OpenAB ACP on AWS bounded #26 T4b functional PASS. Hermes Native Runs #44/#45 **local fake-provider Phase 2A/2B POC and CI PASS**, including idempotency, known Run-ID recovery and fail-closed ambiguous submit. | B0 selection/real Agent quality, secure hosting/durable Hermes home, live run model/cost; accepted OpenAB/two-ECS architecture **unchanged**. |
+| WS3 E2E | #26 real private backend WSS/ACP + DynamoDB after-STOPPED readback PASS with recorded procedural exceptions. | Persistent Service A #35 **not deployed**, public device ingress #27 **not proven**, software cloud S1 [#46](https://github.com/smallgun01/amusant/issues/46) not run, G2/G3a/G3b not run. Cloudflare shared Gateway-sidecar reuse conditional, not accepted. |
+| WS4 Robustness | Offline CI #34 merged; security/Inbox PR #40 and Dispatcher wake PR #41 merged with offline CI PASS. | #30 DynamoDB >100 history PR-C and bounded shutdown/persistent runtime PR-D pending. 24/7 operational, agent sandbox/secret lifecycle, real cloud spend verification **not accepted**. |
+
+**Evidence scope:** E1 = merged/offline; E2 = real local/physical; E3 = bounded live cloud; E4 = sustained operational/security/cost acceptance. A local fake POC or one-off AWS smoke must not be reported as E4. #26 T4b does not need a duplicate identical live prompt merely for bookkeeping. #33 avatar-specific tasks are complete in owner evidence; any power regression remains under #14.
+
+## 歷史 P0–P4 進度與實測證據（各日期之當時狀態，非現行待辦清單）
 
 **P0 — Foundation：完成。P1 — Kai-sim mock 音訊 smoke：PASS。P2 — Fast Voice：PASS（2026-10-09 runtime gate）。P3.0 — authenticated OpenAB ACP/model + one-off Worker feasibility smoke：PASS only under explicitly accepted, task-bounded risk; not production acceptance. P3.1–P3.4 squash-merged. P4-A1 live one-off PASS（2026-10-12）. ADR-0002 accepted. Store-ready Relay squash-merged PR #19 (`69bd7ed6cadaba68176f8fa706c5d8ca880f7376`). Durability envelope squash-merged PR #20 (`ff5868a3bc4e3453e419f97e0ea06f3f5a3b5a9c`). P4 durability live one-off PASS（2026-10-12）：write via Dispatcher/ACP, A STOPPED, then `store_get` still reads completed Inbox. Table kept. Not TLS, not 24/7, not device ingress。
 
@@ -95,8 +109,8 @@
 
 ## P1 probe 定位
 
-- `relay/` 是可重現的 P1 協定／音訊測試工具，不是正式 Amusant Relay。
-- P1 mock-based Kai-sim smoke 已通過；正式 Relay／provider 的延遲與可靠性仍須按 P2–P4 驗收。
+- **P1 當時**的 mock probe 是可重現的協定／音訊測試工具，不是正式 Relay；**後續** `relay/` 已實作真實 Live／Task Ledger／Dispatcher／ACP 模組，且 #31 真實裝置連上 Amusant Relay functional PASS。請勿以 P1 時期的工具定位描述目前整個 `relay/`。
+- P1 mock Kai-sim smoke 已通過；P2 真實 Live 和 #31 本地實機 FAST 已後續通過各自功能驗收；**尚缺**裝置可聽第一聲延遲分布、持續雲端 Relay／端到端、操作可靠性驗收。
 
 ## Privacy de-identification
 

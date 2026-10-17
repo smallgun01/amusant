@@ -3,12 +3,12 @@
 ## Voice Companion Architecture & MVP Specification v0.4 — Two-ECS Baseline
 
 - **Status:** Accepted requirements specification (PR #9); persistent two-Service product configuration not yet deployed. Bounded P4-T4b live WSS/ACP proof PASS (2026-10-13).
-- **Updated:** 2026-10-14 (evidence refresh; normative requirements unchanged)
+- **Updated:** 2026-10-16 (evidence alignment only; normative requirements unchanged)
 - **Product model:** One-to-one personal, grab-to-talk voice companion
 - **Deployment baseline:** Exactly **two ECS Services**: Amusant Relay + OpenAB Agent Runtime
 - **Real-time baseline:** Gemini Live, manually selected provider
 - **Slow-task transport:** OpenAB native authenticated ACP WebSocket
-- **Software acceptance frontend:** Kai `kai-sim`; future hardware candidate: M5StickS3
+- **Software acceptance frontend:** Kai `kai-sim`; **M5StickS3 local FAST functional E2E PASS on 2026-10-15 (#31)**, formal H0 audible-onset/battery UX and Cloud E2E still pending
 - **Upstream reference:** [Kai](https://github.com/zbruceli/kai), pinned study baseline `1681fb3c11acd28525d8987bba4b9bf4bc2a288f`
 - **Architecture decision:** [ADR-0001 — Two-Service Relay + OpenAB ACP](docs/adr/0001-openab-acp-slow-path.md)
 
@@ -406,7 +406,7 @@ Measure end-to-end first-audio latency and delegation acknowledgment separately 
 
 Evaluate **at least 100** representative utterances across direct chat, quick facts, low-latency tools, research, comparisons, stale tasks, error states, Chinese/English and mixed language. Include requests that are *out of scope* (unbounded autonomous work, personal memory, unauthorized tools) and verify honest refusal or deferral. Record expected/actual lane, tool calls and latency. Aim at ≥90% routing accuracy and report false-fast/false-slow errors; this is a target, not current evidence.
 
-## 14. Current evidence and implementation boundary (as of draft)
+## 14. Current evidence and implementation boundary (as of 2026-10-16; evidence only)
 
 This section describes **repository-recorded status**, not tests rerun for this documentation revision:
 
@@ -419,11 +419,14 @@ This section describes **repository-recorded status**, not tests rerun for this 
 | **P3.1** durable admission | Existing `relay/slow_path.py` and `relay/task_store.py` implement opt-in tool routing and SQLite atomic task + outbox admission; local CLI `relay.live_bridge.run()` fail-closes into that composition. PR #10 squash-merged. Repository reports offline Fast Voice 52/52 | ECS image/taskdef/ingress, replacement-safe store, physical-device startup |
 | **P3.2** in-process Dispatcher | PR #12 merged. SQLite claim/recovery; CLI recovers crashed in-flight work as uncertain | ECS replacement durability |
 | **P3.3** ACP execution | PR #13 merged. Authenticated JSON-RPC ACP client against a local fake `/acp` server | — |
-| **P3.4** Inbox | Authorized `check_task_status` lookup, independent delivery_state, bounded result on completion | Spoken Gemini tool-disabled turn, ECS-surviving store |
+| **P3.4 / PR #40/#41** Inbox & Dispatcher | `check_task_status` lookup, independent delivery state, bounded results; #40 tool-disabled spoken-delivery guard and #41 wake/idle polling merged, offline CI PASS | **Actual Gemini new-session spoken retrieval** remains unproven (#46 S1); `spoken` must not be marked before full server-observed emission |
 | **P4-A1** ACP one-off | Live one-off PASS 2026-10-12: real Dispatcher/Inbox against Jellii, one ACP `session/prompt`, cleanup to scale 0. Same-SG plaintext `/acp` is a one-off risk exception, not TLS | External durable store, 24/7 Relay, device ingress, production sandbox, billed model-inference proof |
 | **P4 durability** | Live DynamoDB one-off PASS 2026-10-12: task result persisted after Relay stopped and read-only `store_get` succeeded | Persistent service and restart recovery |
 | **P4-T4b** Private WSS/ACP | Live bounded functional PASS 2026-10-13: Jellii:10/NGINX, Relay RunTask, 8/8 preflight, one successful ACP task, same-task after-stop durable reader, rollback; see [evidence](docs/p4-t4b-live-acceptance.md) | Persistent Relay Service A, device/voice E2E, full operational runbook conformance, independently measured spend |
-| **P4** AWS integration | Target two-ECS Services remain accepted; the above live integration segments have been validated | Persistent Relay Service A, production lifecycle and device ingress |
+| **P4** AWS integration | Target two-ECS Services remain accepted; bounded T4b functional proof validated | Persistent Relay Service A, G1 external device ingress, #46 S1, G2, G3a/G3b and production operations |
+| **H0/G0** real device FAST | #31 2026-10-15 physical StickS3 → **local Amusant Relay** → Gemini FAST 10/10 functional PASS, wake/barge-in/reconnect observed; #33 six Jellii states and real PTT regression PASS | H0 actual speaker-audible p50/p95 and battery/UX Go/No-Go; **no cloud device G2 proof** |
+| **WS2 / B0** Agent choice | #44 / Draft PR #45 Hermes native Runs **local fake-provider POC PASS** (2A/2B) | Real Agent quality, hosting/run durability/security, architecture decision; current OpenAB/two ECS still accepted |
+| **WS4** service reliability | PR #34 CI, PR #40 Inbox, PR #41 Dispatcher wake merged | #30 PR-C >100 history, PR-D bounded shutdown/non-smoke persistent entrypoint, #35 A2 operating acceptance |
 
 P3.2 migrates the SQLite schema to `queued/running/completed/failed/uncertain` with outbox claim/recovery. A `sent` or `completed` row from the fake executor is **not** proof that OpenAB ACP ran. Do not interpret an outbox record as a real ACP result. Inbox lookup is P3.4 SQLite evidence, not ECS durability.
 
@@ -438,8 +441,9 @@ P3.2 migrates the SQLite schema to `queued/running/completed/failed/uncertain` w
 - **P3.3:** Authenticated ACP client with bounded text prompts and honest timeout/uncertainty handling — implemented offline against a fake `/acp` server. Live ACP was exercised once in P4-A1, but authenticated TLS/WSS, restricted production agent sandbox, restart/persistence, and full device-to-agent runtime remain separately gated.
 - **P3.4:** Durable Result Inbox, authorized previous-task lookup, reconnect status and user-requested spoken result — implemented offline on SQLite; a new Gemini tool-disabled spoken session remains unproven.
 - **P4:** Two-ECS staging. P4-A1, DynamoDB durability, and bounded P4-T4b WSS/ACP functional Live have PASS evidence; this does not approve 24/7 Relay Service A or device/voice end-to-end.
-- **H0:** Hardware UX gate versus optimized phone workflow.
-- **H1:** M5StickS3 integration only after H0 success.
+- **H0/G0:** M5StickS3 on the local Amusant Relay passed functional PTT/FAST 10/10 (#31, 2026-10-15) and #33 six Jellii states; **formal H0 audible-onset, battery and phone-friction UX Gate remains open**.
+- **H1:** Owned Wi-Fi provisioning/features #36 and cloud G2/G3 remain gated separately; local functional success is not automatic flash or Cloud authorization.
+- **WS1–WS4 delivery:** [Active execution index](docs/project-management/workstreams.md), [PLAN](PLAN.md), [STATUS](STATUS.md). B0 Hermes/OpenAB is **open**. Agent and hosting changes require separate approved SPEC/ADR revision, not this evidence refresh.
 
 P3 development may use local mocks, temporary databases and approved isolated connectivity smokes. These do not imply authorization for ongoing AWS ECS deployment, database provisioning, networking modifications or paid model tests. `PLAN.md` must reflect this revised topology **when a documentation PR is approved**.
 
