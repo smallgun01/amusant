@@ -528,7 +528,8 @@ class SQLiteTaskStore:
                 "SELECT t.task_id,t.client_id,t.conversation_id,t.turn_id,t.call_id,"
                 "t.task_text,t.task_kind,t.backend,t.executor_kind,t.backend_run_id,o.attempts "
                 "FROM slow_tasks AS t JOIN dispatch_outbox AS o USING(task_id) "
-                "WHERE o.state='pending' AND t.status='queued' AND t.expires_at>? "
+                "WHERE o.state='pending' AND t.status='queued' "
+                "AND (t.expires_at>? OR (t.executor_kind='hermes_runs' AND t.backend_run_id IS NOT NULL)) "
                 "ORDER BY o.created_at ASC LIMIT ?",
                 (_utc_iso(now), limit),
             ).fetchall()
@@ -772,7 +773,7 @@ class SQLiteTaskStore:
             if task_id is None:
                 row = connection.execute(
                     "SELECT t.task_id,t.status,t.task_kind,t.expires_at,i.delivery_state,"
-                    "r.speak,r.card_json,r.details_md "
+                    "r.speak,r.card_json,r.details_md,t.backend_run_id,t.executor_kind "
                     "FROM slow_tasks AS t LEFT JOIN task_inbox AS i USING(task_id) "
                     "LEFT JOIN task_results AS r USING(task_id) "
                     "WHERE t.client_id=? ORDER BY t.created_at DESC LIMIT 1",
@@ -781,7 +782,7 @@ class SQLiteTaskStore:
             else:
                 row = connection.execute(
                     "SELECT t.task_id,t.status,t.task_kind,t.expires_at,i.delivery_state,"
-                    "r.speak,r.card_json,r.details_md "
+                    "r.speak,r.card_json,r.details_md,t.backend_run_id,t.executor_kind "
                     "FROM slow_tasks AS t LEFT JOIN task_inbox AS i USING(task_id) "
                     "LEFT JOIN task_results AS r USING(task_id) "
                     "WHERE t.client_id=? AND t.task_id=?",
@@ -792,7 +793,10 @@ class SQLiteTaskStore:
                 return None
             status = row[1]
             if status in {"queued", "running"} and row[3] <= now_iso:
-                status = "expired"
+                # Preserve OpenAB's legacy expiry behavior. For Hermes, this is a queue
+                # deadline only; active work and known Runs use the executor/result state.
+                if row[9] != "hermes_runs" or (status == "queued" and row[8] is None):
+                    status = "expired"
             delivery = row[4]
             result = None
             if row[5] is not None:

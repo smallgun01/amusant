@@ -29,7 +29,14 @@ The local fake-provider harness disables high-risk toolsets, denies unattended/c
 
 H1.1 local verification (2026-10-17) re-ran both Phase 2A and Phase 2B Docker/fake-provider gates. Sanitized summaries are in evidence/phase2a-gates-sanitized.json and evidence/phase2b-gates-sanitized.json. The runs used the PR #45 worktree based at b27b610 with uncommitted H1.1 changes; Phase 2B records working_tree_dirty_at_test=true. These are local fake-provider results, not GitHub CI or production acceptance.
 
-The exact repository CI commands also passed locally in the isolated Python 3.13 environment: Fast Voice 74/74, Relay 220/220, and TLS-PSK/Opus WSS loopback 10/10.
+The repository CI commands passed locally at the first H1.1 head in the isolated Python 3.13 environment: Fast Voice 74/74, Relay 220/220, and TLS-PSK/Opus WSS loopback 10/10.
+
+### Conditional PASS follow-up (2026-10-17; worktree based on 4170c85)
+
+- Truncated/suspected JSON now fails closed instead of being sent through the plain-text fallback; ordinary plain-text fallback remains. A remote Hermes Run status of expired maps to Relay uncertainty, and the Inbox does not expose it as completed/speakable.
+- On the Hermes path, queue expiry blocks an initial claim only. Running work and a persisted Hermes Run ID are not marked expired or blocked by that queue window; Relay resumes GET polling after restart. OpenAB's legacy expiry behavior remains unchanged. The Hermes executor timeout is a separate per-invocation polling deadline, not a persisted cumulative deadline across Relay restarts.
+- The full Relay suite passed 228/228; the Phase 2B internal fake-provider gates passed 3/3. The latest sanitized evidence records the tested worktree as dirty and based on 4170c85.
+- The proposed 120-second execution timeout, eight queued tasks, and 600-second queue wait remain proposals, not approved product requirements.
 
 - relay_submit_mapping: PASS — one Relay POST; Run ID persisted while fake execution was active.
 - relay_process_restart_recovery: PASS — a new Relay process recovered the result from the same SQLite volume; all recorded Relay HTTP calls after restart were GET, with no second POST.

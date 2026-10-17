@@ -47,13 +47,13 @@ class HermesRunResultTests(unittest.TestCase):
         self.assertFalse(hasattr(result, "task_id"))
         self.assertFalse(hasattr(result, "permissions"))
 
-    def test_plain_and_malformed_json_use_bounded_text_fallback(self):
+    def test_plain_text_fallback_but_suspected_truncated_json_fails_closed(self):
         plain = parse_hermes_run_result("A plain deterministic answer.")
         self.assertEqual(plain.speak, "A plain deterministic answer.")
-        malformed = parse_hermes_run_result('{"schema_version":1,"speak":"unfinished')
-        self.assertIn("schema_version", malformed.details_md)
-        self.assertLessEqual(len(malformed.speak), 240)
-        self.assertLessEqual(len(malformed.details_md), 4096)
+        prose = parse_hermes_run_result("A safe answer containing {ordinary prose}, not a JSON object.")
+        self.assertIn("ordinary prose", prose.speak)
+        with self.assertRaisesRegex(ValueError, "malformed_json"):
+            parse_hermes_run_result('{"schema_version":1,"speak":"unfinished')
 
     def test_unsupported_schema_uses_only_known_text_fallback(self):
         result = parse_hermes_run_result(json.dumps({
@@ -65,6 +65,8 @@ class HermesRunResultTests(unittest.TestCase):
         self.assertEqual(result.speak, "Legacy result text.")
         with self.assertRaisesRegex(ValueError, "schema_unsupported"):
             parse_hermes_run_result(json.dumps({"schema_version": 2, "status": "completed", "task_id": "x"}))
+        with self.assertRaisesRegex(ValueError, "schema_unsupported"):
+            parse_hermes_run_result('["not", "a HermesRunResult"]')
 
     def test_empty_or_missing_spoken_result_fails_closed(self):
         with self.assertRaisesRegex(ValueError, "empty"):

@@ -371,7 +371,10 @@ class DynamoDbTaskStore:
             for row in self._task_rows()
             if row.get("outbox_state") == "pending"
             and row.get("status") == "queued"
-            and str(row.get("expires_at") or "") > now_iso
+            and (
+                str(row.get("expires_at") or "") > now_iso
+                or (row.get("executor_kind") == "hermes_runs" and row.get("backend_run_id"))
+            )
         ]
         eligible.sort(key=lambda row: str(row.get("created_at") or ""))
         claimed: list[ClaimedTask] = []
@@ -609,7 +612,11 @@ class DynamoDbTaskStore:
         status = str(row["status"])
         expires = str(row.get("expires_at") or "")
         if status in {"queued", "running"} and expires <= now_iso:
-            status = "expired"
+            # Preserve OpenAB's legacy expiry behavior. For Hermes, this is a queue
+            # deadline only; active work and known Runs use the executor/result state.
+            is_hermes = row.get("executor_kind", "openab_acp") == "hermes_runs"
+            if not is_hermes or (status == "queued" and not row.get("backend_run_id")):
+                status = "expired"
         delivery = row.get("delivery_state")
         result = None
         if row.get("speak") is not None:

@@ -108,7 +108,7 @@ class HermesRunsExecutorTests(unittest.TestCase):
         self.assertEqual(calls, ["POST"])
         self.assertEqual(saved, [])
 
-    def test_terminal_failure_and_interruption_are_distinct(self):
+    def test_terminal_failure_interruption_and_expiry_are_distinct(self):
         failed = self.make_executor(lambda *args: (200, {"status": "failed"}), [])
         failed_outcome = asyncio.run(failed.execute(self.make_task(run_id="run-1")))
         self.assertEqual((failed_outcome.status, failed_outcome.code), ("failed", "hermes_failed"))
@@ -116,6 +116,11 @@ class HermesRunsExecutorTests(unittest.TestCase):
         interrupted = self.make_executor(lambda *args: (200, {"status": "interrupted"}), [])
         interrupted_outcome = asyncio.run(interrupted.execute(self.make_task(run_id="run-2")))
         self.assertEqual((interrupted_outcome.status, interrupted_outcome.code), ("uncertain", "hermes_interrupted"))
+
+        expired = self.make_executor(lambda *args: (200, {"status": "expired"}), [])
+        expired_outcome = asyncio.run(expired.execute(self.make_task(run_id="run-3")))
+        self.assertEqual((expired_outcome.status, expired_outcome.code), ("uncertain", "hermes_expired"))
+        self.assertIsNone(expired_outcome.result)
 
     def test_missing_run_or_result_confirmation_stays_unknown(self):
         executor = self.make_executor(lambda *args: (200, {"status": "running"}), [], timeout_seconds=0.01)
@@ -154,6 +159,15 @@ class HermesRunsExecutorTests(unittest.TestCase):
         self.assertNotEqual(posts[1]["X-Hermes-Session-Key"], "client-b")
         self.assertEqual(posts[0]["Idempotency-Key"], "task-a")
         self.assertEqual(posts[1]["Idempotency-Key"], "task-b")
+
+    def test_completed_truncated_json_is_not_reported_or_spoken_as_completed(self):
+        output = '{"schema_version":1,"speak":"unfinished'
+        executor = self.make_executor(
+            lambda *args: (200, {"status": "completed", "output": output}), []
+        )
+        outcome = asyncio.run(executor.execute(self.make_task(run_id="run-truncated-json")))
+        self.assertEqual((outcome.status, outcome.code), ("uncertain", "hermes_result_unconfirmed"))
+        self.assertIsNone(outcome.result)
 
     def test_completed_partial_payload_is_not_reported_as_completed(self):
         result = json.dumps({

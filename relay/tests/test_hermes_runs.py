@@ -1,6 +1,7 @@
 """Phase 2B task-store tests. No AWS or Hermes process is used here."""
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 import sqlite3
 import tempfile
@@ -8,7 +9,9 @@ import unittest
 from pathlib import Path
 from uuid import uuid4
 
+from relay.dispatcher import AsyncDispatcher
 from relay.dynamodb_task_store import DynamoDbTaskStore, InMemoryDynamoLedger
+from relay.hermes_runs_executor import HermesRunsExecutor
 from relay.task_store import AdmissionConflict, AdmissionUnavailable, BoundedTaskResult, TaskAdmissionRequest, SQLiteTaskStore
 
 NOW = datetime(2026, 10, 16, 12, 0, tzinfo=timezone.utc)
@@ -16,7 +19,12 @@ CLIENT = "phase2b-test-owner"
 CONVERSATION = "phase2b-test-conversation"
 
 
-def request(task_id: str, executor_kind: str = "hermes_runs", client_id: str = CLIENT) -> TaskAdmissionRequest:
+def request(
+    task_id: str,
+    executor_kind: str = "hermes_runs",
+    client_id: str = CLIENT,
+    expires_at: datetime | None = None,
+) -> TaskAdmissionRequest:
     return TaskAdmissionRequest(
         task_id=task_id,
         client_id=client_id,
@@ -27,7 +35,7 @@ def request(task_id: str, executor_kind: str = "hermes_runs", client_id: str = C
         task_kind="research",
         backend="openab",
         created_at=NOW,
-        expires_at=NOW + timedelta(seconds=600),
+        expires_at=expires_at or NOW + timedelta(seconds=600),
         executor_kind=executor_kind,
     )
 
@@ -76,6 +84,77 @@ class SQLiteHermesMappingTests(unittest.TestCase):
         self.assertEqual(resumed.task_id, claim.task_id)
         self.assertEqual(resumed.executor_kind, "hermes_runs")
         self.assertEqual(resumed.backend_run_id, "run-phase2b-001")
+
+    def test_sqlite_expired_hermes_queue_before_first_claim_stays_expired(self):
+        store = self.store()
+        task_id = str(uuid4())
+        store.admit(request(task_id, expires_at=NOW + timedelta(seconds=1)))
+        after_queue_deadline = NOW + timedelta(seconds=2)
+        result = store.lookup_inbox(client_id=CLIENT, task_id=task_id, now=after_queue_deadline)
+        self.assertEqual(result["status"], "expired")
+        self.assertEqual(store.claim_due(now=after_queue_deadline, lease_seconds=30), [])
+
+    def test_queue_deadline_does_not_expire_running_or_block_known_run_resume(self):
+        store = self.store()
+        task_id = str(uuid4())
+        expires_at = NOW + timedelta(seconds=1)
+        store.admit(request(task_id, expires_at=expires_at))
+        claimed = store.claim_due(now=NOW, lease_seconds=30)[0]
+        store.mark_dispatch_started(task_id, now=NOW)
+        store.save_backend_run_id(task_id, "run-queue-deadline")
+
+        after_queue_deadline = NOW + timedelta(seconds=2)
+        running = store.lookup_inbox(client_id=CLIENT, task_id=task_id, now=after_queue_deadline)
+        self.assertEqual(running["status"], "running")
+
+        counts = store.recover_after_restart()
+        self.assertEqual((counts.requeued, counts.uncertain), (1, 0))
+        waiting_for_resume = store.lookup_inbox(client_id=CLIENT, task_id=task_id, now=after_queue_deadline)
+        self.assertEqual(waiting_for_resume["status"], "queued")
+        resumed = store.claim_due(now=after_queue_deadline, lease_seconds=30)
+        self.assertEqual(len(resumed), 1)
+        self.assertEqual(resumed[0].backend_run_id, "run-queue-deadline")
+
+    def test_sqlite_openab_running_expiry_preserves_legacy_behavior(self):
+        store = self.store()
+        task_id = str(uuid4())
+        expires_at = NOW + timedelta(seconds=1)
+        store.admit(request(task_id, executor_kind="openab_acp", expires_at=expires_at))
+        store.claim_due(now=NOW, lease_seconds=30)
+        store.mark_dispatch_started(task_id, now=NOW)
+        result = store.lookup_inbox(
+            client_id=CLIENT,
+            task_id=task_id,
+            now=NOW + timedelta(seconds=2),
+        )
+        self.assertEqual(result["status"], "expired")
+
+    def test_expired_remote_run_is_reported_uncertain_in_inbox_after_recovery(self):
+        store = self.store()
+        task_id = str(uuid4())
+        expires_at = NOW + timedelta(seconds=1)
+        store.admit(request(task_id, expires_at=expires_at))
+        store.claim_due(now=NOW, lease_seconds=30)
+        store.mark_dispatch_started(task_id, now=NOW)
+        store.save_backend_run_id(task_id, "run-expired-remote")
+
+        after_queue_deadline = NOW + timedelta(seconds=2)
+        store.recover_after_restart()
+        executor = HermesRunsExecutor(
+            url="http://127.0.0.1:8642",
+            api_key="local-test-api-key-123",
+            save_backend_run_id=store.save_backend_run_id,
+            allow_plaintext=True,
+            request_json=lambda *args: (200, {"status": "expired"}),
+        )
+        handled = asyncio.run(
+            AsyncDispatcher(store, executor, now=lambda: after_queue_deadline).dispatch_available()
+        )
+        result = store.lookup_inbox(client_id=CLIENT, task_id=task_id, now=after_queue_deadline)
+        self.assertEqual(handled, 1)
+        self.assertEqual(result["status"], "uncertain")
+        self.assertNotIn("speak", result)
+        self.assertNotIn("speak_now", result)
 
     def test_backend_run_id_is_write_once(self):
         store = self.store()
@@ -155,6 +234,53 @@ class DynamoHermesMappingTests(unittest.TestCase):
             owner_store.lookup_inbox(client_id="client-b", task_id=task_id)
         other_store = DynamoDbTaskStore(ledger, client_id="client-b", max_pending_tasks=8)
         self.assertIsNone(other_store.lookup_inbox(client_id="client-b", task_id=task_id))
+
+    def test_dynamo_expired_hermes_queue_before_first_claim_stays_expired(self):
+        ledger = InMemoryDynamoLedger()
+        store = DynamoDbTaskStore(ledger, client_id=CLIENT, max_pending_tasks=8)
+        task_id = str(uuid4())
+        store.admit(request(task_id, expires_at=NOW + timedelta(seconds=1)))
+        after_queue_deadline = NOW + timedelta(seconds=2)
+        result = store.lookup_inbox(client_id=CLIENT, task_id=task_id, now=after_queue_deadline)
+        self.assertEqual(result["status"], "expired")
+        self.assertEqual(store.claim_due(now=after_queue_deadline, lease_seconds=30), [])
+
+    def test_expired_queue_deadline_does_not_block_known_run_resume(self):
+        ledger = InMemoryDynamoLedger()
+        store = DynamoDbTaskStore(ledger, client_id=CLIENT, max_pending_tasks=8)
+        task_id = str(uuid4())
+        expires_at = NOW + timedelta(seconds=1)
+        store.admit(request(task_id, expires_at=expires_at))
+        store.claim_due(now=NOW, lease_seconds=30)
+        store.mark_dispatch_started(task_id, now=NOW)
+        store.save_backend_run_id(task_id, "run-ddb-queue-deadline")
+
+        after_queue_deadline = NOW + timedelta(seconds=2)
+        running = store.lookup_inbox(client_id=CLIENT, task_id=task_id, now=after_queue_deadline)
+        self.assertEqual(running["status"], "running")
+
+        counts = store.recover_after_restart()
+        self.assertEqual((counts.requeued, counts.uncertain), (1, 0))
+        waiting_for_resume = store.lookup_inbox(client_id=CLIENT, task_id=task_id, now=after_queue_deadline)
+        self.assertEqual(waiting_for_resume["status"], "queued")
+        resumed = store.claim_due(now=after_queue_deadline, lease_seconds=30)
+        self.assertEqual(len(resumed), 1)
+        self.assertEqual(resumed[0].backend_run_id, "run-ddb-queue-deadline")
+
+    def test_dynamo_openab_running_expiry_preserves_legacy_behavior(self):
+        ledger = InMemoryDynamoLedger()
+        store = DynamoDbTaskStore(ledger, client_id=CLIENT, max_pending_tasks=8)
+        task_id = str(uuid4())
+        expires_at = NOW + timedelta(seconds=1)
+        store.admit(request(task_id, executor_kind="openab_acp", expires_at=expires_at))
+        store.claim_due(now=NOW, lease_seconds=30)
+        store.mark_dispatch_started(task_id, now=NOW)
+        result = store.lookup_inbox(
+            client_id=CLIENT,
+            task_id=task_id,
+            now=NOW + timedelta(seconds=2),
+        )
+        self.assertEqual(result["status"], "expired")
 
     def test_backend_run_id_survives_restart_recovery_without_replay(self):
         ledger = InMemoryDynamoLedger()

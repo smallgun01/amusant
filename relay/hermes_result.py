@@ -56,6 +56,16 @@ def _fallback_text(payload: dict[str, Any]) -> str | None:
     return None
 
 
+def _looks_like_suspected_json(text: str) -> bool:
+    """Do not speak broken structured output as though it were a plain answer."""
+    candidate = text.lstrip()
+    if candidate.startswith(("{", "[")) or candidate.startswith(chr(96) * 3):
+        return True
+    return ":" in candidate and any(
+        marker in candidate for marker in ("schema_version", "speak", "card", "details_md")
+    )
+
+
 def build_hermes_run_prompt(task: ClaimedTask) -> str:
     """Keep the user task within its existing Relay bound and reserve space for the result contract."""
     if not isinstance(task.task_kind, str) or task.task_kind not in TASK_KINDS:
@@ -80,9 +90,11 @@ def parse_hermes_run_result(output: str) -> BoundedTaskResult:
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError:
+        if _looks_like_suspected_json(raw):
+            raise ValueError("hermes_result_malformed_json") from None
         return normalize_agent_text(raw)
     if not isinstance(payload, dict):
-        return normalize_agent_text(raw)
+        raise ValueError("hermes_result_schema_unsupported")
 
     version = payload.get("schema_version")
     if type(version) is not int or version != HERMES_RESULT_SCHEMA_VERSION:
