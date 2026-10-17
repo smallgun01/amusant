@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import json
 import os
 from datetime import datetime, timedelta, timezone
@@ -43,12 +44,23 @@ def wait_for_client_restart_active(timeout=20):
     return False
 
 
+def executor_options(db):
+    return {
+        "save_backend_run_id": db.save_backend_run_id,
+        "update_poll_state": db.update_hermes_poll_state,
+        "run_deadline_seconds": float(os.environ["AMUSANT_HERMES_RUN_DEADLINE_SECONDS"]),
+        "poll_cycle_seconds": float(os.environ["AMUSANT_HERMES_POLL_CYCLE_SECONDS"]),
+        "http_timeout_seconds": float(os.environ["AMUSANT_HERMES_HTTP_TIMEOUT_SECONDS"]),
+        "poll_interval_seconds": float(os.environ["AMUSANT_HERMES_POLL_INTERVAL_SECONDS"]),
+    }
+
+
 def make_executor(db, methods):
     transport = HermesRunsExecutor(
         url=os.environ["AMUSANT_HERMES_RUNS_URL"],
         api_key=os.environ["AMUSANT_HERMES_API_KEY"],
-        save_backend_run_id=db.save_backend_run_id,
         allow_plaintext=os.environ.get("AMUSANT_HERMES_ALLOW_PLAINTEXT") == "1",
+        **executor_options(db),
     )
 
     def record(method, path, body, headers):
@@ -58,9 +70,9 @@ def make_executor(db, methods):
     return HermesRunsExecutor(
         url=os.environ["AMUSANT_HERMES_RUNS_URL"],
         api_key=os.environ["AMUSANT_HERMES_API_KEY"],
-        save_backend_run_id=db.save_backend_run_id,
         allow_plaintext=os.environ.get("AMUSANT_HERMES_ALLOW_PLAINTEXT") == "1",
         request_json=record,
+        **executor_options(db),
     )
 
 
@@ -94,7 +106,9 @@ async def start_case():
     if not claimed or claimed[0].task_id != task_id:
         raise RuntimeError("Relay task was not claimable")
     task = claimed[0]
-    db.mark_dispatch_started(task_id, now=datetime.now(timezone.utc))
+    dispatch_started_at = datetime.now(timezone.utc)
+    db.mark_dispatch_started(task_id, now=dispatch_started_at)
+    task = replace(task, dispatch_started_at=dispatch_started_at.isoformat())
     methods = []
     executor = make_executor(db, methods)
     running = asyncio.create_task(executor.execute(task))
@@ -114,11 +128,23 @@ async def start_case():
                 outcome = running.result()
             except Exception:
                 outcome = None
+            if outcome is not None and outcome.status == "deferred" and outcome.backend_run_id:
+                # A durable poll-cycle yield is ordinary resumable state, not an
+                # uncertain submission. Wait for the fake provider's in-flight
+                # completion so this gate can stop the Relay client at that point.
+                active = wait_for_client_restart_active(timeout=20)
+                current = db.get_by_task_id(task_id)
+                if active and current and current.get("backend_run_id") == outcome.backend_run_id:
+                    print(json.dumps({"phase": "paused_after_submit", "task_status": current["status"], "run_id_persisted": True, "fake_provider_active": True, "relay_http_methods": methods, "poll_cycle_deferred": True}, separators=(",", ":")))
+                    return 0
+                print(json.dumps({"phase": "deferred_without_active_provider", "task_status": current["status"] if current else None, "run_id_persisted": bool(current and current.get("backend_run_id")), "fake_provider_active": False, "poll_cycle_deferred": True}, separators=(",", ":")))
+                return 2
             if outcome is not None and outcome.status == "completed":
                 db.complete(task_id, result=outcome.result)
             else:
-                db.mark_uncertain(task_id, code="hermes_result_unconfirmed")
-            print(json.dumps({"phase": "finished_before_restart", "task_status": db.get_by_task_id(task_id)["status"], "run_id_persisted": bool(db.get_by_task_id(task_id).get("backend_run_id")), "fake_provider_active": False}, separators=(",", ":")))
+                db.mark_uncertain(task_id, code=(outcome.code if outcome is not None else None) or "hermes_result_unconfirmed")
+            current = db.get_by_task_id(task_id)
+            print(json.dumps({"phase": "finished_before_restart", "task_status": current["status"], "outcome_status": outcome.status if outcome is not None else None, "outcome_code": outcome.code if outcome is not None else None, "run_id_persisted": bool(current.get("backend_run_id")), "fake_provider_active": False}, separators=(",", ":")))
             return 2
         await asyncio.sleep(0.05)
     running.cancel()
@@ -159,8 +185,8 @@ def ambiguous_case():
     transport = HermesRunsExecutor(
         url=os.environ["AMUSANT_HERMES_RUNS_URL"],
         api_key=os.environ["AMUSANT_HERMES_API_KEY"],
-        save_backend_run_id=db.save_backend_run_id,
         allow_plaintext=os.environ.get("AMUSANT_HERMES_ALLOW_PLAINTEXT") == "1",
+        **executor_options(db),
     )
 
     methods = []
@@ -177,9 +203,9 @@ def ambiguous_case():
     executor = HermesRunsExecutor(
         url=os.environ["AMUSANT_HERMES_RUNS_URL"],
         api_key=os.environ["AMUSANT_HERMES_API_KEY"],
-        save_backend_run_id=db.save_backend_run_id,
         allow_plaintext=os.environ.get("AMUSANT_HERMES_ALLOW_PLAINTEXT") == "1",
         request_json=lose_post_response,
+        **executor_options(db),
     )
     handled = asyncio.run(AsyncDispatcher(db, executor).dispatch_available())
     row = db.get_by_task_id(task_id)

@@ -49,7 +49,16 @@ class FakeExecutor:
         return self.outcome
 
 
-def request_for(task_id, *, client_id=CLIENT, turn_id=1, call_id="call-1", created=NOW, ttl=600):
+def request_for(
+    task_id,
+    *,
+    client_id=CLIENT,
+    turn_id=1,
+    call_id="call-1",
+    created=NOW,
+    ttl=600,
+    executor_kind="openab_acp",
+):
     return TaskAdmissionRequest(
         task_id=task_id,
         client_id=client_id,
@@ -61,6 +70,7 @@ def request_for(task_id, *, client_id=CLIENT, turn_id=1, call_id="call-1", creat
         backend="openab",
         created_at=created,
         expires_at=created + timedelta(seconds=ttl),
+        executor_kind=executor_kind,
     )
 
 
@@ -167,6 +177,31 @@ class InboxTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(uncertain["status"], "uncertain")
         self.assertNotIn("speak", uncertain)
         self.assertNotIn("speak_now", uncertain)
+
+    async def test_hermes_run_deadline_reports_policy_timeout_and_possible_remote_activity(self):
+        store = self.store()
+        store.admit(request_for(TASK_ID, executor_kind="hermes_runs"))
+        store.claim_due(now=NOW, lease_seconds=30)
+        store.mark_dispatch_started(TASK_ID, now=NOW)
+        store.save_backend_run_id(
+            TASK_ID,
+            "run-deadline",
+            run_started_at=NOW,
+            run_deadline_at=NOW + timedelta(minutes=1),
+            next_poll_at=NOW,
+        )
+        store.mark_uncertain(TASK_ID, code="hermes_run_deadline_exceeded")
+
+        result = await make_router(store)(
+            ToolCallEvent("lookup-deadline", INBOX_TOOL_NAME, {"task_id": TASK_ID, "speak": True}),
+            1,
+        )
+        self.assertEqual(result["status"], "timed_out")
+        self.assertEqual(result["code"], "hermes_run_deadline_exceeded")
+        self.assertIn("may still be active", result["message"])
+        self.assertIn("cancellation was not confirmed", result["message"])
+        self.assertNotIn("speak", result)
+        self.assertNotIn("speak_now", result)
 
     async def test_expired_queued_task_is_reported_expired_and_not_dispatched(self):
         store = self.store()

@@ -10,6 +10,7 @@ import math
 import socket
 import ssl
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 from urllib.parse import quote, urlparse
 
@@ -17,9 +18,6 @@ from .dispatcher import ExecutionOutcome
 from .hermes_result import build_hermes_run_prompt, parse_hermes_run_result
 from .task_store import ClaimedTask
 
-DEFAULT_TIMEOUT_SECONDS = 120.0
-MAX_TIMEOUT_SECONDS = 600.0
-DEFAULT_POLL_SECONDS = 0.5
 MAX_RESPONSE_BYTES = 1024 * 1024
 _RFC1918 = (ipaddress.ip_network("10.0.0.0/8"), ipaddress.ip_network("172.16.0.0/12"), ipaddress.ip_network("192.168.0.0/16"))
 _TERMINAL_SUCCESS = {"completed"}
@@ -53,6 +51,21 @@ class _Endpoint:
     port: int
 
 
+def _parse_utc_timestamp(value: str) -> datetime:
+    if not isinstance(value, str) or not value:
+        raise ValueError("timestamp missing")
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("timestamp must include timezone")
+    return parsed.astimezone(timezone.utc)
+
+
+def _utc_iso(value: datetime) -> str:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("timestamp must include timezone")
+    return value.astimezone(timezone.utc).isoformat()
+
+
 class HermesRunsExecutor:
     """Submit once with a durable idempotency key, then poll the persisted Run ID."""
 
@@ -61,28 +74,46 @@ class HermesRunsExecutor:
         *,
         url: str,
         api_key: str,
-        save_backend_run_id: Callable[[str, str], None],
-        timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
-        poll_interval_seconds: float = DEFAULT_POLL_SECONDS,
+        save_backend_run_id: Callable[..., None],
+        update_poll_state: Callable[..., None],
+        run_deadline_seconds: float,
+        poll_cycle_seconds: float,
+        http_timeout_seconds: float,
+        poll_interval_seconds: float,
         allow_plaintext: bool = False,
         request_json=None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._endpoint = self._parse_endpoint(url, allow_plaintext=allow_plaintext)
         if not isinstance(api_key, str) or len(api_key.strip()) < 12:
             raise HermesConfigError("AMUSANT_HERMES_API_KEY must contain at least 12 characters")
-        if not callable(save_backend_run_id):
-            raise HermesConfigError("task store must support durable Hermes Run ID mapping")
-        if (isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float))
-                or not math.isfinite(float(timeout_seconds)) or not 0 < timeout_seconds <= MAX_TIMEOUT_SECONDS):
-            raise HermesConfigError(f"Hermes timeout must be finite and between 0 and {MAX_TIMEOUT_SECONDS:g} seconds")
-        if (isinstance(poll_interval_seconds, bool) or not isinstance(poll_interval_seconds, (int, float))
-                or not math.isfinite(float(poll_interval_seconds)) or not 0 < poll_interval_seconds <= 10):
-            raise HermesConfigError("Hermes poll interval must be finite, positive, and at most 10 seconds")
+        if not callable(save_backend_run_id) or not callable(update_poll_state):
+            raise HermesConfigError("task store must support durable Hermes Run and poll-state mapping")
+        if clock is not None and not callable(clock):
+            raise HermesConfigError("Hermes clock must be callable")
+        values = {
+            "Run deadline": run_deadline_seconds,
+            "poll cycle": poll_cycle_seconds,
+            "HTTP timeout": http_timeout_seconds,
+            "poll interval": poll_interval_seconds,
+        }
+        for name, value in values.items():
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(float(value)) or float(value) <= 0):
+                raise HermesConfigError(f"Hermes {name} must be finite and positive")
+        try:
+            timedelta(seconds=float(run_deadline_seconds))
+        except OverflowError:
+            raise HermesConfigError("Hermes Run deadline is outside the supported datetime range") from None
         self._api_key = api_key.strip()
         self._save_backend_run_id = save_backend_run_id
-        self._timeout = float(timeout_seconds)
+        self._update_poll_state = update_poll_state
+        self._run_deadline_seconds = float(run_deadline_seconds)
+        self._poll_cycle_seconds = float(poll_cycle_seconds)
+        self._http_timeout_seconds = float(http_timeout_seconds)
         self._poll_interval = float(poll_interval_seconds)
         self._request_json = request_json or self._http_request
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
 
     @staticmethod
     def _parse_endpoint(url: str, *, allow_plaintext: bool) -> _Endpoint:
@@ -126,11 +157,11 @@ class HermesRunsExecutor:
             if not addresses:
                 raise HermesRequestError("Hermes endpoint has no permitted address")
             selected = next((ip for ip in addresses if "." in ip), addresses[0])
-            raw = socket.create_connection((selected, endpoint.port), timeout=10.0)
+            raw = socket.create_connection((selected, endpoint.port), timeout=self._http_timeout_seconds)
             if endpoint.scheme == "https":
                 context = ssl.create_default_context()
                 raw = context.wrap_socket(raw, server_hostname=endpoint.host)
-            conn = http.client.HTTPConnection(endpoint.host, endpoint.port, timeout=10.0)
+            conn = http.client.HTTPConnection(endpoint.host, endpoint.port, timeout=self._http_timeout_seconds)
             # Pin the socket to the address that passed the private-network check.
             conn.sock = raw
             encoded = None if body is None else json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -164,7 +195,22 @@ class HermesRunsExecutor:
             "X-Hermes-Session-Key": self._session_key(task.client_id),
             "Accept": "application/json",
         }
+        now = self._clock()
         run_id = task.backend_run_id
+        if run_id is not None and not task.run_started_at and not task.dispatch_started_at:
+            return ExecutionOutcome(status="uncertain", code="hermes_run_deadline_anchor_missing")
+        try:
+            run_started_at = _parse_utc_timestamp(task.run_started_at) if task.run_started_at else (
+                _parse_utc_timestamp(task.dispatch_started_at) if task.dispatch_started_at else now
+            )
+            run_deadline_at = _parse_utc_timestamp(task.run_deadline_at) if task.run_deadline_at else (
+                run_started_at + timedelta(seconds=self._run_deadline_seconds)
+            )
+            next_poll_at = _parse_utc_timestamp(task.next_poll_at) if task.next_poll_at else now
+        except (OverflowError, TypeError, ValueError):
+            return ExecutionOutcome(status="uncertain", code="hermes_run_deadline_unconfirmed")
+        poll_attempts = int(task.poll_attempts or 0)
+
         if run_id is None:
             try:
                 prompt = build_hermes_run_prompt(task)
@@ -176,7 +222,7 @@ class HermesRunsExecutor:
                     {**headers, "Content-Type": "application/json", "Idempotency-Key": task.task_id},
                 )
             except Exception:
-                # The request may have been accepted despite a lost response. Never replay blindly.
+                # Acceptance may be ambiguous; without a durable Run ID never submit again.
                 raise HermesRequestError("Hermes submission outcome is unknown") from None
             if 400 <= status < 500:
                 return ExecutionOutcome(status="failed", code="hermes_submit_rejected")
@@ -186,27 +232,107 @@ class HermesRunsExecutor:
             if not isinstance(candidate, str) or not candidate or len(candidate) > 256:
                 raise HermesRequestError("Hermes submission response did not confirm a Run ID")
             run_id = candidate
+            next_poll_at = self._clock()
             try:
-                await asyncio.to_thread(self._save_backend_run_id, task.task_id, run_id)
+                await asyncio.to_thread(
+                    self._save_backend_run_id,
+                    task.task_id,
+                    run_id,
+                    run_started_at=run_started_at,
+                    run_deadline_at=run_deadline_at,
+                    next_poll_at=next_poll_at,
+                    poll_attempts=poll_attempts,
+                )
             except Exception:
-                # The Run exists but the local mapping is not durably confirmed.
-                raise HermesRequestError("Hermes Run ID persistence is unconfirmed") from None
+                raise HermesRequestError("Hermes Run ID/deadline persistence is unconfirmed") from None
+        elif not task.run_deadline_at or not task.run_started_at:
+            # One-time backfill for a known Run from a pre-58A TaskStore row. Never POST again.
+            try:
+                await asyncio.to_thread(
+                    self._save_backend_run_id,
+                    task.task_id,
+                    run_id,
+                    run_started_at=run_started_at,
+                    run_deadline_at=run_deadline_at,
+                    next_poll_at=next_poll_at,
+                    poll_attempts=poll_attempts,
+                )
+            except Exception:
+                return ExecutionOutcome(status="uncertain", code="hermes_run_deadline_unconfirmed")
 
-        deadline = asyncio.get_running_loop().time() + self._timeout
         quoted_id = quote(run_id, safe="")
+        loop = asyncio.get_running_loop()
+        cycle_deadline = loop.time() + self._poll_cycle_seconds
+
+        def deferred() -> ExecutionOutcome:
+            return ExecutionOutcome(
+                status="deferred",
+                code="hermes_poll_cycle_complete",
+                backend_run_id=run_id,
+                run_started_at=_utc_iso(run_started_at),
+                run_deadline_at=_utc_iso(run_deadline_at),
+                next_poll_at=_utc_iso(next_poll_at),
+                poll_attempts=poll_attempts,
+            )
+
+        async def persist_poll_state() -> None:
+            try:
+                await asyncio.to_thread(
+                    self._update_poll_state,
+                    task.task_id,
+                    next_poll_at=next_poll_at,
+                    poll_attempts=poll_attempts,
+                )
+            except Exception:
+                raise HermesRequestError("Hermes next-poll state persistence is unconfirmed") from None
+
         while True:
+            now = self._clock()
+            run_remaining = (run_deadline_at - now).total_seconds()
+            if run_remaining <= 0:
+                return ExecutionOutcome(status="uncertain", code="hermes_run_deadline_exceeded")
+            cycle_remaining = cycle_deadline - loop.time()
+            if cycle_remaining <= 0:
+                if next_poll_at <= now:
+                    next_poll_at = now + timedelta(seconds=self._poll_interval)
+                    await persist_poll_state()
+                return deferred()
+            wait_until_poll = (next_poll_at - now).total_seconds()
+            if wait_until_poll > 0:
+                wait_seconds = min(wait_until_poll, run_remaining, cycle_remaining)
+                await asyncio.sleep(wait_seconds)
+                now = self._clock()
+                if (run_deadline_at - now).total_seconds() <= 0:
+                    return ExecutionOutcome(status="uncertain", code="hermes_run_deadline_exceeded")
+                if (next_poll_at - now).total_seconds() > 0:
+                    return deferred()
+                continue
             try:
                 status_code, payload = await asyncio.to_thread(
                     self._request_json, "GET", f"/v1/runs/{quoted_id}", None, headers
                 )
             except Exception:
-                raise HermesRequestError("Hermes Run status is unconfirmed") from None
+                now = self._clock()
+                if (run_deadline_at - now).total_seconds() <= 0:
+                    return ExecutionOutcome(status="uncertain", code="hermes_run_deadline_exceeded")
+                poll_attempts += 1
+                next_poll_at = now + timedelta(seconds=self._poll_interval)
+                await persist_poll_state()
+                return deferred()
+            if status_code in {408, 429} or status_code >= 500:
+                now = self._clock()
+                if (run_deadline_at - now).total_seconds() <= 0:
+                    return ExecutionOutcome(status="uncertain", code="hermes_run_deadline_exceeded")
+                poll_attempts += 1
+                next_poll_at = now + timedelta(seconds=self._poll_interval)
+                await persist_poll_state()
+                return deferred()
             if status_code >= 400:
-                # A rejected status read says nothing about whether the remote Run completed.
-                return ExecutionOutcome(status="uncertain", code="hermes_result_unconfirmed")
+                code = "hermes_run_status_expired" if status_code in {404, 410} else "hermes_result_unconfirmed"
+                return ExecutionOutcome(status="uncertain", code=code)
             state = payload.get("status")
             if not isinstance(state, str):
-                raise HermesRequestError("Hermes Run status is unconfirmed")
+                return ExecutionOutcome(status="uncertain", code="hermes_result_unconfirmed")
             state = state.lower()
             if state in _TERMINAL_SUCCESS:
                 if payload.get("partial") is True or payload.get("interrupted") is True:
@@ -224,11 +350,14 @@ class HermesRunsExecutor:
             if state in _TERMINAL_UNCERTAIN:
                 return ExecutionOutcome(status="uncertain", code=f"hermes_{state}")
             if state not in _NONTERMINAL:
-                raise HermesRequestError("Hermes Run returned an unknown status")
-            remaining = deadline - asyncio.get_running_loop().time()
-            if remaining <= 0:
-                raise HermesRequestError("Hermes Run did not reach a terminal state before timeout")
-            await asyncio.sleep(min(self._poll_interval, remaining))
+                return ExecutionOutcome(status="uncertain", code="hermes_result_unconfirmed")
+            poll_attempts += 1
+            next_poll_at = self._clock() + timedelta(seconds=self._poll_interval)
+            await persist_poll_state()
+            remaining = min(cycle_deadline - loop.time(), (run_deadline_at - self._clock()).total_seconds())
+            if remaining <= 0 or remaining < self._poll_interval:
+                return deferred()
+            await asyncio.sleep(self._poll_interval)
 
 
 def _extract_output(payload: dict[str, Any]) -> str | None:
@@ -249,7 +378,12 @@ def _extract_output(payload: dict[str, Any]) -> str | None:
     return None
 
 
-def load_hermes_runs_executor(environ, *, save_backend_run_id) -> HermesRunsExecutor | None:
+def load_hermes_runs_executor(
+    environ,
+    *,
+    save_backend_run_id,
+    update_poll_state=None,
+) -> HermesRunsExecutor | None:
     url = environ.get("AMUSANT_HERMES_RUNS_URL")
     key = environ.get("AMUSANT_HERMES_API_KEY")
     present = [value for value in (url, key) if isinstance(value, str) and value.strip()]
@@ -257,17 +391,36 @@ def load_hermes_runs_executor(environ, *, save_backend_run_id) -> HermesRunsExec
         return None
     if len(present) != 2:
         raise HermesConfigError("Hermes executor requires AMUSANT_HERMES_RUNS_URL and AMUSANT_HERMES_API_KEY")
+    if "AMUSANT_HERMES_TIMEOUT_SECONDS" in environ:
+        raise HermesConfigError(
+            "AMUSANT_HERMES_TIMEOUT_SECONDS is ambiguous; use separate HTTP, poll-cycle, and Run-deadline settings"
+        )
+    timing_names = (
+        "AMUSANT_HERMES_RUN_DEADLINE_SECONDS",
+        "AMUSANT_HERMES_POLL_CYCLE_SECONDS",
+        "AMUSANT_HERMES_HTTP_TIMEOUT_SECONDS",
+        "AMUSANT_HERMES_POLL_INTERVAL_SECONDS",
+    )
+    timing_raw = {name: environ.get(name) for name in timing_names}
+    for name, value in timing_raw.items():
+        if not isinstance(value, str) or not value.strip():
+            raise HermesConfigError(f"{name} is required; no product default is approved")
     try:
-        timeout = float(environ.get("AMUSANT_HERMES_TIMEOUT_SECONDS", str(DEFAULT_TIMEOUT_SECONDS)))
-        poll_interval = float(environ.get("AMUSANT_HERMES_POLL_INTERVAL_SECONDS", str(DEFAULT_POLL_SECONDS)))
+        run_deadline = float(timing_raw["AMUSANT_HERMES_RUN_DEADLINE_SECONDS"])
+        poll_cycle = float(timing_raw["AMUSANT_HERMES_POLL_CYCLE_SECONDS"])
+        http_timeout = float(timing_raw["AMUSANT_HERMES_HTTP_TIMEOUT_SECONDS"])
+        poll_interval = float(timing_raw["AMUSANT_HERMES_POLL_INTERVAL_SECONDS"])
     except (TypeError, ValueError):
-        raise HermesConfigError("Hermes timeout and poll interval must be numeric") from None
+        raise HermesConfigError("Hermes timing settings must be numeric") from None
     allow_plaintext = environ.get("AMUSANT_HERMES_ALLOW_PLAINTEXT", "") == "1"
     return HermesRunsExecutor(
         url=url.strip(),
         api_key=key.strip(),
         save_backend_run_id=save_backend_run_id,
-        timeout_seconds=timeout,
+        update_poll_state=update_poll_state,
+        run_deadline_seconds=run_deadline,
+        poll_cycle_seconds=poll_cycle,
+        http_timeout_seconds=http_timeout,
         poll_interval_seconds=poll_interval,
         allow_plaintext=allow_plaintext,
     )

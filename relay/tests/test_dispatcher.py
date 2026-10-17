@@ -54,7 +54,14 @@ class FakeExecutor:
         return self.outcome
 
 
-def request_for(task_id, *, turn_id=1, call_id="call-1", task="Compare current options"):
+def request_for(
+    task_id,
+    *,
+    turn_id=1,
+    call_id="call-1",
+    task="Compare current options",
+    executor_kind="openab_acp",
+):
     return TaskAdmissionRequest(
         task_id=task_id,
         client_id=CLIENT,
@@ -66,6 +73,7 @@ def request_for(task_id, *, turn_id=1, call_id="call-1", task="Compare current o
         backend="openab",
         created_at=NOW,
         expires_at=NOW + timedelta(seconds=600),
+        executor_kind=executor_kind,
     )
 
 
@@ -109,6 +117,169 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
 
     def store(self):
         return SQLiteTaskStore(database_path=self.db_path, max_pending_tasks=8)
+
+    async def test_deferred_known_run_releases_claim_and_resumes_only_when_due(self):
+        store = self.store()
+        store.admit(request_for(TASK_ID, executor_kind="hermes_runs"))
+
+        class DeferredThenComplete:
+            def __init__(self):
+                self.tasks = []
+                self.deadline = None
+                self.next_poll = None
+
+            async def execute(self, task):
+                self.tasks.append(task)
+                if len(self.tasks) == 1:
+                    started = datetime.fromisoformat(task.dispatch_started_at)
+                    self.deadline = started + timedelta(days=1)
+                    self.next_poll = started + timedelta(hours=1)
+                    store.save_backend_run_id(
+                        task.task_id,
+                        "run-deferred",
+                        run_started_at=started,
+                        run_deadline_at=self.deadline,
+                        next_poll_at=self.next_poll,
+                    )
+                    return ExecutionOutcome(
+                        status="deferred",
+                        backend_run_id="run-deferred",
+                        run_started_at=started.isoformat(),
+                        run_deadline_at=self.deadline.isoformat(),
+                        next_poll_at=self.next_poll.isoformat(),
+                        poll_attempts=1,
+                    )
+                return ExecutionOutcome(status="completed")
+
+        executor = DeferredThenComplete()
+        dispatcher = AsyncDispatcher(store, executor, now=lambda: NOW)
+        fast_operation_completed = asyncio.Event()
+
+        async def fast_operation():
+            await asyncio.sleep(0.005)
+            fast_operation_completed.set()
+
+        fast = asyncio.create_task(fast_operation())
+        handled = await asyncio.wait_for(dispatcher.dispatch_available(), timeout=0.5)
+        await fast
+        self.assertEqual(handled, 1)
+        self.assertTrue(fast_operation_completed.is_set())
+        self.assertEqual(len(executor.tasks), 1)
+        row = store.get_by_task_id(TASK_ID)
+        self.assertEqual(row["status"], "running")
+        self.assertEqual(row["dispatch_state"], "pending")
+        self.assertEqual(row["backend_run_id"], "run-deferred")
+        self.assertEqual(row["run_deadline_at"], executor.deadline.isoformat())
+        self.assertEqual(row["next_poll_at"], executor.next_poll.isoformat())
+        self.assertEqual(store.claim_due(now=NOW + timedelta(minutes=30), lease_seconds=30), [])
+
+        resumed = AsyncDispatcher(store, executor, now=lambda: executor.next_poll)
+        self.assertEqual(await resumed.dispatch_available(), 1)
+        self.assertEqual(len(executor.tasks), 2)
+        self.assertEqual(executor.tasks[1].backend_run_id, "run-deferred")
+        self.assertEqual(store.get_by_task_id(TASK_ID)["status"], "completed")
+
+    async def test_deferred_first_slow_task_releases_dispatcher_for_second_slow_task(self):
+        store = self.store()
+        store.admit(request_for(TASK_ID, turn_id=1, call_id="slow-first", executor_kind="hermes_runs"))
+        store.admit(request_for(TASK_ID_2, turn_id=2, call_id="slow-second", executor_kind="hermes_runs"))
+
+        class TwoSlowTasks:
+            def __init__(self):
+                self.calls = []
+
+            async def execute(self, task):
+                self.calls.append(task.task_id)
+                if task.task_id == TASK_ID:
+                    started = datetime.fromisoformat(task.dispatch_started_at)
+                    deadline = started + timedelta(days=1)
+                    next_poll = started + timedelta(hours=1)
+                    store.save_backend_run_id(
+                        task.task_id,
+                        "run-first-slow",
+                        run_started_at=started,
+                        run_deadline_at=deadline,
+                        next_poll_at=next_poll,
+                    )
+                    return ExecutionOutcome(
+                        status="deferred",
+                        backend_run_id="run-first-slow",
+                        run_started_at=started.isoformat(),
+                        run_deadline_at=deadline.isoformat(),
+                        next_poll_at=next_poll.isoformat(),
+                        poll_attempts=1,
+                    )
+                return ExecutionOutcome(status="completed")
+
+        executor = TwoSlowTasks()
+        dispatcher = AsyncDispatcher(store, executor, now=lambda: NOW)
+        handled = await asyncio.wait_for(dispatcher.dispatch_available(), timeout=1.0)
+        self.assertEqual(handled, 2)
+        self.assertEqual(executor.calls, [TASK_ID, TASK_ID_2])
+        first = store.get_by_task_id(TASK_ID)
+        second = store.get_by_task_id(TASK_ID_2)
+        self.assertEqual((first["status"], first["dispatch_state"]), ("running", "pending"))
+        self.assertEqual(first["backend_run_id"], "run-first-slow")
+        self.assertEqual(second["status"], "completed")
+        self.assertEqual(store.claim_due(now=NOW + timedelta(minutes=30), lease_seconds=30), [])
+
+    async def test_background_loop_schedules_get_from_persisted_next_poll_at(self):
+        store = self.store()
+        admitted_at = datetime.now(timezone.utc)
+        store.admit(TaskAdmissionRequest(
+            task_id=TASK_ID,
+            client_id=CLIENT,
+            conversation_id=CONVERSATION,
+            turn_id=1,
+            call_id="scheduled-poll",
+            task="Compare current options",
+            task_kind="compare",
+            backend="openab",
+            created_at=admitted_at,
+            expires_at=admitted_at + timedelta(minutes=10),
+            executor_kind="hermes_runs",
+        ))
+
+        class PollAtPersistedTime:
+            def __init__(self):
+                self.calls = []
+                self.next_poll = None
+
+            async def execute(self, task):
+                self.calls.append((task.task_id, datetime.now(timezone.utc)))
+                if len(self.calls) == 1:
+                    started = datetime.fromisoformat(task.dispatch_started_at)
+                    deadline = started + timedelta(seconds=30)
+                    self.next_poll = datetime.now(timezone.utc) + timedelta(seconds=0.15)
+                    store.save_backend_run_id(
+                        task.task_id,
+                        "run-scheduled",
+                        run_started_at=started,
+                        run_deadline_at=deadline,
+                        next_poll_at=self.next_poll,
+                    )
+                    return ExecutionOutcome(
+                        status="deferred",
+                        backend_run_id="run-scheduled",
+                        run_started_at=started.isoformat(),
+                        run_deadline_at=deadline.isoformat(),
+                        next_poll_at=self.next_poll.isoformat(),
+                        poll_attempts=1,
+                    )
+                return ExecutionOutcome(status="completed")
+
+        executor = PollAtPersistedTime()
+        dispatcher = AsyncDispatcher(store, executor, poll_interval_seconds=30.0)
+        await dispatcher.start()
+        try:
+            async def wait_completed():
+                while store.get_by_task_id(TASK_ID)["status"] != "completed":
+                    await asyncio.sleep(0.01)
+            await asyncio.wait_for(wait_completed(), timeout=2.0)
+        finally:
+            await dispatcher.stop()
+        self.assertEqual(len(executor.calls), 2)
+        self.assertEqual(store.get_by_task_id(TASK_ID)["status"], "completed")
 
     async def test_fake_executor_completes_admitted_task(self):
         store = self.store()
@@ -304,6 +475,47 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
                 sdk_types=FakeSchemaTypes,
             )
         self.assertIsNotNone(dispatcher)
+
+    def test_explicit_acp_rollback_ignores_stale_invalid_hermes_configuration(self):
+        env = {
+            "AMUSANT_LIVE_PROVIDER": "gemini",
+            "GEMINI_API_KEY": "offline-test-key",
+            "AMUSANT_CLIENT_ID": CLIENT,
+            "AMUSANT_BACKEND_ID": "server-backend",
+            "AMUSANT_TASK_DB": str(self.db_path),
+            "AMUSANT_SLOW_EXECUTOR": "openab_acp",
+            "AMUSANT_HERMES_RUNS_URL": "http://127.0.0.1:8642",
+            "AMUSANT_HERMES_API_KEY": "local-test-api-key-123",
+            # Pre-58A configuration can remain in a rollback environment.
+            "AMUSANT_HERMES_TIMEOUT_SECONDS": "120",
+        }
+        with patch("relay.application.load_acp_executor", return_value=FakeExecutor()), \
+             patch("relay.application.build_live_provider", return_value=object()):
+            _handler, dispatcher, _store = build_supported_relay_runtime(
+                expected_device_token="device-token-12",
+                environ=env,
+                sdk_types=FakeSchemaTypes,
+            )
+        self.assertIsNotNone(dispatcher)
+
+    def test_hermes_default_rejects_stale_ambiguous_configuration(self):
+        env = {
+            "AMUSANT_LIVE_PROVIDER": "gemini",
+            "GEMINI_API_KEY": "offline-test-key",
+            "AMUSANT_CLIENT_ID": CLIENT,
+            "AMUSANT_BACKEND_ID": "server-backend",
+            "AMUSANT_TASK_DB": str(self.db_path),
+            "AMUSANT_HERMES_RUNS_URL": "http://127.0.0.1:8642",
+            "AMUSANT_HERMES_API_KEY": "local-test-api-key-123",
+            "AMUSANT_HERMES_TIMEOUT_SECONDS": "120",
+        }
+        with patch("relay.application.load_acp_executor", return_value=FakeExecutor()):
+            with self.assertRaisesRegex(ValueError, "AMUSANT_HERMES_TIMEOUT_SECONDS"):
+                build_supported_relay_runtime(
+                    expected_device_token="device-token-12",
+                    environ=env,
+                    sdk_types=FakeSchemaTypes,
+                )
 
     def test_supported_startup_recovers_started_work_without_executor(self):
         store = self.store()

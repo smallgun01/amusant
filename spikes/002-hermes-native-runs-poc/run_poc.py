@@ -19,6 +19,12 @@ _DOCKER_ENV_KEYS = ("PATH", "HOME", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CON
 COMPOSE_ENV = {key: os.environ[key] for key in _DOCKER_ENV_KEYS if key in os.environ}
 COMPOSE_ENV["POC_API_KEY"] = "poc-" + secrets.token_urlsafe(24)
 COMPOSE_ENV["POC_FAKE_MODEL_KEY"] = "fake-" + secrets.token_urlsafe(24)
+# Compose validates the shared Relay service interpolation even during Phase 2A.
+# These are disposable test-only values; they are not product defaults.
+COMPOSE_ENV["POC_RUN_DEADLINE_SECONDS"] = "60"
+COMPOSE_ENV["POC_POLL_CYCLE_SECONDS"] = "2"
+COMPOSE_ENV["POC_HTTP_TIMEOUT_SECONDS"] = "3"
+COMPOSE_ENV["POC_POLL_INTERVAL_SECONDS"] = "0.05"
 
 
 def compose(*args, check=True):

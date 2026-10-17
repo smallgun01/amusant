@@ -9,13 +9,13 @@ from __future__ import annotations
 import asyncio
 import math
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Literal, Protocol
 
 from .task_store import BoundedTaskResult, ClaimedTask, TaskStore
 
-ExecutionStatus = Literal["completed", "failed", "uncertain"]
+ExecutionStatus = Literal["completed", "failed", "uncertain", "deferred"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +23,11 @@ class ExecutionOutcome:
     status: ExecutionStatus
     code: str = "ok"
     result: BoundedTaskResult | None = None
+    backend_run_id: str | None = None
+    run_started_at: str | None = None
+    run_deadline_at: str | None = None
+    next_poll_at: str | None = None
+    poll_attempts: int = 0
 
 
 class TaskExecutor(Protocol):
@@ -70,6 +75,7 @@ class AsyncDispatcher:
         self._wakeup = asyncio.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._running = False
+        self._stopping = False
         self._task: asyncio.Task[None] | None = None
 
     def notify(self) -> None:
@@ -101,12 +107,14 @@ class AsyncDispatcher:
         if self._loop is not None and self._loop is not loop:
             self._wakeup = asyncio.Event()
         self._loop = loop
+        self._stopping = False
         await self._store_call(self._store.recover_after_restart)
         self._running = True
         self._task = asyncio.create_task(self._run_loop())
 
     async def stop(self) -> None:
         self._running = False
+        self._stopping = True
         self._wakeup.set()
         task = self._task
         self._task = None
@@ -133,6 +141,8 @@ class AsyncDispatcher:
                 return handled
             await self._dispatch_one(claimed[0])
             handled += 1
+            if self._stopping:
+                return handled
 
     async def _run_loop(self) -> None:
         while self._running:
@@ -145,8 +155,19 @@ class AsyncDispatcher:
                 pass
             if not self._running:
                 return
+            timeout = self._poll_interval_seconds
             try:
-                await asyncio.wait_for(self._wakeup.wait(), timeout=self._poll_interval_seconds)
+                next_wake = await self._store_call(self._store.next_hermes_wake_at)
+                if next_wake is not None and next_wake.tzinfo is not None and next_wake.utcoffset() is not None:
+                    delay = (next_wake.astimezone(timezone.utc) - self._now().astimezone(timezone.utc)).total_seconds()
+                    # A due-but-unclaimable item falls back to the bounded idle poll,
+                    # preventing a corrupt schedule from becoming a busy loop.
+                    if delay > 0:
+                        timeout = min(timeout, delay)
+            except Exception:
+                pass
+            try:
+                await asyncio.wait_for(self._wakeup.wait(), timeout=max(0.001, timeout))
             except asyncio.TimeoutError:
                 continue
 
@@ -157,16 +178,25 @@ class AsyncDispatcher:
             return
 
     async def _dispatch_one(self, task: ClaimedTask) -> None:
-        if task.attempts > self._max_attempts:
+        known_hermes_run = task.executor_kind == "hermes_runs" and bool(task.backend_run_id)
+        # A durable Run ID is a resumable GET-only operation, not a new dispatch
+        # attempt. Restarts must not exhaust the first-submission retry budget.
+        if task.attempts > self._max_attempts and not known_hermes_run:
             await self._safe_store(self._store.fail, task.task_id, code="dispatch_attempts_exhausted")
             return
-        try:
-            await self._store_call(
-                self._store.mark_dispatch_started,
-                task.task_id,
-                now=self._now(),
-            )
-        except Exception:
+        if not known_hermes_run:
+            started_at = self._now()
+            try:
+                await self._store_call(
+                    self._store.mark_dispatch_started,
+                    task.task_id,
+                    now=started_at,
+                )
+            except Exception:
+                return
+            task = replace(task, dispatch_started_at=started_at.astimezone(timezone.utc).isoformat())
+        if self._stopping:
+            # Leave claimed work for startup recovery; a known Run keeps its ID.
             return
         try:
             outcome = await self._executor.execute(task)
@@ -177,6 +207,44 @@ class AsyncDispatcher:
                 task.task_id,
                 code=code,
             )
+            return
+        if outcome.status == "deferred":
+            if (
+                task.executor_kind != "hermes_runs"
+                or not outcome.backend_run_id
+                or not outcome.run_started_at
+                or not outcome.run_deadline_at
+                or not outcome.next_poll_at
+            ):
+                await self._safe_store(
+                    self._store.mark_uncertain,
+                    task.task_id,
+                    code="hermes_poll_state_unconfirmed",
+                )
+                return
+            try:
+                run_started = datetime.fromisoformat(outcome.run_started_at)
+                run_deadline = datetime.fromisoformat(outcome.run_deadline_at)
+                next_poll = datetime.fromisoformat(outcome.next_poll_at)
+                if any(value.tzinfo is None or value.utcoffset() is None for value in (run_started, run_deadline, next_poll)):
+                    raise ValueError("poll timestamps must be timezone-aware")
+                await self._store_call(
+                    self._store.defer_hermes_run,
+                    task.task_id,
+                    backend_run_id=outcome.backend_run_id,
+                    run_started_at=run_started,
+                    run_deadline_at=run_deadline,
+                    next_poll_at=next_poll,
+                    poll_attempts=outcome.poll_attempts,
+                )
+            except Exception:
+                await self._safe_store(
+                    self._store.mark_uncertain,
+                    task.task_id,
+                    code="hermes_poll_state_unconfirmed",
+                )
+            # Return the local claim immediately. The durable next_poll_at is
+            # the scheduler; the next iteration claims this Run only when due.
             return
         try:
             if outcome.status == "completed":

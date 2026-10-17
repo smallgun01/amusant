@@ -206,6 +206,13 @@ class SlowPathToolRouter:
             "task_kind": str(record["task_kind"]),
             "delivery_state": record.get("delivery_state"),
         }
+        code = record.get("code")
+        if isinstance(code, str):
+            payload["code"] = code
+            if code == "hermes_run_deadline_exceeded":
+                payload["message"] = "Run deadline reached; the remote Run may still be active and cancellation was not confirmed."
+            elif code in {"hermes_expired", "hermes_run_status_expired"}:
+                payload["message"] = "Hermes no longer confirms this Run's terminal result; completion is uncertain."
         if record.get("status") == "completed":
             if isinstance(record.get("speak"), str):
                 payload["speak"] = record["speak"]
