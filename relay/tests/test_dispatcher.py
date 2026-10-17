@@ -270,6 +270,41 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(handled, 1)
         self.assertEqual(store.get_by_task_id(TASK_ID)["dispatch_state"], "sent")
 
+    def test_hermes_default_requires_configuration_and_never_silently_uses_acp(self):
+        env = {
+            "AMUSANT_LIVE_PROVIDER": "gemini",
+            "GEMINI_API_KEY": "offline-test-key",
+            "AMUSANT_CLIENT_ID": CLIENT,
+            "AMUSANT_BACKEND_ID": "server-backend",
+            "AMUSANT_TASK_DB": str(self.db_path),
+        }
+        with patch("relay.application.load_acp_executor", return_value=FakeExecutor()), \
+             patch("relay.application.load_hermes_runs_executor", return_value=None):
+            with self.assertRaisesRegex(ValueError, "Hermes selection requires"):
+                build_supported_relay_runtime(
+                    expected_device_token="device-token-12",
+                    environ=env,
+                    sdk_types=FakeSchemaTypes,
+                )
+
+    def test_hermes_default_selects_configured_executor_without_acp(self):
+        env = {
+            "AMUSANT_LIVE_PROVIDER": "gemini",
+            "GEMINI_API_KEY": "offline-test-key",
+            "AMUSANT_CLIENT_ID": CLIENT,
+            "AMUSANT_BACKEND_ID": "server-backend",
+            "AMUSANT_TASK_DB": str(self.db_path),
+        }
+        with patch("relay.application.load_acp_executor", return_value=None), \
+             patch("relay.application.load_hermes_runs_executor", return_value=FakeExecutor()), \
+             patch("relay.application.build_live_provider", return_value=object()):
+            _handler, dispatcher, _store = build_supported_relay_runtime(
+                expected_device_token="device-token-12",
+                environ=env,
+                sdk_types=FakeSchemaTypes,
+            )
+        self.assertIsNotNone(dispatcher)
+
     def test_supported_startup_recovers_started_work_without_executor(self):
         store = self.store()
         store.admit(request_for(TASK_ID))
