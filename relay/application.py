@@ -29,7 +29,7 @@ from .slow_path import (
 )
 from .acp_client import load_acp_executor
 from .dispatcher import AsyncDispatcher, ExecutionOutcome, MAX_POLL_INTERVAL_SECONDS
-from .hermes_runs_executor import load_hermes_runs_executor
+from .hermes_runs_executor import HermesConfigError, load_hermes_runs_executor
 from .store_factory import build_task_store
 from .task_store import TASK_KINDS
 
@@ -264,11 +264,19 @@ def build_supported_relay_runtime(
     config = load_relay_process_config(environ, expected_device_token=expected_device_token)
     store = build_task_store(environ, max_pending_tasks=config.max_pending_tasks)
     acp_executor = load_acp_executor(environ)
-    hermes_executor = load_hermes_runs_executor(
-        environ,
-        save_backend_run_id=store.save_backend_run_id,
-        update_poll_state=store.update_hermes_poll_state,
-    )
+    try:
+        hermes_executor = load_hermes_runs_executor(
+            environ,
+            save_backend_run_id=store.save_backend_run_id,
+            update_poll_state=store.update_hermes_poll_state,
+        )
+    except HermesConfigError:
+        if config.slow_executor_kind != "openab_acp":
+            raise
+        # Explicit legacy rollback must start even when stale Hermes settings
+        # remain. An unavailable Hermes executor is never replaced with ACP for
+        # existing Hermes tasks; the executor router fails those closed.
+        hermes_executor = None
     configured_executors = {
         "openab_acp": acp_executor,
         "hermes_runs": hermes_executor,
