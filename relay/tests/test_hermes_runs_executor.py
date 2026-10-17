@@ -412,6 +412,7 @@ class HermesRunsExecutorTests(unittest.TestCase):
         self.assertIn("POC_STOP_CONTRACT", fake_provider)
         self.assertIn('stop = sub.add_parser("stop")', poc_client)
         self.assertIn('gates["pinned_stop_contract"]', run_phase2b)
+        self.assertIn("def require(condition, message)", run_phase2b)
         self.assertIn("v2026.9.24", run_phase2b)
         for timing_env in (
             "POC_RUN_DEADLINE_SECONDS",

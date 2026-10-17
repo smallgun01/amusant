@@ -141,6 +141,11 @@ def poc_container_stats():
         return ["unavailable:" + type(exc).__name__]
 
 
+def require(condition, message):
+    if not condition:
+        raise AssertionError(message)
+
+
 def main():
     run_tag = COMPOSE_ENV["POC_RUN_TAG"]
     gates = {}
