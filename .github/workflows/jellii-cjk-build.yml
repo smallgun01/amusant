@@ -42,7 +42,7 @@ jobs:
       - name: Install PlatformIO
         run: |
           python3 -m venv /tmp/pioenv
-          /tmp/pioenv/bin/pip install --disable-pip-version-check "platformio==6.1.18"
+          /tmp/pioenv/bin/pip install --disable-pip-version-check "platformio==6.2.0"
       - name: Build Jellii + W1 + CJK (no device / no credentials)
         run: |
           cp kai/firmware/src/secrets.example.h kai/firmware/src/secrets.h
