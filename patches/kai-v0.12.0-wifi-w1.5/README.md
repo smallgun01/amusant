@@ -67,7 +67,7 @@ The exact pinned `sticks3` build completed successfully:
 
 The W1.5 image uses 57.1% of the 3,342,336-byte application partition. The linker RAM number is static image usage; NimBLE is configured for internal memory, but dynamic BLE heap/free-heap, scan time, power, and sleep behavior need the separately authorized physical acceptance and are not inferred from a build. The local build used the exact checked-out Opus commit `c02de6316dddbb9dffdf976c159c4eaacecdf12f` because this Windows host's Git credential provider refused the HTTPS fetch. The temporary build config pointed to that local checkout and the installed pioarduino platform; the tracked `platformio.ini` was unchanged.
 
-> Review revision results: PlatformIO `sticks3` build **PASS** (Arduino-ESP32 3.3.12 / ESP-IDF libraries 5.5.5); canonical W1 USB-helper tests **5/5 PASS** locally. The updated C++ fake-NVS/native-manager/display suite will run in the PR's GitHub Actions host workflow because this workstation has no host C++ compiler.
+> Review revision results: PlatformIO `sticks3` build **PASS** (Arduino-ESP32 3.3.12 / ESP-IDF libraries 5.5.5); canonical W1 USB-helper tests **5/5 PASS** locally; GitHub Actions W1.5 host workflow **PASS** (run 39045696340, including C++ fake-NVS/native-manager/retry/LCD-layout tests and ordered patch application); repository Fast Voice / Relay / TLS-PSK CI **PASS** (run 39045696336). This workstation has no host C++ compiler.
 
 ## Limits and rollback
 
