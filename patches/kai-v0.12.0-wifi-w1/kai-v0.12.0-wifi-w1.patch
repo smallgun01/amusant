@@ -1,9 +1,12 @@
 diff --git a/firmware/src/main.cpp b/firmware/src/main.cpp
-index 0bc678e..091b4aa 100644
+index 0bc678e..c5e1898 100644
 --- a/firmware/src/main.cpp
 +++ b/firmware/src/main.cpp
-@@ -19,6 +19,8 @@
+@@ -17,8 +17,11 @@
+ 
+ #include "audio.h"
  #include "face.h"
++#include "power_policy.h"
  #include "secrets.h"
  #include "voice_codec.h"
 +#include "wifi_config.h"
@@ -11,7 +14,7 @@ index 0bc678e..091b4aa 100644
  
  // libopus (fixed point) keeps sizeable frames on the stack; Arduino's default 8 KB loop stack is too tight.
  SET_LOOP_TASK_STACK_SIZE(16 * 1024);
-@@ -76,6 +78,11 @@ RTC_DATA_ATTR static uint8_t cachedBssid[6];
+@@ -76,6 +79,11 @@ RTC_DATA_ATTR static uint8_t cachedBssid[6];
  RTC_DATA_ATTR static int32_t cachedChannel = 0;
  RTC_DATA_ATTR static uint32_t cachedRelayIp = 0;
  RTC_DATA_ATTR static uint8_t untouchedTimerWakes = 0;  // timer wakes in a row with no button press
@@ -23,7 +26,29 @@ index 0bc678e..091b4aa 100644
  #ifdef KAI_TELEMETRY
  RTC_DATA_ATTR static int64_t sleptAtUs = 0;  // RTC wall clock keeps running through deep sleep
  RTC_DATA_ATTR static int16_t sleptMv = 0;
-@@ -510,14 +517,17 @@ static void onWsEvent(WStype_t type, uint8_t* payload, size_t length) {
+@@ -243,16 +251,16 @@ static void powerSave(uint32_t now) {
+     if (mode == Mode::Idle) face::setExpr(Expr::Sleeping);
+     dimmed = true;
+   }
+-  if (audio::onUsbPower()) {
++  const bool usbPower = audio::onUsbPower();
++  uint32_t sleepAfter = DEEP_SLEEP_AFTER_MS;
++  if (wokeByTimer && !touched) sleepAfter = mode == Mode::Offline ? TIMER_WAKE_CONNECT_MS : TIMER_WAKE_IDLE_MS;
++  if (power_policy::shouldEnterDeepSleep(usbPower, idle, sleepAfter)) goToDeepSleep();
++  if (usbPower) {
+     if (!screenOff && idle > SCREEN_OFF_AFTER_MS) {
+       backlight(0);
+       M5.Display.sleep();
+       screenOff = true;
+     }
+-  } else {
+-    uint32_t sleepAfter = DEEP_SLEEP_AFTER_MS;
+-    if (wokeByTimer && !touched) sleepAfter = mode == Mode::Offline ? TIMER_WAKE_CONNECT_MS : TIMER_WAKE_IDLE_MS;
+-    if (idle > sleepAfter) goToDeepSleep();
+   }
+ }
+ 
+@@ -510,14 +518,17 @@ static void onWsEvent(WStype_t type, uint8_t* payload, size_t length) {
  // ---- connectivity ----------------------------------------------------------
  
  static void startWifi() {
@@ -43,7 +68,7 @@ index 0bc678e..091b4aa 100644
    }
  }
  
-@@ -566,15 +576,16 @@ static void startRelayConnection() {
+@@ -566,15 +577,16 @@ static void startRelayConnection() {
  }
  
  static void maintainConnection() {
@@ -62,7 +87,7 @@ index 0bc678e..091b4aa 100644
      }
      if (!earlyTalk) {
        if (mode == Mode::Listening) audio::stopMic(discardMic);
-@@ -598,20 +609,115 @@ static void maintainConnection() {
+@@ -598,20 +610,117 @@ static void maintainConnection() {
      ws.disconnect();
      wsStarted = false;
      cachedRelayIp = 0;
@@ -98,12 +123,11 @@ index 0bc678e..091b4aa 100644
 +static void onWifiConsoleEvent(const wifi_console::Event& event) {
 +  switch (event.type) {
 +    case wifi_console::EventType::Status:
-+      if (wifiProfileState == wifi_config::LoadResult::Valid)
-+        Serial.println("WIFI OK CONFIGURED");
-+      else if (wifiProfileState == wifi_config::LoadResult::Invalid)
-+        Serial.println("WIFI OK INVALID");
-+      else
-+        Serial.println("WIFI OK UNCONFIGURED");
++      Serial.println(wifi_console::statusResponse(
++          wifiConfigured, wifiProfileState == wifi_config::LoadResult::Invalid, WiFi.status() == WL_CONNECTED));
++      Serial.printf("WIFI MEM %lu %lu\n",
++                    static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
++                    static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
 +      break;
 +
 +    case wifi_console::EventType::Clear:
@@ -155,6 +179,9 @@ index 0bc678e..091b4aa 100644
 +}
 +
 +static void serviceWifiConsole() {
++  wifi_console::Event timeoutEvent = {};
++  if (wifiConsole.poll(millis(), timeoutEvent)) onWifiConsoleEvent(timeoutEvent);
++
 +  uint8_t processed = 0;
 +  while (Serial.available() > 0 && processed < 128) {
 +    const int input = Serial.read();
@@ -182,7 +209,7 @@ index 0bc678e..091b4aa 100644
    c.lines[c.count++] = String("Relay ") + (wsConnected ? "connected" : "offline");
    c.lines[c.count++] = String("Battery ") + String(M5.Power.getBatteryLevel()) + "%" +
                         (audio::onUsbPower() ? " on USB" : "");
-@@ -688,7 +794,9 @@ void setup() {
+@@ -688,7 +797,9 @@ void setup() {
      if (untouchedTimerWakes < 255) untouchedTimerWakes++;
    }
  
@@ -193,7 +220,7 @@ index 0bc678e..091b4aa 100644
    face::begin();
    backlight(BRIGHTNESS_AWAKE);
    if (!audio::begin()) log_e("PSRAM allocation failed: check board_build.arduino.memory_type");
-@@ -700,13 +808,19 @@ void setup() {
+@@ -700,13 +811,19 @@ void setup() {
    if (wokeToTalk && M5.BtnA.isPressed()) {
      startEarlyTalk();
    } else {
@@ -214,6 +241,25 @@ index 0bc678e..091b4aa 100644
    maintainConnection();
    if (wsStarted) ws.loop();
    if (connectBoost && (wsConnected || millis() - wsBeganAt > CONNECT_BOOST_MS)) {
+diff --git a/firmware/src/power_policy.h b/firmware/src/power_policy.h
+new file mode 100644
+index 0000000..ebaba25
+--- /dev/null
++++ b/firmware/src/power_policy.h
+@@ -0,0 +1,13 @@
++#pragma once
++
++#include <stdint.h>
++
++namespace power_policy {
++
++// USB-powered provisioning remains live. On battery, keep the existing idle timeout
++// so a deliberate button wake opens another bounded configuration window.
++inline bool shouldEnterDeepSleep(bool usbPower, uint32_t idleMs, uint32_t sleepAfterMs) {
++  return !usbPower && idleMs > sleepAfterMs;
++}
++
++}  // namespace power_policy
 diff --git a/firmware/src/secrets.example.h b/firmware/src/secrets.example.h
 index 41c90dd..ceeffeb 100644
 --- a/firmware/src/secrets.example.h
@@ -414,10 +460,10 @@ index 0000000..26313b6
 +}  // namespace wifi_config
 diff --git a/firmware/src/wifi_console.cpp b/firmware/src/wifi_console.cpp
 new file mode 100644
-index 0000000..80eb857
+index 0000000..57ede26
 --- /dev/null
 +++ b/firmware/src/wifi_console.cpp
-@@ -0,0 +1,137 @@
+@@ -0,0 +1,157 @@
 +#include "wifi_console.h"
 +
 +#include <string.h>
@@ -447,6 +493,11 @@ index 0000000..80eb857
 +}  // namespace
 +
 +Parser::Parser() { reset(); }
++
++const char* statusResponse(bool configured, bool invalid, bool connected) {
++  if (configured) return connected ? "WIFI OK CONFIGURED CONNECTED" : "WIFI OK CONFIGURED OFFLINE";
++  return invalid ? "WIFI OK INVALID OFFLINE" : "WIFI OK UNCONFIGURED OFFLINE";
++}
 +
 +void Parser::reset() {
 +  state_ = State::Line;
@@ -501,16 +552,31 @@ index 0000000..80eb857
 +  return true;
 +}
 +
-+bool Parser::feed(uint8_t byte, uint32_t nowMs, Event& event) {
++bool Parser::poll(uint32_t nowMs, Event& event) {
 +  event.type = EventType::None;
 +  wipe(&event.profile, sizeof(event.profile));
-+
 +  const bool active = state_ == State::Payload || lineLength_ != 0 || discardLine_;
-+  if (active && uint32_t(nowMs - lastByteAtMs_) > kInputTimeoutMs) {
-+    reset();
-+    event.type = EventType::Timeout;
++  if (!active || uint32_t(nowMs - lastByteAtMs_) < kInputTimeoutMs) return false;
++  reset();
++  event.type = EventType::Timeout;
++  return true;
++}
++
++bool Parser::feed(uint8_t byte, uint32_t nowMs, Event& event) {
++  if (poll(nowMs, event)) {
++    // Treat a late byte as the beginning of a new frame. This preserves the first byte of
++    // the next command while still reporting the expired partial command to the caller.
++    Event ignored = {};
++    consumeByte(byte, nowMs, ignored);
++    wipe(&ignored.profile, sizeof(ignored.profile));
 +    return true;
 +  }
++  return consumeByte(byte, nowMs, event);
++}
++
++bool Parser::consumeByte(uint8_t byte, uint32_t nowMs, Event& event) {
++  event.type = EventType::None;
++  wipe(&event.profile, sizeof(event.profile));
 +
 +  if (state_ == State::Payload) {
 +    lastByteAtMs_ = nowMs;
@@ -557,10 +623,10 @@ index 0000000..80eb857
 +}  // namespace wifi_console
 diff --git a/firmware/src/wifi_console.h b/firmware/src/wifi_console.h
 new file mode 100644
-index 0000000..da8da2b
+index 0000000..a538b30
 --- /dev/null
 +++ b/firmware/src/wifi_console.h
-@@ -0,0 +1,38 @@
+@@ -0,0 +1,42 @@
 +#pragma once
 +
 +#include <stdint.h>
@@ -580,10 +646,12 @@ index 0000000..da8da2b
 + public:
 +  Parser();
 +  bool feed(uint8_t byte, uint32_t nowMs, Event& event);
++  bool poll(uint32_t nowMs, Event& event);
 +
 + private:
 +  enum class State : uint8_t { Line, Payload };
 +  void reset();
++  bool consumeByte(uint8_t byte, uint32_t nowMs, Event& event);
 +  bool processLine(uint32_t nowMs, Event& event);
 +
 +  State state_;
@@ -598,5 +666,6 @@ index 0000000..da8da2b
 +  uint32_t lastByteAtMs_;
 +};
 +
++const char* statusResponse(bool configured, bool invalid, bool connected);
++
 +}  // namespace wifi_console
-

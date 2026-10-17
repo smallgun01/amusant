@@ -43,14 +43,14 @@ def main():
         ]
         subprocess.run(command, check=True)
         subprocess.run([str(executable)], check=True)
+    print("C++ fake-NVS, parser, and power-policy host tests passed.", flush=True)
 
     subprocess.run(
         [sys.executable, "-m", "unittest", "discover", "-s", str(TESTS), "-p", "test_provision_wifi.py"],
         check=True,
     )
-    print("Offline Wi-Fi W1 host tests passed.")
+    print("Python provisioning-helper host tests passed.", flush=True)
 
 
 if __name__ == "__main__":
     main()
-

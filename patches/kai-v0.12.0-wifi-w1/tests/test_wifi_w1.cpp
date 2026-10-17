@@ -5,6 +5,7 @@
 #include <string>
 
 #include <Preferences.h>
+#include "power_policy.h"
 #include "wifi_config.h"
 #include "wifi_console.h"
 
@@ -101,14 +102,74 @@ static void testConsoleProtocol() {
   assert(event.type == wifi_console::EventType::Error);
 
   parser.feed('W', time++, event);
-  assert(parser.feed('I', time + 16000, event));
+  parser.feed('I', time++, event);
+  assert(parser.poll(time + 15000, event));
   assert(event.type == wifi_console::EventType::Timeout);
+
+  time += 15000;
+  event = feedLine(parser, "WIFI STATUS\n", time);
+  assert(event.type == wifi_console::EventType::Status);
+
+  parser.feed('W', time++, event);
+  parser.feed('I', time++, event);
+  const uint32_t lateByteAt = time + 15000;
+  assert(parser.feed('W', lateByteAt, event));
+  assert(event.type == wifi_console::EventType::Timeout);
+  time = lateByteAt + 1;
+  event = feedLine(parser, "IFI STATUS\n", time);
+  assert(event.type == wifi_console::EventType::Status);
+
+  event = feedLine(parser, "WIFI SET 6 8\n", time);
+  assert(event.type == wifi_console::EventType::SetReady);
+  const char partialPayload[] = "lab-";
+  for (size_t i = 0; i < sizeof(partialPayload) - 1; ++i)
+    parser.feed(static_cast<uint8_t>(partialPayload[i]), time++, event);
+  assert(parser.poll(time + 15000, event));
+  assert(event.type == wifi_console::EventType::Timeout);
+  time += 15000;
+  event = feedLine(parser, "WIFI CLEAR\n", time);
+  assert(event.type == wifi_console::EventType::Clear);
+}
+
+static void testStatusAndOfflineRecovery() {
+  assert(strcmp(wifi_console::statusResponse(false, false, false), "WIFI OK UNCONFIGURED OFFLINE") == 0);
+  assert(strcmp(wifi_console::statusResponse(false, true, false), "WIFI OK INVALID OFFLINE") == 0);
+  assert(strcmp(wifi_console::statusResponse(true, false, false), "WIFI OK CONFIGURED OFFLINE") == 0);
+  assert(strcmp(wifi_console::statusResponse(true, false, true), "WIFI OK CONFIGURED CONNECTED") == 0);
+
+  Preferences::reset();
+  wifi_config::Profile unavailableNetwork = makeProfile();  // host test cannot associate with an AP
+  assert(wifi_config::save(unavailableNetwork));
+  assert(strcmp(wifi_console::statusResponse(true, false, false), "WIFI OK CONFIGURED OFFLINE") == 0);
+
+  wifi_console::Parser parser;
+  uint32_t time = 100;
+  wifi_console::Event event = feedLine(parser, "WIFI CLEAR\n", time);
+  assert(event.type == wifi_console::EventType::Clear);
+  assert(wifi_config::clear());
+  wifi_config::Profile loaded = {};
+  assert(wifi_config::load(loaded) == wifi_config::LoadResult::Missing);
+  assert(strcmp(wifi_console::statusResponse(false, false, false), "WIFI OK UNCONFIGURED OFFLINE") == 0);
+}
+
+static void testIdleRecoveryPolicy() {
+  const uint32_t batteryIdleTimeoutMs = 45000;
+  assert(!power_policy::shouldEnterDeepSleep(false, 45000, batteryIdleTimeoutMs));
+  assert(power_policy::shouldEnterDeepSleep(false, 45001, batteryIdleTimeoutMs));
+  assert(!power_policy::shouldEnterDeepSleep(true, 60000, batteryIdleTimeoutMs));
+
+  // A deliberate wake starts a fresh configuration window with the USB parser live.
+  wifi_console::Parser parser;
+  uint32_t time = 100;
+  wifi_console::Event event = feedLine(parser, "WIFI STATUS\n", time);
+  assert(event.type == wifi_console::EventType::Status);
 }
 
 int main() {
   testNvsProfile();
   testProfileValidation();
   testConsoleProtocol();
+  testStatusAndOfflineRecovery();
+  testIdleRecoveryPolicy();
   return 0;
 }
-

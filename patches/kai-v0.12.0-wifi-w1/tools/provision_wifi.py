@@ -3,6 +3,7 @@
 
 import argparse
 import getpass
+import re
 import time
 import warnings
 
@@ -38,15 +39,33 @@ def wait_for_response(port, expected, timeout):
     raise TimeoutError("No matching response from the device over USB serial.")
 
 
+def is_memory_response(line):
+    return re.fullmatch(r"WIFI MEM [0-9]+ [0-9]+", line) is not None
+
+
 def establish_console(port):
-    responses = {"WIFI OK CONFIGURED", "WIFI OK UNCONFIGURED", "WIFI OK INVALID"}
+    responses = {
+        "WIFI OK CONFIGURED CONNECTED",
+        "WIFI OK CONFIGURED OFFLINE",
+        "WIFI OK UNCONFIGURED OFFLINE",
+        "WIFI OK INVALID OFFLINE",
+    }
     for _ in range(5):
         port.write(b"WIFI STATUS\n")
         port.flush()
-        try:
-            return wait_for_response(port, responses, 1.2)
-        except TimeoutError:
-            continue
+        deadline = time.monotonic() + 1.2
+        status = None
+        memory = None
+        while time.monotonic() < deadline:
+            line = port.readline().decode("ascii", "ignore").strip()
+            if line in responses:
+                status = line
+            elif is_memory_response(line):
+                memory = line
+            elif line.startswith("WIFI ERR "):
+                raise RuntimeError("Device rejected the USB Wi-Fi request.")
+            if status is not None and memory is not None:
+                return status, memory
     raise TimeoutError("The device did not answer on the selected USB serial port.")
 
 
@@ -72,10 +91,11 @@ def main():
 
     try:
         with serial.Serial(args.port, 115200, timeout=0.2, write_timeout=2) as port:
-            status = establish_console(port)
+            status, memory = establish_console(port)
 
             if args.action == "status":
                 print(status)
+                print(memory)
                 return
             if args.action == "clear":
                 port.write(b"WIFI CLEAR\n")
@@ -99,4 +119,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

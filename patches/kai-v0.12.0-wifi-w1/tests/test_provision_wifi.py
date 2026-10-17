@@ -45,7 +45,8 @@ class ProvisioningFrameTests(unittest.TestCase):
         class FakeSerial:
             def __init__(self, *args, **kwargs):
                 self.responses = [
-                    b"WIFI OK UNCONFIGURED\n",
+                    b"WIFI OK UNCONFIGURED OFFLINE\n",
+                    b"WIFI MEM 120000 2000000\n",
                     b"WIFI READY\n",
                     b"WIFI OK SAVED\n",
                 ]
@@ -79,7 +80,44 @@ class ProvisioningFrameTests(unittest.TestCase):
         self.assertEqual(writes[2], b"lab-2g" + password.encode("ascii"))
         self.assertNotIn(password, output.getvalue())
 
+    def test_status_reports_link_and_memory_without_credentials(self):
+        output = io.StringIO()
+
+        class FakeSerial:
+            def __init__(self, *args, **kwargs):
+                self.responses = [
+                    b"WIFI OK CONFIGURED OFFLINE\n",
+                    b"WIFI MEM 120000 2000000\n",
+                ]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def write(self, data):
+                return len(data)
+
+            def flush(self):
+                pass
+
+            def readline(self):
+                return self.responses.pop(0)
+
+        fake_serial = SimpleNamespace(Serial=FakeSerial)
+        with patch.object(sys, "argv", ["provision_wifi.py", "--port", "COM1", "status"]):
+            with patch.dict(sys.modules, {"serial": fake_serial}):
+                with redirect_stdout(output):
+                    provision_wifi.main()
+
+        self.assertEqual(
+            output.getvalue(),
+            "WIFI OK CONFIGURED OFFLINE\nWIFI MEM 120000 2000000\n",
+        )
+        self.assertTrue(provision_wifi.is_memory_response("WIFI MEM 1 2"))
+        self.assertFalse(provision_wifi.is_memory_response("WIFI MEM password 2"))
+
 
 if __name__ == "__main__":
     unittest.main()
-
