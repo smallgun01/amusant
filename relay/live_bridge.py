@@ -27,6 +27,7 @@ from relay.slow_path import CANCEL_TOOL_NAME, INBOX_TOOL_NAME, TOOL_NAME
 from relay.device_opus import DeviceOpusCodec, DeviceProtocolError
 from relay.device_protocol import adapt_device_handler
 from relay.device_tls_psk import server_context_from_environ, validate_hardware_bind_host
+from relay.caption_script import make_caption_normalizer
 from relay.mock_relay import INPUT_RATE, MAX_FRAME_BYTES, OUTPUT_CHUNK_BYTES, OUTPUT_RATE, validate_bind_host
 
 DEVICE_TOKEN_ENV = "AMUSANT_DEVICE_TOKEN"
@@ -175,6 +176,8 @@ def make_handler(
             or not math.isfinite(post_tool_ack_max_duration_seconds)
             or post_tool_ack_max_duration_seconds < post_tool_ack_timeout_seconds):
         raise ValueError("post_tool_ack_max_duration_seconds must be finite and at least the inactivity timeout")
+
+    normalize_caption = make_caption_normalizer()
 
     async def handler(ws: ServerConnection) -> None:
         path = ws.request.path.split("?", 1)[0]
@@ -485,7 +488,7 @@ def make_handler(
                 if turn.tool_response_sent:
                     turn.post_tool_output_seen = True
                     reset_post_tool_timeout(turn, epoch)
-                await send_owned_control(turn, epoch, {"type": "caption", "delta": event.text})
+                await send_owned_control(turn, epoch, {"type": "caption", "delta": normalize_caption(event.text)})
 
             async def on_tool_call(event: ToolCallEvent) -> None:
                 turn = response_turn
