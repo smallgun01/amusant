@@ -264,6 +264,7 @@ def main():
                 before_stop = client("get", "--run-id", stop_run_id)
                 stop_stage = "post_stop"
                 stop_ack = client("stop", "--run-id", stop_run_id)
+                stop_ack_received_at = time.time()
                 stop_stage = "get_after_stop"
                 after_stop = client("get", "--run-id", stop_run_id)
                 stop_stage = "poll_terminal_get"
@@ -273,6 +274,12 @@ def main():
                     row for row in provider_stats().get("requests", [])
                     if row.get("slow_case") == "stop_contract"
                 ]
+                known_start_times = [
+                    row["started_at"]
+                    for row in stop_requests
+                    if isinstance(row.get("started_at"), (int, float))
+                ]
+                starts_after_ack = sum(started_at > stop_ack_received_at for started_at in known_start_times)
                 final_status = terminal.get("status")
                 terminals = {"completed", "failed", "cancelled", "interrupted"}
                 stop_pass = (
@@ -281,7 +288,9 @@ def main():
                     and stop_ack.get("status") == "stopping"
                     and after_stop.get("status") in {"running", "stopping", *terminals}
                     and final_status in terminals
-                    and len(stop_requests) == 1
+                    and len(stop_requests) > 0
+                    and len(known_start_times) == len(stop_requests)
+                    and starts_after_ack == 0
                 )
                 gates["pinned_stop_contract"] = {
                     "status": "PASS" if stop_pass else "FAIL",
@@ -294,6 +303,7 @@ def main():
                     "get_status_after_stop": after_stop.get("status"),
                     "terminal_get_status": final_status,
                     "fake_provider_requests_for_run": len(stop_requests),
+                    "fake_provider_requests_started_after_stop_ack": starts_after_ack,
                     "completion_won_stop_race": final_status == "completed",
                 }
             except Exception as exc:
