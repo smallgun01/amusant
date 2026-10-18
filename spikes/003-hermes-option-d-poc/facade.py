@@ -13,6 +13,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import quote
+from plugin.reprojection import reproject_missing_hook
 
 STATE = Path(os.environ.get("POC_STATE_DIR", "/state"))
 DB_PATH = STATE / "option-d.sqlite3"
@@ -457,6 +458,19 @@ class Handler(BaseHTTPRequestHandler):
             return
         good, reason = validate_envelope(output, artifact)
         if not good:
+            # If the pinned output hook left no event, reproject only the bounded
+            # short presentation against the committed, integrity-checked artifact.
+            repaired_output, _repair_status = reproject_missing_hook(output, row["session_id"])
+            if repaired_output:
+                repaired_good, _repair_reason = validate_envelope(repaired_output, artifact)
+                if repaired_good:
+                    with connect() as conn:
+                        conn.execute(
+                            "UPDATE requests SET presentation_error=NULL WHERE owner_scope=? AND task_id=?",
+                            (owner_scope, row["task_id"]),
+                        )
+                    self.send_json(200, {"run_id": run_id, "status": "completed", "output": repaired_output})
+                    return
             with connect() as conn:
                 conn.execute(
                     "UPDATE requests SET presentation_error=? WHERE owner_scope=? AND task_id=?",
