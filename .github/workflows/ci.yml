@@ -56,7 +56,7 @@ jobs:
 
   issue-79-option-d-recovery:
     name: Pinned Hermes Option D recovery proof
-    if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'codex/issue-79-')
+    if: github.event_name == 'pull_request' && (startsWith(github.head_ref, 'codex/issue-73-') || startsWith(github.head_ref, 'codex/issue-79-'))
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
