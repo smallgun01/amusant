@@ -54,7 +54,7 @@ jobs:
           PYTHONPATH: .
         run: uv run --locked --python 3.13 --extra hardware-opus --group dev python relay/tests/psk_wss_integration.py
 
-  issue-73-option-d-poc:
+  issue-79-option-d-recovery:
     name: Pinned Hermes Option D recovery proof
     if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'codex/issue-79-')
     runs-on: ubuntu-24.04
