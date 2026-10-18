@@ -44,14 +44,30 @@ class CaptionScriptTests(unittest.TestCase):
         self.assertEqual(outputs[-1], "。")
         # Phrase-sensitive Taiwan wording may differ from a whole-sentence pass.
 
-    def test_converter_failures_do_not_silently_emit_misleading_text(self):
+    def test_converter_initialization_failure_remains_fail_closed(self):
+        with patch("relay.caption_script._taiwan_converter", side_effect=ImportError("OpenCC unavailable")):
+            with self.assertRaises(ImportError):
+                make_caption_normalizer("zh-TW")
+
+    def test_converter_failures_fall_back_with_one_sanitized_warning(self):
+        private_detail = "private transcript and credential detail"
+
         class Broken:
             def convert(self, _text):
-                raise RuntimeError("failed")
+                raise RuntimeError(private_detail)
+
         with patch("relay.caption_script._taiwan_converter", return_value=Broken()):
             convert = make_caption_normalizer("zh-TW")
-            with self.assertRaises(RuntimeError):
-                convert("会")
+            with self.assertLogs("relay.caption_script", level="WARNING") as captured:
+                first = "這段逐字稿"
+                second = "另一段逐字稿"
+                self.assertEqual(convert(first), first)
+                self.assertEqual(convert(second), second)
+
+        self.assertEqual(len(captured.records), 1)
+        self.assertNotIn(first, captured.output[0])
+        self.assertNotIn(second, captured.output[0])
+        self.assertNotIn(private_detail, captured.output[0])
 
 
 if __name__ == "__main__":
