@@ -1,3 +1,5 @@
+> **Current OCI target (2026-10-18):** The new host placement and persistent SQLite design are tracked in [ADR-0003](../docs/adr/0003-oci-a1-hermes-sqlite.md) and [OCI PR #70](https://github.com/smallgun01/amusant/pull/70). This directory's ECS/DynamoDB task definitions and one-off commands are **historical AWS templates**, not the new Oracle launch instructions. Keep those artifacts for provenance and possible explicit rollback; no AWS cleanup is authorized.
+
 # Store-ready Relay packaging
 
 This directory is a **template**. It does not register a task definition or create a DynamoDB table.

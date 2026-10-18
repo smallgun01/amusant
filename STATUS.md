@@ -1,3 +1,9 @@
+## Current architectural decision and evidence scope — 2026-10-18
+
+**Owner-selected implementation target:** [ADR-0003](docs/adr/0003-oci-a1-hermes-sqlite.md): Oracle A1 single-host Relay + Hermes Native Runs, persistent SQLite Task Ledger and independent Hermes Home. PRs #45/#60/#65 are merged offline Hermes foundations; [PR #70](https://github.com/smallgun01/amusant/pull/70) is an **open OCI offline packaging candidate** (CI reported PASS on its referenced SHA), not a completed cloud deployment. The DynamoDB 100-history limitation was an application query issue, not an AWS hard cap (#30); #65 improved 100+ retained-history admission, while #30 comprehensive regression remains open. See #56/#73 for unresolved Hermes-origin small-result/artifact boundary.
+
+**Not evidenced:** OCI ARM64 Hermes image selection, real-provider tool/cost behavior, device ingress/real StickS3-to-OCI, OCI Fast p50/p95 under Slow load, automatic encrypted off-host backups and restore, host-loss recovery or sustained operation. Previous AWS T4b DynamoDB after-stop readback remains E3 bounded **historical AWS proof only**, not OCI/Hermes production acceptance. No cloud mutations, paid calls, merge or state migration are implied by these docs. Older dated tables below record state **as of 2026-10-16**, not the current decision.
+
 # Project Amusant — Status
 
 > 最後更新：2026-10-16（追補既有證據，未新做 Live 測試）

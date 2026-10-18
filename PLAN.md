@@ -1,3 +1,9 @@
+## Current target decision overlay — 2026-10-18
+
+- **Target, not deployment:** [ADR-0003](docs/adr/0003-oci-a1-hermes-sqlite.md) selects OCI A1 co-hosted Relay/Hermes with persistent SQLite Task Ledger/Inbox; [#62](https://github.com/smallgun01/amusant/issues/62) and [OCI PR #70](https://github.com/smallgun01/amusant/pull/70) own offline packaging. DynamoDB/AWS RunTask evidence remains valid **historical** proof only; never delete the resources automatically. No OCI service has passed live acceptance.
+- **WS3/WS4 next:** review ARM64 image/run compatibility, backup/restore drill, conservative SQLite retention, stop/restart GET-only and Hermes Home continuity; then owner-approved OCI canary after edge ingress/security (#27) is resolved. **WS2 parallel:** Hermes-side small-result boundary #73, not an extra Relay summarizer.
+- Older dated AWS/ECS/OpenAB/B0/queue assumptions below are historical planning notes superseded for the new target; do not rerun old AWS gates solely for OCI or claim production cutover.
+
 # Project Amusant — Execution Plan
 
 > 更新：2026-10-16（進度對齊；無新增 live 測試）

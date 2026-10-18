@@ -1,3 +1,5 @@
+> **Supersession note (2026-10-18):** [ADR-0003](0003-oci-a1-hermes-sqlite.md) selects persistent **SQLite** for the *new OCI A1 target*. DynamoDB remains the historical AWS/Fargate durability solution, supported adapter and optional explicit rollback. Existing AWS table/data are untouched; migration is not automatic. SQLite off-host backup, retention and recovery gates must pass before unattended operation.
+
 # ADR 0002 — External Task Store (design, unapproved)
 
 **Status:** Accepted as design (PR #18). Offline adapter code may follow without creating a DynamoDB table, IAM role, VPC endpoint, or paid AWS resource.

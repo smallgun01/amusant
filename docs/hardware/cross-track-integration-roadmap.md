@@ -1,5 +1,7 @@
 # Amusant — Cross-track Hardware / AWS Integration Roadmap
 
+> **New OCI implementation-target overlay (2026-10-18):** [ADR-0003](../adr/0003-oci-a1-hermes-sqlite.md) selects one OCI A1 VM running Relay + Hermes Native Runs with a persistent SQLite Ledger/Inbox; [#62](https://github.com/smallgun01/amusant/issues/62) / [PR #70](https://github.com/smallgun01/amusant/pull/70) track the **offline candidate**, not a deployed service. The AWS/ECS/OpenAB/DynamoDB graphs, G2 wording and evidence below preserve the **2026-10-16 historical baseline**, not the new hosting target. #27 device ingress, ARM64/live OCI, fake/real-provider E2E, latency and recovery gates remain OPEN. Do not reinterpret the AWS T4b proof as an OCI acceptance or infer permission to open ports, flash firmware, migrate state or spend.
+
 > Active technical integration view refreshed 2026-10-16, subordinate to [WS1–WS4 delivery index](../project-management/workstreams.md), [PLAN](../../PLAN.md), [STATUS](../../STATUS.md), and accepted [SPEC](../../SPEC.md). #31 G0 device FAST functional PASS and #33 avatar physical PASS are **not** the same as formal H0 latency/battery UX acceptance. No Cloud/flash/live authorization is implied.
 > **H1 authorization:** local G0 functional PASS does not authorize firmware changes or flashing; Owner 2026-10-17 granted limited W1 implementation/offline PR and W1.5 offline feasibility GO on the G0 functional baseline; formal H0 UX remains OPEN. Any real device flash/live test still requires separate approval per #36.
 

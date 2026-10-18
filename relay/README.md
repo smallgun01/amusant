@@ -1,3 +1,5 @@
+> **New OCI target (2026-10-18):** [ADR-0003](../docs/adr/0003-oci-a1-hermes-sqlite.md) selects existing `SQLiteTaskStore` for persistent OCI block storage; Hermes Native Runs is the code-default Slow executor. DynamoDB remains a supported AWS legacy path. The sections below about OpenAB/two ECS and historical one-offs describe prior/tested stages; they do not supersede the current OCI target. Production requires an off-host backup/restore drill, safe retention and a reviewed ingress plan.
+
 # P1 Mock Relay
 
 This is a small, hand-written P1 test probe for the Kai simulator's minimal WebSocket/audio path. It is not a fork or full Kai relay. Source-level comparison used Kai commit `1681fb3c11acd28525d8987bba4b9bf4bc2a288f`; the same-LAN kai-sim audio loop and one reconnect smoke have passed; reported manual release-to-first-audio and reconnect times were under one second, but are not statistically robust measurements. It does not call a model, use OpenClaw, run tools, or persist audio. It returns a short tone plus a locally echoed/resampled copy of the PTT audio, with a text/card response.
