@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from contextlib import closing
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 import importlib.util
 import os
 from pathlib import Path
@@ -31,8 +31,14 @@ class LedgerMaintenanceTests(unittest.TestCase):
         self.store = SQLiteTaskStore(database_path=self.source, max_pending_tasks=16)
         old = NOW - timedelta(days=40)
         recent = NOW - timedelta(days=5)
-        self._seed("done-read", status="completed", outbox="sent", inbox="read", created=old)
-        self._seed("done-spoken", status="completed", outbox="sent", inbox="spoken", created=old)
+        self._seed(
+            "done-read", status="completed", outbox="sent", inbox="read", created=old,
+            result_created_at=old + timedelta(hours=1),
+        )
+        self._seed(
+            "done-spoken", status="completed", outbox="sent", inbox="spoken", created=old,
+            result_created_at=old + timedelta(hours=1),
+        )
         self._seed("unread", status="completed", outbox="sent", inbox="pending", created=old)
         self._seed("missing-inbox", status="completed", outbox="sent", inbox=None, created=old)
         self._seed("uncertain", status="uncertain", outbox="uncertain", inbox="pending", created=old)
@@ -47,6 +53,14 @@ class LedgerMaintenanceTests(unittest.TestCase):
         )
         self._seed("dispatch-pending", status="failed", outbox="pending", inbox="read", created=old)
         self._seed("recent", status="completed", outbox="sent", inbox="read", created=recent)
+        self._seed(
+            "recent-delivery", status="completed", outbox="sent", inbox="read", created=old,
+            inbox_updated_at=NOW, result_created_at=old + timedelta(hours=1),
+        )
+        self._seed(
+            "recent-result", status="completed", outbox="sent", inbox="spoken", created=old,
+            inbox_updated_at=old + timedelta(hours=1), result_created_at=NOW,
+        )
 
     def _cleanup_root(self) -> None:
         for path in self.root.iterdir():
@@ -65,6 +79,8 @@ class LedgerMaintenanceTests(unittest.TestCase):
         created: datetime,
         stop_requested_at: str | None = None,
         manual_reconciled_at: str | None = None,
+        inbox_updated_at: datetime | None = None,
+        result_created_at: datetime | None = None,
     ) -> str:
         task_id = str(uuid4())
         created_at = created.isoformat()
@@ -88,7 +104,13 @@ class LedgerMaintenanceTests(unittest.TestCase):
             if inbox is not None:
                 connection.execute(
                     "INSERT INTO task_inbox(task_id,delivery_state,updated_at) VALUES(?,?,?)",
-                    (task_id, inbox, created_at),
+                    (task_id, inbox, (inbox_updated_at or created).isoformat()),
+                )
+            if result_created_at is not None:
+                connection.execute(
+                    "INSERT INTO task_results(task_id,speak,card_json,details_md,created_at) "
+                    "VALUES(?,?,?,?,?)",
+                    (task_id, "done", "{}", "fixture result", result_created_at.isoformat()),
                 )
         finally:
             connection.close()
@@ -103,6 +125,7 @@ class LedgerMaintenanceTests(unittest.TestCase):
                 )),
                 tuple(db.execute("SELECT task_id,state FROM dispatch_outbox ORDER BY task_id")),
                 tuple(db.execute("SELECT task_id,delivery_state FROM task_inbox ORDER BY task_id")),
+                tuple(db.execute("SELECT task_id,created_at FROM task_results ORDER BY task_id")),
                 db.execute("PRAGMA user_version").fetchone()[0],
             )
 
@@ -113,7 +136,7 @@ class LedgerMaintenanceTests(unittest.TestCase):
         restored_store = SQLiteTaskStore(database_path=destination, max_pending_tasks=16)
         self.assertEqual(restored_store.get_by_task_id(self._task_id_for("done-read"))["status"], "completed")
         with closing(sqlite3.connect(destination)) as db:
-            self.assertEqual(db.execute("SELECT count(*) FROM slow_tasks").fetchone()[0], 10)
+            self.assertEqual(db.execute("SELECT count(*) FROM slow_tasks").fetchone()[0], 12)
             self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 7)
         if os.name == "posix":
             self.assertEqual(destination.stat().st_mode & 0o777, 0o600)
@@ -136,8 +159,27 @@ class LedgerMaintenanceTests(unittest.TestCase):
         before = self._ledger_snapshot()
         report = maintenance.retention_report(self.source, days=30, now=NOW)
         after = self._ledger_snapshot()
-        self.assertEqual(report, {"potential_terminal_rows": 2, "protected_rows": 8})
+        self.assertEqual(report, {"potential_terminal_rows": 2, "protected_rows": 10})
         self.assertEqual(after, before)
+
+    def test_verify_and_backup_reject_unrelated_sqlite_databases(self) -> None:
+        fixtures = (
+            ("empty.sqlite3", ""),
+            ("unrelated.sqlite3", "CREATE TABLE unrelated (value TEXT)"),
+            ("incomplete-v7.sqlite3", "PRAGMA user_version=7; CREATE TABLE slow_tasks (task_id TEXT)"),
+        )
+        for filename, setup_sql in fixtures:
+            with self.subTest(filename=filename):
+                source = self.root / filename
+                with closing(sqlite3.connect(source)) as db:
+                    if setup_sql:
+                        db.executescript(setup_sql)
+                with self.assertRaises(ValueError):
+                    maintenance.verify(source)
+                destination = self.root / f"backup-{filename}"
+                with self.assertRaises(ValueError):
+                    maintenance.backup(source, destination)
+                self.assertFalse(destination.exists())
 
     def test_reject_missing_or_symlink_source(self) -> None:
         with self.assertRaises(ValueError):

@@ -13,6 +13,14 @@ import os
 import sqlite3
 import sys
 
+EXPECTED_LEDGER_SCHEMA_VERSION = 7
+REQUIRED_LEDGER_COLUMNS = {
+    "slow_tasks": {"task_id", "status", "created_at", "stop_requested_at", "manual_reconciled_at"},
+    "dispatch_outbox": {"task_id", "state"},
+    "task_inbox": {"task_id", "delivery_state", "updated_at"},
+    "task_results": {"task_id", "created_at"},
+}
+
 
 def _existing_db(value: str) -> Path:
     source = Path(value).expanduser()
@@ -33,6 +41,19 @@ def _assert_integrity(connection: sqlite3.Connection) -> None:
     violations = connection.execute("PRAGMA foreign_key_check").fetchall()
     if violations:
         raise ValueError("SQLite foreign-key check failed")
+    _assert_ledger_schema(connection)
+
+
+def _assert_ledger_schema(connection: sqlite3.Connection) -> None:
+    # Keep this version synchronized with relay.task_store.SCHEMA_VERSION without
+    # importing the Relay package into this standalone offline utility.
+    version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+    if version != EXPECTED_LEDGER_SCHEMA_VERSION:
+        raise ValueError("SQLite Ledger schema version mismatch")
+    for table, required_columns in REQUIRED_LEDGER_COLUMNS.items():
+        columns = {str(row[1]) for row in connection.execute(f'PRAGMA table_info("{table}")')}
+        if not required_columns.issubset(columns):
+            raise ValueError("SQLite Ledger schema is incomplete")
 
 
 def backup(source: Path, destination: Path) -> None:
@@ -79,13 +100,16 @@ def retention_report(source: Path, *, days: int, now: datetime) -> dict[str, int
                    AND o.state IN ('sent','failed')
                    AND t.created_at < ?
                    AND i.delivery_state IN ('spoken','read')
+                   AND i.updated_at < ?
+                   AND (r.task_id IS NULL OR r.created_at < ?)
                    AND t.manual_reconciled_at IS NULL
                    AND t.stop_requested_at IS NULL
                    THEN 1 ELSE 0 END), 0)
                FROM slow_tasks AS t
                LEFT JOIN dispatch_outbox AS o ON o.task_id=t.task_id
-               LEFT JOIN task_inbox AS i ON i.task_id=t.task_id""",
-            (cutoff,),
+               LEFT JOIN task_inbox AS i ON i.task_id=t.task_id
+               LEFT JOIN task_results AS r ON r.task_id=t.task_id""",
+            (cutoff, cutoff, cutoff),
         ).fetchone()
         return {
             "potential_terminal_rows": int(potential),
