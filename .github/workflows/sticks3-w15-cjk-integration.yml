@@ -53,4 +53,14 @@ jobs:
           image_bytes=$(stat -c %s kai/firmware/.pio/build/sticks3/firmware.bin)
           echo "W1.5 + CJK firmware binary: $image_bytes / 3342336 bytes"
           test "$image_bytes" -le 3342336
+      - name: Check exact pinned glyph data and production wrap widths
+        run: |
+          python3 patches/kai-v0.12.0-cjk-display/tests/check_efont_tw.py \
+            --m5gfx kai/firmware/.pio/libdeps/sticks3/M5GFX@0.2.30 \
+            --emit-header /tmp/jellii_cjk_font_metrics.generated.hpp
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror \
+            -Ikai/firmware/src -I/tmp \
+            patches/kai-v0.12.0-cjk-display/tests/test_cjk_font_width.cpp \
+            -o /tmp/jellii-cjk-font-test
+          /tmp/jellii-cjk-font-test
           rm kai/firmware/src/secrets.h
