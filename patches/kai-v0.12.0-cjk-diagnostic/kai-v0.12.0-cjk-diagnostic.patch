@@ -1,0 +1,284 @@
+diff --git a/firmware/platformio.ini b/firmware/platformio.ini
+index eefd654..f74d5a7 100644
+--- a/firmware/platformio.ini
++++ b/firmware/platformio.ini
+@@ -43,3 +43,8 @@ build_flags = ${env:sticks3.build_flags} -DKAI_TELEMETRY
+ [env:sticks3_powertest]
+ extends = env:sticks3
+ build_flags = ${env:sticks3.build_flags} -DKAI_TELEMETRY -DKAI_POWER_TEST
++
++; Opt-in diagnostic firmware: CJK SHOW displays 會 / 会. Not a production firmware profile.
++[env:sticks3_cjk_diagnostic]
++extends = env:sticks3
++build_flags = ${env:sticks3.build_flags} -DJELLII_CJK_DIAGNOSTICS
+diff --git a/firmware/src/face.cpp b/firmware/src/face.cpp
+index c79d673..f7f7756 100644
+--- a/firmware/src/face.cpp
++++ b/firmware/src/face.cpp
+@@ -1,5 +1,8 @@
+ #include "face.h"
+ #include "jellii_text_utf8.h"
++#ifdef JELLII_CJK_DIAGNOSTICS
++#include "jellii_cjk_diagnostic.h"
++#endif
+ 
+ #include <string.h>
+ #include <vector>
+@@ -550,6 +553,27 @@ void setReplyCard(const Card& card) {
+   linesDirty = dirty = true;
+ }
+ 
++#ifdef JELLII_CJK_DIAGNOSTICS
++static bool replyFontHasGlyph(uint32_t codepoint) {
++  if (codepoint > 0xFFFF) return false;
++  lgfx::FontMetrics metrics = {};
++  return fonts::efontTW_14.updateFontMetric(&metrics, static_cast<uint16_t>(codepoint));
++}
++
++void diagnoseCaptionCodepoints(const char* utf8, size_t length) {
++  static uint32_t seen[jellii_cjk_diagnostic::kMaxReportedCaptionScalars] = {};
++  static size_t seenCount = 0;
++  const auto report = [](jellii_cjk_diagnostic::Classification classification,
++                         uint32_t codepoint) {
++    Serial.printf("CJK %s U+%04lX\n",
++                  jellii_cjk_diagnostic::classificationName(classification),
++                  static_cast<unsigned long>(codepoint));
++  };
++  jellii_cjk_diagnostic::reportUnsupported(utf8, length, replyFontHasGlyph,
++                                            report, seen, seenCount);
++}
++#endif
++
+ void appendReplyText(const String& text) {
+   // Keep the existing 2 KiB cap, but never truncate the last UTF-8 glyph's bytes.
+   // Each caption delta arrives as decoded JSON text (complete UTF-8 scalars).
+diff --git a/firmware/src/face.h b/firmware/src/face.h
+index ae9ba01..8ebd510 100644
+--- a/firmware/src/face.h
++++ b/firmware/src/face.h
+@@ -42,6 +42,9 @@ void setInbox(int count);                // badge: updates waiting from the back
+ void clearReply();
+ void setReplyCard(const Card& card);
+ void appendReplyText(const String& text);
++#ifdef JELLII_CJK_DIAGNOSTICS
++void diagnoseCaptionCodepoints(const char* utf8, size_t length);
++#endif
+ bool hasReply();
+ void showReply(bool on);
+ bool replyVisible();
+diff --git a/firmware/src/jellii_cjk_diagnostic.h b/firmware/src/jellii_cjk_diagnostic.h
+new file mode 100644
+--- /dev/null
++++ b/firmware/src/jellii_cjk_diagnostic.h
+@@ -0,0 +1,121 @@
++#pragma once
++
++#include <stddef.h>
++#include <stdint.h>
++
++namespace jellii_cjk_diagnostic {
++
++static const uint32_t kReplacementCodepoint = 0xFFFD;
++static const size_t kMaxReportedCaptionScalars = 64;
++
++enum class Classification : uint8_t {
++  Missing,
++  Format,
++  NonBmp,
++  Invalid,
++};
++
++inline const char* classificationName(Classification classification) {
++  switch (classification) {
++    case Classification::Missing: return "MISSING";
++    case Classification::Format: return "FORMAT";
++    case Classification::NonBmp: return "NONBMP";
++    case Classification::Invalid: return "INVALID";
++  }
++  return "INVALID";
++}
++
++inline bool displayCommandBusy(bool bleActive, bool listening, bool thinking,
++                               bool replyMode, bool turnComplete,
++                               bool playbackIdle, bool voicePending,
++                               bool replyCooldownActive) {
++  return bleActive || listening || thinking ||
++         (replyMode && (!turnComplete || !playbackIdle || voicePending)) ||
++         replyCooldownActive;
++}
++
++inline bool decodeNext(const char* bytes, size_t length, size_t offset,
++                       uint32_t& codepoint, size_t& nextOffset) {
++  codepoint = kReplacementCodepoint;
++  nextOffset = offset + 1;
++  if (!bytes || offset >= length) return false;
++
++  const uint8_t first = static_cast<uint8_t>(bytes[offset]);
++  if (first < 0x80) {
++    codepoint = first;
++    return true;
++  }
++
++  size_t count = 0;
++  if (first >= 0xC2 && first <= 0xDF) count = 2;
++  else if (first >= 0xE0 && first <= 0xEF) count = 3;
++  else if (first >= 0xF0 && first <= 0xF4) count = 4;
++  else return false;
++  if (offset + count > length) return false;
++
++  for (size_t i = 1; i < count; ++i) {
++    const uint8_t continuation = static_cast<uint8_t>(bytes[offset + i]);
++    if ((continuation & 0xC0) != 0x80) return false;
++  }
++  const uint8_t second = static_cast<uint8_t>(bytes[offset + 1]);
++  if ((first == 0xE0 && second < 0xA0) ||
++      (first == 0xED && second >= 0xA0) ||
++      (first == 0xF0 && second < 0x90) ||
++      (first == 0xF4 && second > 0x8F)) return false;
++
++  uint32_t value = count == 2 ? first & 0x1F :
++                   count == 3 ? first & 0x0F : first & 0x07;
++  for (size_t i = 1; i < count; ++i) {
++    value = (value << 6) | (static_cast<uint8_t>(bytes[offset + i]) & 0x3F);
++  }
++  codepoint = value;
++  nextOffset = offset + count;
++  return true;
++}
++
++template <typename HasGlyph, typename Report>
++size_t reportUnsupported(const char* bytes, size_t length, HasGlyph hasGlyph,
++                         Report report, uint32_t* seen, size_t& seenCount) {
++  if (!bytes || !seen) return 0;
++  size_t emitted = 0;
++  for (size_t offset = 0; offset < length;) {
++    uint32_t codepoint = kReplacementCodepoint;
++    size_t nextOffset = offset + 1;
++    const bool valid = decodeNext(bytes, length, offset, codepoint, nextOffset);
++    Classification classification = Classification::Invalid;
++    bool unsupported = false;
++    if (!valid || codepoint == kReplacementCodepoint) {
++      classification = Classification::Invalid;
++      unsupported = true;
++    } else if (codepoint > 0xFFFF) {
++      classification = Classification::NonBmp;
++      unsupported = true;
++    } else if (codepoint == 0xFE0F || codepoint == 0x200D) {
++      classification = Classification::Format;
++      unsupported = true;
++    } else if (codepoint >= 0x20 && !hasGlyph(codepoint)) {
++      classification = Classification::Missing;
++      unsupported = true;
++    }
++
++    if (unsupported) {
++      bool duplicate = false;
++      for (size_t i = 0; i < seenCount; ++i) {
++        if (seen[i] == codepoint) {
++          duplicate = true;
++          break;
++        }
++      }
++      if (!duplicate) {
++        if (seenCount >= kMaxReportedCaptionScalars) break;
++        seen[seenCount++] = codepoint;
++        report(classification, codepoint);
++        ++emitted;
++      }
++    }
++    offset = nextOffset > offset ? nextOffset : offset + 1;
++  }
++  return emitted;
++}
++
++}  // namespace jellii_cjk_diagnostic
+diff --git a/firmware/src/main.cpp b/firmware/src/main.cpp
+index 1b744ff..c283896 100644
+--- a/firmware/src/main.cpp
++++ b/firmware/src/main.cpp
+@@ -6,1 +6,4 @@
++#ifdef JELLII_CJK_DIAGNOSTICS
++#include "jellii_cjk_diagnostic.h"
++#endif
+ #include <ArduinoJson.h>
+@@ -432,6 +435,12 @@ static void onRelayText(const uint8_t* payload, size_t length) {
+     showCard(c);
+   } else if (!strcmp(type, "caption")) {
+     if (hushed || mode == Mode::Listening) return;
++#ifdef JELLII_CJK_DIAGNOSTICS
++    const JsonString decodedCaption = doc["delta"].as<JsonString>();
++    if (!decodedCaption.isNull()) {
++      face::diagnoseCaptionCodepoints(decodedCaption.c_str(), decodedCaption.size());
++    }
++#endif
+     face::appendReplyText(doc["delta"] | "");
+     replyActivity();
+   } else if (!strcmp(type, "schedule")) {
+@@ -694,6 +703,32 @@ static void onWifiConsoleEvent(const wifi_console::Event& event) {
+       break;
+     }
+ 
++#ifdef JELLII_CJK_DIAGNOSTICS
++    case wifi_console::EventType::CjkDiagnostic:
++      if (jellii_cjk_diagnostic::displayCommandBusy(
++              wifi_ble_provisioning::active(), mode == Mode::Listening,
++              mode == Mode::Thinking, mode == Mode::Reply, turnComplete,
++              audio::playbackIdle(), voice::pending(),
++              int32_t(millis() - replyCooldownUntil) < 0)) {
++        Serial.println("CJK DIAG BUSY");
++        break;
++      }
++      wake();
++      audio::clearPlayback();
++      voice::dropQueued();
++      face::clearReply();
++      face::appendReplyText("會 / 会");
++      face::setSpeaking(false);
++      turnComplete = true;
++      turnCompleteAt = millis();
++      wasSpeaking = false;
++      replyStartedAt = millis();
++      lastReplyActivity = replyStartedAt;
++      setMode(Mode::Reply);
++      Serial.println("CJK DIAG DISPLAY");
++      break;
++#endif
++
+     case wifi_console::EventType::SetReady:
+       Serial.println("WIFI READY");
+       break;
+diff --git a/firmware/src/wifi_console.cpp b/firmware/src/wifi_console.cpp
+index 57ede26..740b78a 100644
+--- a/firmware/src/wifi_console.cpp
++++ b/firmware/src/wifi_console.cpp
+@@ -58,6 +58,14 @@ bool Parser::processLine(uint32_t nowMs, Event& event) {
+     return true;
+   }
+ 
++#ifdef JELLII_CJK_DIAGNOSTICS
++  if (strcmp(line_, "CJK SHOW") == 0) {
++    event.type = EventType::CjkDiagnostic;
++    reset();
++    return true;
++  }
++#endif
++
+   static const char kSetPrefix[] = "WIFI SET ";
+   if (strncmp(line_, kSetPrefix, sizeof(kSetPrefix) - 1) != 0) {
+     event.type = EventType::Error;
+diff --git a/firmware/src/wifi_console.h b/firmware/src/wifi_console.h
+index a538b30..46f08ec 100644
+--- a/firmware/src/wifi_console.h
++++ b/firmware/src/wifi_console.h
+@@ -6,7 +6,11 @@
+ 
+ namespace wifi_console {
+ 
++#ifdef JELLII_CJK_DIAGNOSTICS
++enum class EventType : uint8_t { None, Status, Clear, SetReady, Set, Error, Timeout, CjkDiagnostic };
++#else
+ enum class EventType : uint8_t { None, Status, Clear, SetReady, Set, Error, Timeout };
++#endif
+ 
+ struct Event {
+   EventType type;
