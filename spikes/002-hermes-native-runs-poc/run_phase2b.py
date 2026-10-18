@@ -348,7 +348,13 @@ def main():
         sanitized["repo_head"] = evidence["repo_head"]
         sanitized["gates"] = gates
         (evidence_dir / "phase2b-gates-sanitized.json").write_text(json.dumps(sanitized, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps({"evidence": str(attempt), "gates": {name: item.get("status") for name, item in gates.items()}, "setup_status": evidence["setup_status"], "external_model_calls": 0}, indent=2))
+    print(json.dumps({
+        "evidence": str(attempt),
+        "gates": {name: item.get("status") for name, item in gates.items()},
+        "gate_evidence": gates,
+        "setup_status": evidence["setup_status"],
+        "external_model_calls": 0,
+    }, indent=2))
     return 0 if all_pass else 1
 
 
