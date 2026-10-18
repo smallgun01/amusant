@@ -1374,6 +1374,9 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
         sentinel = object()
 
         class FakeServer:
+            def close(self):
+                return None
+
             async def __aenter__(self):
                 return self
 
@@ -1411,6 +1414,7 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
         tls_context = object()
 
         class FakeServer:
+            def close(self): return None
             async def __aenter__(self): return self
             async def __aexit__(self, exc_type, exc, tb): return False
             async def serve_forever(self): return None
