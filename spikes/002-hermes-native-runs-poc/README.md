@@ -17,6 +17,8 @@ The runners supply explicit test-only values for the eight Run, polling, HTTP, a
 
 Run with Python 3 and Docker Compose v2: python3 run_poc.py
 
+For an ARM64 candidate, set `POC_HERMES_IMAGE` to the exact immutable image digest and `POC_HERMES_PLATFORM=linux/arm64`, then run both `python3 run_poc.py` and `python3 run_phase2b.py`. The runners check the resolved architecture, native imports, version and doctor before the fake-provider API/recovery gates. Candidate-specific project and named volume prefixes keep ARM64 state separate from the existing x86 POC volumes; retained candidate volumes are reused only for that same digest.
+
 ## Phase 2B — Relay adapter POC
 
 Phase 2B imports the actual Relay adapter and TaskStore into a disposable container. It keeps delegate_task, check_task_status, AsyncDispatcher, the existing task ledger and Inbox. **Hermes Native Runs is the Relay product default** when `AMUSANT_SLOW_EXECUTOR` is unset. Startup requires both server-owned `AMUSANT_HERMES_RUNS_URL` and `AMUSANT_HERMES_API_KEY`; if missing, startup fails closed rather than silently falling back to OpenAB. The old OpenAB ACP backend is available only by explicitly setting `AMUSANT_SLOW_EXECUTOR=openab_acp` (with its existing ACP configuration). The backend selector is server-owned, never client/model-controlled. **Changing the code default does not authorize changing any deployed environment, launching Hermes, or cutting over production.** No client/model field selects a URL, key, executor, or session key.

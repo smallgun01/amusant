@@ -1,11 +1,13 @@
 name: amusant-hermes-runs-h1-v1
 
-x-hermes-image: &hermes-image docker.io/nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7
+x-hermes-image: &hermes-image "${POC_HERMES_IMAGE:?runner must set an immutable Hermes image digest}"
+x-hermes-platform: &hermes-platform "${POC_HERMES_PLATFORM:-linux/amd64}"
 
 services:
   seed:
     profiles: ["bootstrap"]
     image: *hermes-image
+    platform: *hermes-platform
     user: "10000:10000"
     entrypoint: ["python3", "/poc/seed_config.py"]
     command: []
@@ -18,6 +20,7 @@ services:
 
   fake-provider:
     image: *hermes-image
+    platform: *hermes-platform
     user: "10000:10000"
     entrypoint: ["python3", "/poc/fake_provider.py"]
     command: []
@@ -32,6 +35,7 @@ services:
 
   hermes:
     image: *hermes-image
+    platform: *hermes-platform
     command: ["gateway", "run"]
     environment:
       HERMES_HOME: /opt/data
@@ -52,6 +56,7 @@ services:
 
   client:
     image: *hermes-image
+    platform: *hermes-platform
     user: "10000:10000"
     entrypoint: ["python3", "/poc/poc_client.py"]
     command: []
@@ -66,6 +71,7 @@ services:
 
   phase2b-state-init:
     image: *hermes-image
+    platform: *hermes-platform
     user: "0:0"
     entrypoint: ["python3", "-c"]
     command: ["import os; os.chown('/state', 10000, 10000); os.chmod('/state', 0o700)"]
@@ -74,6 +80,7 @@ services:
 
   phase2b-relay:
     image: *hermes-image
+    platform: *hermes-platform
     user: "10000:10000"
     entrypoint: ["python3", "/poc/phase2b_relay_client.py"]
     command: []
@@ -109,6 +116,6 @@ networks:
 
 volumes:
   hermes_home:
-    name: amusant-hermes-runs-h1-v1-home
+    name: ${POC_VOLUME_PREFIX:-amusant-hermes-runs-h1-v1}-home
   phase2b_state:
-    name: amusant-hermes-runs-h1-v1-state
+    name: ${POC_VOLUME_PREFIX:-amusant-hermes-runs-h1-v1}-state

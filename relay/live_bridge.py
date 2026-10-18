@@ -11,6 +11,7 @@ import json
 import logging
 import math
 import os
+import signal
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -41,6 +42,26 @@ ProviderFactory = Callable[[], LiveProvider]
 SlowPathToolHandler = Callable[[ToolCallEvent, int], Awaitable[Mapping[str, JSONValue]]]
 SlowPathToolHandlerFactory = Callable[[str, str], SlowPathToolHandler]
 ConversationIdFactory = Callable[[], str]
+
+
+def install_shutdown_handlers(server: Any, loop: asyncio.AbstractEventLoop) -> tuple[signal.Signals, ...]:
+    """Stop accepting WebSockets on SIGTERM/SIGINT so durable dispatch can wind down."""
+    installed: list[signal.Signals] = []
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(signum, server.close)
+        except (NotImplementedError, RuntimeError, ValueError):
+            continue
+        installed.append(signum)
+    return tuple(installed)
+
+
+def remove_shutdown_handlers(loop: asyncio.AbstractEventLoop, installed: tuple[signal.Signals, ...]) -> None:
+    for signum in installed:
+        try:
+            loop.remove_signal_handler(signum)
+        except (NotImplementedError, RuntimeError, ValueError):
+            continue
 
 
 class TurnState(str, Enum):
@@ -897,7 +918,12 @@ async def run(host: str, port: int, token: str, *, device_mode: str = "pcm") -> 
         serve_options["ssl"] = ssl_context
     try:
         async with serve(handler, host, port, **serve_options) as server:
-            await server.serve_forever()
+            loop = asyncio.get_running_loop()
+            installed_signals = install_shutdown_handlers(server, loop)
+            try:
+                await server.serve_forever()
+            finally:
+                remove_shutdown_handlers(loop, installed_signals)
     finally:
         if dispatcher is not None:
             await dispatcher.stop()
