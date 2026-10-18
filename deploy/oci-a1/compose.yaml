@@ -100,14 +100,18 @@ services:
     stop_grace_period: ${FACADE_STOP_GRACE_PERIOD:?set a bounded facade shutdown grace}
     environment:
       AMUSANT_FACADE_BIND_IP: ${FACADE_RELAY_BIND_IP:?set the static facade IP on relay_api}
+      AMUSANT_FACADE_WRITER_BIND_IP: ${FACADE_HERMES_BIND_IP:?set the internal writer IP on hermes_api}
       AMUSANT_RESULT_STATE_DIR: /var/lib/amusant-results
       AMUSANT_FACADE_API_KEY_FILE: /run/secrets/facade_api_key
       AMUSANT_HERMES_API_KEY_FILE: /run/secrets/hermes_api_key
+      AMUSANT_FACADE_WRITER_API_KEY_FILE: /run/secrets/facade_writer_api_key
     secrets:
       - source: facade_api_key
         target: facade_api_key
       - source: hermes_api_key
         target: hermes_api_key
+      - source: facade_writer_api_key
+        target: facade_writer_api_key
     volumes:
       - result_state:/var/lib/amusant-results
     networks:
@@ -153,7 +157,8 @@ services:
       HERMES_HOME: /opt/data
       HERMES_UID: "10000"
       HERMES_GID: "10000"
-      AMUSANT_RESULT_STATE_DIR: /var/lib/amusant-results
+      AMUSANT_FACADE_WRITER_URL: http://${FACADE_HERMES_BIND_IP:?set the internal writer IP on hermes_api}:8644
+      AMUSANT_FACADE_WRITER_API_KEY_FILE: /run/secrets/facade_writer_api_key
       API_SERVER_ENABLED: "true"
       API_SERVER_HOST: ${HERMES_API_BIND_IP:?}
       API_SERVER_PORT: "8642"
@@ -168,9 +173,10 @@ services:
     secrets:
       - source: hermes_api_key
         target: hermes_api_key
+      - source: facade_writer_api_key
+        target: facade_writer_api_key
     volumes:
       - hermes_home:/opt/data
-      - result_state:/var/lib/amusant-results
       - ${HERMES_CONFIG_FILE:?mount the manually reviewed Hermes config}:/opt/data/config.yaml:ro
       - ./hermes_plugin:/opt/data/plugins/amusant-option-d:ro
       - ./hermes_entrypoint.py:/usr/local/bin/amusant-hermes-entrypoint.py:ro
@@ -275,7 +281,7 @@ volumes:
     driver_opts:
       type: none
       o: bind
-      device: ${OCI_DATA_DIR:?mount and prepare the OCI block volume first}/results
+      device: ${OCI_DATA_DIR:?mount and prepare the OCI block volume first}/results/facade
 
 secrets:
   gemini_api_key:
@@ -288,3 +294,5 @@ secrets:
     file: ${FACADE_API_KEY_FILE:?set a root group-readable facade-only key file path}
   hermes_api_key:
     file: ${HERMES_API_KEY_FILE:?set a root group-readable Hermes API key file path}
+  facade_writer_api_key:
+    file: ${FACADE_WRITER_API_KEY_FILE:?set a distinct writer-only key file path}

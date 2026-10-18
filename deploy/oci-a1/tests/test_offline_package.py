@@ -62,6 +62,8 @@ class OfflinePackageTests(unittest.TestCase):
         self.assertIn("hermes_egress:\n    internal: true", compose)
         relay = compose.split("  relay:\n", 1)[1].split("\n  facade:\n", 1)[0]
         facade = compose.split("  facade:\n", 1)[1].split("\n  hermes:\n", 1)[0]
+        facade_image = (PACKAGE / "Dockerfile.facade").read_text(encoding="utf-8")
+        self.assertIn("install -d -o 10003 -g 10003 -m 0700", facade_image)
         hermes = compose.split("  hermes:\n", 1)[1].split("\n  egress_proxy:\n", 1)[0]
         proxy = compose.split("  egress_proxy:\n", 1)[1].split("\nnetworks:\n", 1)[0]
         self.assertIn("AMUSANT_HERMES_RUNS_URL: http://facade:8643", relay)
@@ -102,14 +104,34 @@ class OfflinePackageTests(unittest.TestCase):
         relay_parser = (ROOT / "relay" / "hermes_result.py").read_text(encoding="utf-8")
         slow_path = (ROOT / "relay" / "slow_path.py").read_text(encoding="utf-8")
         self.assertNotIn("result_state:", relay)
+        self.assertIn("result_state:/var/lib/amusant-results", compose)
+        hermes = compose.split("  hermes:\n", 1)[1].split("\n  egress_proxy:\n", 1)[0]
+        self.assertNotIn("result_state:", hermes)
+        self.assertNotIn("AMUSANT_RESULT_STATE_DIR", hermes)
+        self.assertIn("AMUSANT_FACADE_WRITER_API_KEY_FILE", hermes)
+        self.assertNotIn("sqlite3", plugin)
+        self.assertNotIn("AMUSANT_RESULT_STATE_DIR", plugin)
+        save_tool = plugin.split("def save_report", 1)[1].split("def _valid_presentation", 1)[0]
+        self.assertNotIn("artifact_ref", save_tool)
         self.assertNotIn("POC_STATE_DIR", facade + plugin + projection)
         self.assertNotIn("POC_FACADE_KEY", facade)
-        self.assertIn("credentials must be different", facade)
+        self.assertIn("credentials must be distinct", facade)
         self.assertIn("facade-ledger.sqlite3", facade)
         self.assertIn('"details_md"', plugin)
         self.assertNotIn('"details_md": value["details_md"]', projection)
         self.assertNotIn('"details_md"', relay_parser.split("expected = {", 1)[1].split("}", 1)[0])
         self.assertNotIn('payload["details_md"]', slow_path)
+
+    def test_two_uid_smoke_image_uses_separate_runtime_identities(self):
+        dockerfile = (PACKAGE / "Dockerfile.facade-smoke").read_text(encoding="utf-8")
+        smoke = (PACKAGE / "facade_runtime_smoke.py").read_text(encoding="utf-8")
+        self.assertIn("--uid 10003", dockerfile)
+        self.assertIn("--uid 10000", dockerfile)
+        self.assertIn("uid=10003, gid=10003", smoke)
+        self.assertIn("uid=10000, gid=10000", smoke)
+        self.assertIn("restart", smoke)
+        self.assertIn("artifact_ref", smoke)
+        self.assertIn("binding_mutation", smoke)
 
     def test_preflight_requires_pinned_images_and_four_non_overlapping_networks(self):
         preflight = load_preflight()

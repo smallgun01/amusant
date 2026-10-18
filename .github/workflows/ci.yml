@@ -128,14 +128,14 @@ jobs:
               "FACADE_STOP_GRACE_PERIOD": "10s",
               "HERMES_STOP_GRACE_PERIOD": "30s",
           }
-          for name in ("GEMINI_API_KEY_FILE", "DEVICE_TOKEN_FILE", "DEVICE_PSKS_FILE", "FACADE_API_KEY_FILE", "HERMES_API_KEY_FILE"):
+          for name in ("GEMINI_API_KEY_FILE", "DEVICE_TOKEN_FILE", "DEVICE_PSKS_FILE", "FACADE_API_KEY_FILE", "FACADE_WRITER_API_KEY_FILE", "HERMES_API_KEY_FILE"):
               path = root / name.lower()
               path.write_text("offline-only-placeholder\n", encoding="utf-8")
               path.chmod(0o600)
               values[name] = str(path)
           (root / "data" / "relay").mkdir(parents=True)
           (root / "data" / "hermes").mkdir()
-          (root / "data" / "results").mkdir()
+          (root / "data" / "results" / "facade").mkdir(parents=True)
           (root / "hermes-config.yaml").write_text("\n".join([
               "plugins:",
               "  enabled:",
@@ -165,6 +165,12 @@ jobs:
 
       - name: Build egress proxy for ARM64
         run: docker buildx build --platform linux/arm64 --load -f deploy/oci-a1/Dockerfile.egress-proxy -t amusant-egress-proxy:oci-arm64-ci .
+
+      - name: Build two-UID Facade writer smoke image
+        run: docker build --platform linux/amd64 -f deploy/oci-a1/Dockerfile.facade-smoke -t amusant-facade-runtime-smoke .
+
+      - name: Exercise private writer channel across Linux UIDs
+        run: docker run --rm --network none --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m --tmpfs /var/lib/amusant-results:rw,noexec,nosuid,size=16m,uid=10003,gid=10003,mode=700 amusant-facade-runtime-smoke
 
 # The legacy #002 fake-provider harness routes Relay directly to Hermes. Keep its source for reference;
 # PR-B2 will replace this job with the integrated Facade path required by Issue #85.

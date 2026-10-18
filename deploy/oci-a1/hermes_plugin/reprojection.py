@@ -1,7 +1,8 @@
-"""Safe, idempotent reprojection for a committed Option D artifact.
+"""Safe, idempotent reprojection for a Facade-owned committed artifact.
 
-This module is shared by the Hermes plugin package and the private facade. It
-never accepts identity or artifact references from presentation text.
+Only the private Facade loads this module for integrity checks and projection.
+The Hermes runtime plugin uses the narrow writer API and does not access its
+ledger or artifacts.
 """
 from __future__ import annotations
 
@@ -158,6 +159,141 @@ def _record_event(conn, session_hash, outcome):
         (session_hash, outcome, time.time()),
     )
 
+
+
+def _store_projection(row, artifact, source_text, output_text):
+    try:
+        session_id = row["session_id"]
+        session_hash = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+        reference_hash = hashlib.sha256(artifact["artifact_ref"].encode("utf-8")).hexdigest()
+        binding_material = chr(0).join(
+            (row["owner_scope"], row["task_id"], row["session_id"], row["run_id"])
+        )
+        binding_hash = hashlib.sha256(binding_material.encode("utf-8")).hexdigest()
+        source_hash = hashlib.sha256(source_text.encode("utf-8")).hexdigest()
+        output_hash = hashlib.sha256(output_text.encode("utf-8")).hexdigest()
+        with _connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS presentation_repairs (
+                    session_hash TEXT PRIMARY KEY,
+                    artifact_ref_hash TEXT NOT NULL,
+                    binding_sha256 TEXT NOT NULL,
+                    source_sha256 TEXT NOT NULL,
+                    output_sha256 TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    replay_count INTEGER NOT NULL DEFAULT 0
+                )"""
+            )
+            existing = conn.execute(
+                "SELECT * FROM presentation_repairs WHERE session_hash=?",
+                (session_hash,),
+            ).fetchone()
+            if existing:
+                if (
+                    existing["artifact_ref_hash"] != reference_hash
+                    or existing["binding_sha256"] != binding_hash
+                    or existing["source_sha256"] != source_hash
+                    or existing["output_sha256"] != output_hash
+                ):
+                    conn.rollback()
+                    return "conflict"
+                if int(existing["replay_count"]) == 0:
+                    conn.execute(
+                        "UPDATE presentation_repairs SET replay_count=1 WHERE session_hash=?",
+                        (session_hash,),
+                    )
+                    _record_event(conn, session_hash, "projection_replayed")
+                conn.commit()
+                return "replayed"
+            conn.execute(
+                """INSERT INTO presentation_repairs
+                   (session_hash, artifact_ref_hash, binding_sha256, source_sha256,
+                    output_sha256, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (session_hash, reference_hash, binding_hash, source_hash,
+                 output_hash, time.time()),
+            )
+            _record_event(conn, session_hash, "projection_recorded")
+            conn.commit()
+        return "recorded"
+    except (sqlite3.Error, OSError, TypeError, ValueError):
+        return "unavailable"
+
+
+def record_hook_projection(response_text, projected_output, session_id):
+    """Persist exact hook input/output digests against the Facade-owned binding."""
+    if not isinstance(session_id, str) or not session_id:
+        return "session_missing"
+    if not isinstance(response_text, str) or not isinstance(projected_output, str):
+        return "presentation_invalid"
+    try:
+        with _connect() as conn:
+            found = conn.execute(
+                "SELECT * FROM requests WHERE session_id=?", (session_id,)
+            ).fetchone()
+        row = dict(found) if found else None
+        if not row or row.get("submit_state") != "accepted" or not row.get("run_id"):
+            return "session_unmapped"
+        value, status = _presentation(response_text)
+        if value is None:
+            return status
+        artifact, artifact_status = _load_committed_artifact(row)
+        if not artifact:
+            return artifact_status
+        expected, projection_status = project_presentation(
+            response_text, artifact["artifact_ref"]
+        )
+        if not expected or expected != projected_output:
+            return "projection_mismatch"
+        return _store_projection(row, artifact, response_text, projected_output)
+    except (sqlite3.Error, OSError, TypeError, ValueError):
+        return "unavailable"
+
+
+def record_existing_projection(projected_output, session_id):
+    """Pin an already projected envelope when the hook's persistence was absent."""
+    if not isinstance(session_id, str) or not session_id or not isinstance(projected_output, str):
+        return "presentation_invalid"
+    try:
+        value = json.loads(projected_output)
+        with _connect() as conn:
+            found = conn.execute(
+                "SELECT * FROM requests WHERE session_id=?", (session_id,)
+            ).fetchone()
+        row = dict(found) if found else None
+        if not row or row.get("submit_state") != "accepted" or not row.get("run_id"):
+            return "session_unmapped"
+        artifact, artifact_status = _load_committed_artifact(row)
+        if not artifact:
+            return artifact_status
+        expected_fields = {
+            "schema_version", "speak", "card", "execution_status",
+            "artifact_status", "presentation_status", "artifact_ref",
+        }
+        if (
+            not isinstance(value, dict) or set(value) != expected_fields
+            or type(value.get("schema_version")) is not int or value["schema_version"] != 1
+            or value.get("execution_status") != "completed"
+            or value.get("artifact_status") != "committed"
+            or value.get("presentation_status") != "ready"
+            or value.get("artifact_ref") != artifact["artifact_ref"]
+        ):
+            return "presentation_invalid"
+        speak = value.get("speak")
+        card = value.get("card")
+        if (
+            not isinstance(speak, str) or not 1 <= len(speak) <= 240
+            or not isinstance(card, dict) or set(card) != {"title", "lines"}
+            or not isinstance(card.get("title"), str) or not 1 <= len(card["title"]) <= 80
+            or not isinstance(card.get("lines"), list)
+            or not 1 <= len(card["lines"]) <= 4
+            or any(not isinstance(line, str) or not 1 <= len(line) <= 120 for line in card["lines"])
+        ):
+            return "presentation_invalid"
+        return _store_projection(row, artifact, projected_output, projected_output)
+    except (json.JSONDecodeError, sqlite3.Error, OSError, TypeError, ValueError):
+        return "presentation_invalid"
 
 
 def check_existing_reprojection(response_text, session_id):

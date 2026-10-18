@@ -7,7 +7,7 @@ WORKDIR /app
 RUN groupadd --gid 20000 amusant-secret-share \
     && groupadd --gid 10003 facade \
     && useradd --uid 10003 --gid 10003 --groups 20000 --no-create-home --shell /usr/sbin/nologin facade \
-    && install -d -o 10003 -g 20000 -m 2770 /var/lib/amusant-results
+    && install -d -o 10003 -g 10003 -m 0700 /var/lib/amusant-results
 
 COPY --chown=root:root deploy/oci-a1/facade.py /app/facade.py
 COPY --chown=root:root deploy/oci-a1/hermes_plugin /app/hermes_plugin
