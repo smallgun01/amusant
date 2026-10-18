@@ -70,6 +70,27 @@ def _mark_write_failed(row):
     except Exception:
         pass
 
+
+def _record_writer_result(row, code, report_bytes):
+    allowed = {
+        "committed", "artifact_write_failed", "artifact_write_timeout",
+        "artifact_conflict", "artifact_commit_failed",
+    }
+    if code not in allowed:
+        return
+    try:
+        with _db() as conn:
+            conn.execute(
+                """UPDATE requests
+                   SET writer_call_count=writer_call_count+1,
+                       writer_result_code=?, writer_report_bytes=?
+                   WHERE owner_scope=? AND task_id=? AND session_id=? AND run_id=?""",
+                (code, report_bytes, row["owner_scope"], row["task_id"], row["session_id"], row["run_id"]),
+            )
+    except Exception:
+        pass
+
+
 def save_report(args, *, session_id=None, **_kwargs):
     """Commit the report under adapter-minted identity; model args may contain only report."""
     if not isinstance(args, dict) or set(args) != {"report"}:
@@ -86,17 +107,21 @@ def save_report(args, *, session_id=None, **_kwargs):
     mode = row["poc_case"]
     if mode == "writer_fail":
         _mark_write_failed(row)
+        _record_writer_result(row, "artifact_write_failed", len(encoded))
         return _tool_error("artifact_write_failed")
     if mode == "writer_slow":
         # Deterministic sink delay exceeds the test-only write budget before any write starts.
         time.sleep(WRITE_TIMEOUT_SECONDS * 2)
         _mark_write_failed(row)
+        _record_writer_result(row, "artifact_write_timeout", len(encoded))
         return _tool_error("artifact_write_timeout")
     digest = hashlib.sha256(encoded).hexdigest()
     existing = _artifact_for_request(row)
     if existing:
         if existing["sha256"] == digest:
+            _record_writer_result(row, "committed", len(encoded))
             return _json({"committed": True})
+        _record_writer_result(row, "artifact_conflict", len(encoded))
         return _tool_error("artifact_conflict")
 
     artifact_ref = "art_" + secrets.token_urlsafe(24)
@@ -137,7 +162,9 @@ def save_report(args, *, session_id=None, **_kwargs):
         except OSError:
             pass
         _mark_write_failed(row)
+        _record_writer_result(row, "artifact_commit_failed", len(encoded))
         return _tool_error("artifact_commit_failed")
+    _record_writer_result(row, "committed", len(encoded))
     # The opaque reference is deliberately withheld from model-visible tool output.
     return _json({"committed": True})
 

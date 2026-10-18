@@ -245,6 +245,13 @@ for name in sorted({r["poc_case"] for r in requests} | set(by_case)):
         "submit_upstream_errors": sorted(r["submit_upstream_error"] or "none" for r in rows),
         "remote_failure_types": sorted(r["remote_failure_type"] or "none" for r in rows),
         "remote_failure_categories": sorted(r["remote_failure_category"] or "none" for r in rows),
+        "terminal_upstream_statuses": sorted(int(r["terminal_upstream_status"] or 0) for r in rows),
+        "terminal_upstream_errors": sorted(r["terminal_upstream_error"] or "none" for r in rows),
+        "terminal_upstream_codes": sorted(r["terminal_upstream_code"] or "none" for r in rows),
+        "hermes_run_statuses": sorted(r["hermes_run_status"] or "none" for r in rows),
+        "writer_call_counts": sorted(int(r["writer_call_count"] or 0) for r in rows),
+        "writer_result_codes": sorted(r["writer_result_code"] or "none" for r in rows),
+        "writer_report_byte_counts": sorted(int(r["writer_report_bytes"] or 0) for r in rows),
         "raw_output_byte_counts": sorted(int(r["raw_output_bytes"] or 0) for r in rows),
         "artifacts": by_case.get(name, []),
     })
@@ -295,6 +302,7 @@ def inspect_fake_provider() -> dict:
             continue
         item = summary.setdefault(case, {"provider_turns": 0, "tool_calls_requested": [], "report_tool_call_count": 0, "report_tool_result_codes": [], "write_file_requested": False, "spoofed_identity_fields_included": False})
         item["provider_turns"] += 1
+        item["poc_tool_offered"] = item.get("poc_tool_offered", False) or "poc_save_report" in row.get("tool_names", [])
         result_codes = row.get("report_tool_result_codes", [])
         allowed_codes = {"committed", "invalid_arguments", "report_invalid", "report_over_cap", "trusted_request_context_unavailable", "artifact_write_failed", "artifact_write_timeout", "artifact_conflict", "artifact_commit_failed", "invalid_tool_result", "other_tool_result"}
         if isinstance(result_codes, list):
@@ -701,7 +709,56 @@ def main() -> int:
             "tool_calls_requested": provider.get("tool_calls_requested"),
             "report_tool_call_count": provider.get("report_tool_call_count"),
             "report_tool_result_codes": provider.get("report_tool_result_codes"),
+            "poc_tool_offered": provider.get("poc_tool_offered"),
         }
+    if isinstance(provider_cases, dict) and "success_10k" in provider_cases:
+        provider = provider_cases["success_10k"]
+        diagnostic_summary["success_10k_provider"] = {
+            "provider_turns": provider.get("provider_turns"),
+            "tool_calls_requested": provider.get("tool_calls_requested"),
+            "report_tool_call_count": provider.get("report_tool_call_count"),
+            "report_tool_result_codes": provider.get("report_tool_result_codes"),
+            "poc_tool_offered": provider.get("poc_tool_offered"),
+        }
+    case_results = evidence.get("phases", {}).get("cases", {}).get("cases", [])
+    if isinstance(case_results, list):
+        allowed_statuses = {"queued", "running", "completed", "failed", "uncertain"}
+        allowed_presentations = {"ready", "failed"}
+        known_cases = {
+            "success_10k", "success_30k", "writer_redelivery", "no_writer", "writer_fail",
+            "writer_slow", "wrong_binding", "malformed_json", "oversized_final",
+            "missing_speech", "hook_exception", "hook_empty", "hook_timeout", "late_mutation",
+            "lost_envelope_10k",
+        }
+        safe_cases = []
+        for case_row in case_results:
+            if not isinstance(case_row, dict):
+                continue
+            case_name = case_row.get("case")
+            if not isinstance(case_name, str) or case_name not in known_cases:
+                continue
+            task_status = case_row.get("task_status")
+            presentation_status = case_row.get("presentation_status")
+            task_error_code = case_row.get("task_error_code")
+            raw_methods = case_row.get("http_methods", [])
+            raw_statuses = case_row.get("http_statuses", [])
+            outcome = {
+                "case": case_name,
+                "task_status": task_status if isinstance(task_status, str) and task_status in allowed_statuses else None,
+                "presentation_status": presentation_status if isinstance(presentation_status, str) and presentation_status in allowed_presentations else None,
+                "task_error_code": task_error_code if isinstance(task_error_code, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,80}", task_error_code) else None,
+                "task_run_id_persisted": case_row.get("task_run_id_persisted") is True,
+                "artifact_ref_present": case_row.get("artifact_ref_present") is True,
+                "relay_wire_headers_valid": case_row.get("relay_wire_headers_valid") is True,
+                "relay_max_response_bytes": case_row.get("relay_max_response_bytes") if type(case_row.get("relay_max_response_bytes")) is int and 0 <= case_row.get("relay_max_response_bytes") <= 100000 else None,
+                "http_methods": [method for method in raw_methods if isinstance(method, str) and method in {"GET", "POST"}] if isinstance(raw_methods, list) else [],
+                "http_statuses": [status for status in raw_statuses if type(status) is int and 100 <= status <= 599] if isinstance(raw_statuses, list) else [],
+                "report_marker_in_relay_response": case_row.get("report_marker_in_relay_response") is True,
+                "final_marker_in_relay_response": case_row.get("final_marker_in_relay_response") is True,
+                "tool_marker_in_relay_response": case_row.get("tool_marker_in_relay_response") is True,
+            }
+            safe_cases.append(outcome)
+        diagnostic_summary["case_outcomes"] = safe_cases
     start_phase = evidence.get("phases", {}).get("restart_start")
     if isinstance(start_phase, dict):
         diagnostic_summary["restart_start"] = {
@@ -734,8 +791,31 @@ def main() -> int:
             "submit_upstream_errors": row.get("submit_upstream_errors"),
             "remote_failure_types": row.get("remote_failure_types"),
             "remote_failure_categories": row.get("remote_failure_categories"),
+            "terminal_upstream_statuses": row.get("terminal_upstream_statuses"),
+            "terminal_upstream_errors": row.get("terminal_upstream_errors"),
+            "terminal_upstream_codes": row.get("terminal_upstream_codes"),
+            "hermes_run_statuses": row.get("hermes_run_statuses"),
+            "writer_call_counts": row.get("writer_call_counts"),
+            "writer_result_codes": row.get("writer_result_codes"),
+            "writer_report_byte_counts": row.get("writer_report_byte_counts"),
             "artifact_statuses": row.get("artifact_statuses"),
         }
+    facade_case_rows = evidence.get("artifact_database_and_files", {}).get("request_case_summaries", [])
+    if isinstance(facade_case_rows, list):
+        for case_name in ("success_10k", "restart_10k"):
+            rows = [row for row in facade_case_rows if isinstance(row, dict) and row.get("case") == case_name]
+            if rows:
+                row = rows[0]
+                diagnostic_summary[case_name + "_facade"] = {
+                    "terminal_upstream_statuses": row.get("terminal_upstream_statuses"),
+                    "terminal_upstream_errors": row.get("terminal_upstream_errors"),
+                    "terminal_upstream_codes": row.get("terminal_upstream_codes"),
+                    "hermes_run_statuses": row.get("hermes_run_statuses"),
+                    "writer_call_counts": row.get("writer_call_counts"),
+                    "writer_result_codes": row.get("writer_result_codes"),
+                    "writer_report_byte_counts": row.get("writer_report_byte_counts"),
+                    "artifact_statuses": row.get("artifact_statuses"),
+                }
     safe_output = {
         "phase": "option_d_poc",
         "verdict": evidence["verdict"],

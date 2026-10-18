@@ -232,12 +232,21 @@ async def run_case(case, *, lose_terminal_once=False):
     row = await wait_for_task(db, task_id, dispatcher, timeout=45)
     wire = [item for item in audit.requests if item["route"] == "get_status" and item["http_status"] < 400]
     terminal_envelope = next((item for item in reversed(wire) if item["presentation_status"] is not None), None)
+    task_error_code = row.get("last_error")
+    if not isinstance(task_error_code, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,80}", task_error_code):
+        task_error_code = None
+    http_statuses = [
+        item.get("http_status") for item in audit.requests
+        if type(item.get("http_status")) is int and 100 <= item["http_status"] <= 599
+    ]
     record = {
         "case": case,
         "task_status": row.get("status"),
         "task_run_id_persisted": bool(row.get("backend_run_id")),
         "result": result_summary(db, task_id),
         "http_methods": [item["method"] for item in audit.requests],
+        "http_statuses": http_statuses,
+        "task_error_code": task_error_code,
         "relay_max_response_bytes": max((item["response_bytes"] for item in audit.requests), default=0),
         "relay_wire_headers_valid": all(item["content_type"].startswith("application/json") and item["body_length_matches_header"] for item in audit.requests),
         "report_marker_in_relay_response": any(item["report_marker_in_response"] for item in audit.requests),

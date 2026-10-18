@@ -61,6 +61,13 @@ def initialize():
             submit_upstream_error TEXT,
             remote_failure_type TEXT,
             remote_failure_category TEXT,
+            terminal_upstream_status INTEGER,
+            terminal_upstream_error TEXT,
+            terminal_upstream_code TEXT,
+            hermes_run_status TEXT,
+            writer_call_count INTEGER NOT NULL DEFAULT 0,
+            writer_result_code TEXT,
+            writer_report_bytes INTEGER,
             created_at REAL NOT NULL,
             PRIMARY KEY(owner_scope, task_id)
         );
@@ -332,9 +339,25 @@ class Handler(BaseHTTPRequestHandler):
             session_key=self.headers.get("X-Hermes-Session-Key"),
         )
         if upstream_error or status >= 400:
+            safe_error = upstream_error if isinstance(upstream_error, str) and re.fullmatch(r"upstream_[A-Za-z][A-Za-z0-9]{0,40}", upstream_error) else None
+            raw_code = payload.get("error") if isinstance(payload, dict) else None
+            if isinstance(raw_code, dict):
+                raw_code = raw_code.get("code") or raw_code.get("type")
+            safe_code = raw_code if isinstance(raw_code, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,40}", raw_code) else None
+            safe_status = status if type(status) is int and 100 <= status <= 599 else None
+            with connect() as conn:
+                conn.execute(
+                    "UPDATE requests SET terminal_upstream_status=?, terminal_upstream_error=?, terminal_upstream_code=? WHERE owner_scope=? AND task_id=?",
+                    (safe_status, safe_error, safe_code, owner_scope, row["task_id"]),
+                )
             self.send_json(502, bounded_failure(run_id, "upstream_unavailable", row["artifact_status"]))
             return
         run_status = str(payload.get("status", "")).lower()
+        with connect() as conn:
+            conn.execute(
+                "UPDATE requests SET hermes_run_status=? WHERE owner_scope=? AND task_id=?",
+                (run_status, owner_scope, row["task_id"]),
+            )
         if run_status not in {"completed", "failed", "cancelled", "interrupted", "expired", "queued", "pending", "running", "waiting_for_approval", "stopping"}:
             self.send_json(502, bounded_failure(run_id, "upstream_status_invalid", row["artifact_status"]))
             return
