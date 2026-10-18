@@ -235,7 +235,7 @@ def extract_font(root):
             cursor += 1
         if cursor < len(source) and source[cursor] == ";":
             break
-        literal = re.match(r'"(?:\\.|[^"\\])*"', source, cursor)
+        literal = re.compile(r'"(?:\\.|[^"\\])*"').match(source, cursor)
         if not literal:
             raise SystemExit("unexpected token in the efontTW_14 C string array")
         literals.append(literal.group(0))
