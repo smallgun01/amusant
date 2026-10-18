@@ -222,14 +222,24 @@ def verify_pinned_sources(root):
 def extract_font(root):
     source = (root / "src/lgfx/Fonts/efont/lgfx_efont_tw.c").read_text(encoding="ascii")
     declaration = re.search(
-        r"PROGMEM const uint8_t\s+lgfx_efont_tw_14\[(\d+)\]\s*=\s*(.*?);",
+        r"PROGMEM const uint8_t\s+lgfx_efont_tw_14\[(\d+)\]\s*=\s*",
         source,
-        re.DOTALL,
     )
     if not declaration:
         raise SystemExit("could not find the pinned lgfx_efont_tw_14 array")
     array_size = int(declaration.group(1))
-    literals = re.findall(r'"(?:\\.|[^"\\])*"', declaration.group(2))
+    literals = []
+    cursor = declaration.end()
+    while True:
+        while cursor < len(source) and source[cursor].isspace():
+            cursor += 1
+        if cursor < len(source) and source[cursor] == ";":
+            break
+        literal = re.match(r'"(?:\\.|[^"\\])*"', source, cursor)
+        if not literal:
+            raise SystemExit("unexpected token in the efontTW_14 C string array")
+        literals.append(literal.group(0))
+        cursor = literal.end()
     if not literals:
         raise SystemExit("the pinned efontTW_14 array has no C string literals")
     payload = bytearray()
@@ -243,7 +253,6 @@ def extract_font(root):
         )
     payload.append(0)
     return payload
-
 
 def write_metrics_header(path, metrics_by_cp):
     lines = [
