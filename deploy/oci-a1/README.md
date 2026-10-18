@@ -38,6 +38,6 @@ Prepare the operator-owned Hermes config and data directories before starting Co
     python deploy/oci-a1/preflight.py --env-file deploy/oci-a1/.env
     docker compose --env-file deploy/oci-a1/.env -f deploy/oci-a1/compose.yaml config --quiet
 
-These commands validate static inputs only; they do not start services. CI builds Relay, Facade, and the proxy for ARM64 and runs offline regression/static Compose guards. No container-network integration is claimed here; Issue #85 PR-B2 must prove fake-provider submit, recovery, stop, report-boundary, Inbox, and routing-negative behavior before the offline E1 gate can be accepted.
+These commands validate static inputs only; they do not start services. CI builds Relay, Facade, and the proxy for ARM64 and runs offline regression/static Compose guards. The legacy #002 fake-provider harness routes Relay directly to Hermes, so CI retires it with this boundary change; PR-B2 will replace it with the integrated Facade path and prove submit, recovery, stop, report-boundary, Inbox, and routing-negative behavior before the offline E1 gate can be accepted.
 
 Relay retains its durable task ledger, persisted Run ID, GET-only restart recovery, per-owner single-flight, deadlines and stop semantics. Hermes remains the same pinned image; this package does not fork Hermes. Keep the existing Relay and Hermes volumes. This package does not deploy to OCI, alter ingress, call real providers, manipulate production credentials, or perform data migrations.

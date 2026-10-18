@@ -166,18 +166,8 @@ jobs:
       - name: Build egress proxy for ARM64
         run: docker buildx build --platform linux/arm64 --load -f deploy/oci-a1/Dockerfile.egress-proxy -t amusant-egress-proxy:oci-arm64-ci .
 
-  hermes-offline-recovery:
-    name: Hermes Native Runs fake-provider recovery gates
-    runs-on: ubuntu-24.04
-    timeout-minutes: 25
-    steps:
-      - name: Check out source
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - name: Relay and Hermes offline fake-provider E2E
-        run: python spikes/002-hermes-native-runs-poc/run_phase2b.py
+# The legacy #002 fake-provider harness routes Relay directly to Hermes. Keep its source for reference;
+# PR-B2 will replace this job with the integrated Facade path required by Issue #85.
 
   issue-79-option-d-recovery:
     name: Pinned Hermes Option D recovery proof
