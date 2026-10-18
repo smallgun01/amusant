@@ -83,8 +83,13 @@ def parse_hermes_run_result(output: str) -> BoundedTaskResult:
         "schema_version", "speak", "card", "execution_status",
         "artifact_status", "presentation_status", "artifact_ref",
     }
-    if not isinstance(payload, dict) or set(payload) != expected:
+    legacy_expected = expected | {"details_md"}
+    if not isinstance(payload, dict) or (set(payload) != expected and set(payload) != legacy_expected):
         raise ValueError("hermes_result_field_set_invalid")
+    if "details_md" in payload:
+        legacy_details = payload["details_md"]
+        if not isinstance(legacy_details, str) or len(legacy_details) > 512:
+            raise ValueError("hermes_result_legacy_details_invalid")
     if type(payload.get("schema_version")) is not int or payload["schema_version"] != HERMES_RESULT_SCHEMA_VERSION:
         raise ValueError("hermes_result_schema_unsupported")
     if (

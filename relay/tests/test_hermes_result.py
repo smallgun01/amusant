@@ -32,13 +32,16 @@ class HermesResultTests(unittest.TestCase):
         self.assertEqual(result.card, {"title": "Research complete", "lines": ["Three sources checked."]})
         self.assertEqual(result.details_md, result.speak)
 
-    def test_raw_text_and_legacy_details_md_are_rejected(self):
+    def test_raw_text_is_rejected_and_legacy_details_md_is_consumed(self):
         for raw in ("A long raw report must never cross the facade boundary.", "{not json"):
             with self.subTest(raw=raw), self.assertRaises(ValueError):
                 parse_hermes_run_result(raw)
         value = json.loads(envelope())
-        value["details_md"] = "legacy full details"
-        with self.assertRaisesRegex(ValueError, "field_set"):
+        value["details_md"] = "short legacy detail"
+        result = parse_hermes_run_result(json.dumps(value))
+        self.assertEqual(result.details_md, result.speak)
+        value["details_md"] = "x" * 513
+        with self.assertRaisesRegex(ValueError, "legacy_details_invalid"):
             parse_hermes_run_result(json.dumps(value))
 
     def test_status_identity_and_shape_fields_are_not_model_controlled(self):
