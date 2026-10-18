@@ -50,7 +50,8 @@ class LedgerMaintenanceTests(unittest.TestCase):
 
     def _cleanup_root(self) -> None:
         for path in self.root.iterdir():
-            os.chmod(path, 0o666)
+            if not path.is_symlink():
+                os.chmod(path, 0o666)
             path.unlink()
         self.root.rmdir()
 
