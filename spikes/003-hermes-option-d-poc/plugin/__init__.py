@@ -9,6 +9,22 @@ import sqlite3
 import time
 from pathlib import Path
 
+try:
+    from .reprojection import project_presentation
+except ImportError:
+    # Hermes may load this plugin as a standalone module instead of a package.
+    import importlib.util
+
+    _projection_path = Path(__file__).with_name("reprojection.py")
+    _projection_spec = importlib.util.spec_from_file_location(
+        "_amusant_option_d_reprojection", _projection_path
+    )
+    if not _projection_spec or not _projection_spec.loader:
+        raise ImportError("reprojection helper unavailable")
+    _projection_module = importlib.util.module_from_spec(_projection_spec)
+    _projection_spec.loader.exec_module(_projection_module)
+    project_presentation = _projection_module.project_presentation
+
 STATE = Path(os.environ.get("POC_STATE_DIR", "/state"))
 DB_PATH = STATE / "option-d.sqlite3"
 ARTIFACT_DIR = STATE / "artifacts"
@@ -271,18 +287,17 @@ def transform_llm_output(response_text, session_id="", **_kwargs):
         _record_output_hook_event(session_id, "artifact_binding_invalid")
         return None
 
-    envelope = {
-        "schema_version": 1,
-        "speak": value["speak"],
-        "card": value["card"],
-        "details_md": value["details_md"],
-        "execution_status": "completed",
-        "artifact_status": "committed",
-        "presentation_status": "ready",
-        "artifact_ref": artifact["artifact_ref"],
-    }
+    projected, projection_status = project_presentation(
+        response_text, artifact["artifact_ref"]
+    )
+    if not projected:
+        if projection_status in {"input_invalid", "presentation_invalid"}:
+            _record_output_hook_event(session_id, projection_status)
+        else:
+            _record_output_hook_event(session_id, "artifact_binding_invalid")
+        return None
     _record_output_hook_event(session_id, "ready")
-    return _json(envelope)
+    return projected
 
 
 def register(ctx):
