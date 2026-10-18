@@ -86,6 +86,17 @@ def initialize():
         );
         CREATE INDEX IF NOT EXISTS artifacts_task_idx
             ON artifacts(owner_scope, task_id, run_id);
+        CREATE TABLE IF NOT EXISTS presentations (
+            owner_scope TEXT NOT NULL,
+            task_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            artifact_ref TEXT NOT NULL,
+            output_json TEXT NOT NULL,
+            output_sha256 TEXT NOT NULL,
+            hit_count INTEGER NOT NULL DEFAULT 0,
+            stored_at REAL NOT NULL,
+            PRIMARY KEY(owner_scope, task_id)
+        );
         """)
 
 
@@ -275,6 +286,81 @@ def valid_artifact_for_request(owner_scope: str, row: dict):
     return artifact
 
 
+def store_cached_presentation(owner_scope: str, row: dict, artifact: dict, output: str) -> bool:
+    if not isinstance(output, str):
+        return False
+    good, _reason = validate_envelope(output, artifact)
+    if not good:
+        return False
+    try:
+        encoded = output.encode("utf-8")
+    except UnicodeError:
+        return False
+    if len(encoded) > MAX_ENVELOPE_BYTES:
+        return False
+    digest = hashlib.sha256(encoded).hexdigest()
+    try:
+        with connect() as conn:
+            existing = conn.execute(
+                """SELECT run_id, artifact_ref, output_json, output_sha256
+                   FROM presentations WHERE owner_scope=? AND task_id=?""",
+                (owner_scope, row["task_id"]),
+            ).fetchone()
+            if existing:
+                return (
+                    existing["run_id"] == row["run_id"]
+                    and existing["artifact_ref"] == artifact["artifact_ref"]
+                    and existing["output_json"] == output
+                    and existing["output_sha256"] == digest
+                )
+            conn.execute(
+                """INSERT INTO presentations
+                   (owner_scope, task_id, run_id, artifact_ref, output_json, output_sha256, hit_count, stored_at)
+                   VALUES (?, ?, ?, ?, ?, ?, 0, ?)""",
+                (owner_scope, row["task_id"], row["run_id"], artifact["artifact_ref"],
+                 output, digest, time.time()),
+            )
+        return True
+    except sqlite3.Error:
+        return False
+
+
+def cached_presentation(owner_scope: str, row: dict):
+    artifact = valid_artifact_for_request(owner_scope, row)
+    if not artifact:
+        return None
+    try:
+        with connect() as conn:
+            cached = conn.execute(
+                """SELECT output_json, output_sha256
+                   FROM presentations
+                   WHERE owner_scope=? AND task_id=? AND run_id=? AND artifact_ref=?""",
+                (owner_scope, row["task_id"], row["run_id"], artifact["artifact_ref"]),
+            ).fetchone()
+            if not cached:
+                return None
+            output = cached["output_json"]
+            if not isinstance(output, str):
+                return None
+            try:
+                encoded = output.encode("utf-8")
+            except UnicodeError:
+                return None
+            if len(encoded) > MAX_ENVELOPE_BYTES or hashlib.sha256(encoded).hexdigest() != cached["output_sha256"]:
+                return None
+            good, _reason = validate_envelope(output, artifact)
+            if not good:
+                return None
+            conn.execute(
+                """UPDATE presentations SET hit_count=hit_count+1
+                   WHERE owner_scope=? AND task_id=? AND run_id=? AND artifact_ref=?""",
+                (owner_scope, row["task_id"], row["run_id"], artifact["artifact_ref"]),
+            )
+            return output
+    except sqlite3.Error:
+        return None
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "AmusantOptionDFacade/1"
 
@@ -333,6 +419,10 @@ class Handler(BaseHTTPRequestHandler):
         row = request_by_owner_run(owner_scope, run_id)
         if not row:
             self.send_json(404, {"error": {"code": "not_found"}})
+            return
+        cached_output = cached_presentation(owner_scope, row)
+        if cached_output is not None:
+            self.send_json(200, {"run_id": run_id, "status": "completed", "output": cached_output})
             return
         status, payload, upstream_error, _raw_bytes = upstream_request(
             "GET", "/v1/runs/" + quote(run_id, safe=""),
@@ -441,6 +531,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(502, bounded_failure(run_id, "safe_projection_invalid", "committed"))
                 return
             self.send_json(200, {"run_id": run_id, "status": "completed", "output": encoded})
+            return
+        if not store_cached_presentation(owner_scope, row, artifact, output):
+            with connect() as conn:
+                conn.execute(
+                    "UPDATE requests SET presentation_error='presentation_cache_failed' WHERE owner_scope=? AND task_id=?",
+                    (owner_scope, row["task_id"]),
+                )
+            fallback = compact_json(presentation_failure_envelope(artifact["artifact_ref"])).decode("utf-8")
+            self.send_json(200, {"run_id": run_id, "status": "completed", "output": fallback})
             return
         with connect() as conn:
             conn.execute(

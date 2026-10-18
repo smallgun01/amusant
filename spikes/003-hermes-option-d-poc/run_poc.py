@@ -209,6 +209,10 @@ conn = sqlite3.connect(state / "option-d.sqlite3")
 conn.row_factory = sqlite3.Row
 requests = [dict(r) for r in conn.execute("SELECT * FROM requests")]
 artifacts = [dict(r) for r in conn.execute("SELECT * FROM artifacts")]
+presentation_hits = {
+    (r["owner_scope"], r["task_id"]): int(r["hit_count"])
+    for r in conn.execute("SELECT owner_scope, task_id, hit_count FROM presentations")
+}
 by_case = {}
 all_files = set()
 for path in (state / "artifacts").glob("*"):
@@ -253,6 +257,7 @@ for name in sorted({r["poc_case"] for r in requests} | set(by_case)):
         "writer_result_codes": sorted(r["writer_result_code"] or "none" for r in rows),
         "writer_report_byte_counts": sorted(int(r["writer_report_bytes"] or 0) for r in rows),
         "raw_output_byte_counts": sorted(int(r["raw_output_bytes"] or 0) for r in rows),
+        "presentation_cache_hit_counts": sorted(presentation_hits.get((r["owner_scope"], r["task_id"]), 0) for r in rows),
         "artifacts": by_case.get(name, []),
     })
 idem = conn.execute("SELECT upstream_post_count, submit_state, run_id FROM requests WHERE task_id=?", (''' + repr(idem_task) + r''',)).fetchone()
@@ -522,6 +527,8 @@ def validate_run_outputs(results: dict, db: dict, provider: dict, evidence: dict
             raise RunnerError("failure", "artifact_survives_presentation_failure_" + name)
         if cases[name].get("artifact_ref_hash") != arts[0].get("artifact_ref_hash"):
             raise RunnerError("failure", "fallback_reference_binding_" + name)
+    if not any(count > 0 for count in summaries.get("lost_envelope_10k", {}).get("presentation_cache_hit_counts", [])):
+        raise RunnerError("failure", "lost_envelope_cache_not_used")
     if summaries.get("late_mutation", {}).get("presentation_errors", ["none"]) == ["none"]:
         raise RunnerError("failure", "late_finalizer_mutation_not_rejected")
     for name in ("no_writer", "writer_fail", "writer_slow", "wrong_binding"):
@@ -915,6 +922,8 @@ def main() -> int:
                 "report_marker_in_relay_response": case_row.get("report_marker_in_relay_response") is True,
                 "final_marker_in_relay_response": case_row.get("final_marker_in_relay_response") is True,
                 "tool_marker_in_relay_response": case_row.get("tool_marker_in_relay_response") is True,
+                "lost_terminal_delivery_retried": case_row.get("lost_terminal_delivery_retried") is True,
+                "same_reference_after_redelivery": case_row.get("same_reference_after_redelivery") is True,
             }
             safe_cases.append(outcome)
         diagnostic_summary["case_outcomes"] = safe_cases
@@ -976,6 +985,7 @@ def main() -> int:
                     "artifact_statuses": row.get("artifact_statuses"),
                     "presentation_errors": row.get("presentation_errors"),
                     "raw_output_byte_counts": row.get("raw_output_byte_counts"),
+                    "presentation_cache_hit_counts": row.get("presentation_cache_hit_counts"),
                 }
     toolset_check = evidence.get("checks", {}).get("hermes_api_toolset")
     if isinstance(toolset_check, dict):
