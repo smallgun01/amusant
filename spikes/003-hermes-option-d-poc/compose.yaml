@@ -94,6 +94,7 @@ services:
     volumes:
       - poc_state:/state
       - ./facade.py:/poc/facade.py:ro
+      - ./plugin:/poc/plugin:ro
     depends_on:
       - hermes
     networks:

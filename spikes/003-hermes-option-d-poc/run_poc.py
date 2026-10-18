@@ -16,7 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 COMPOSE_FILE = ROOT / "compose.yaml"
-EVIDENCE_FILE = ROOT / "evidence" / "phase1.json"
+EVIDENCE_FILE = ROOT / "evidence" / "phase2.json"
 IMAGE = "docker.io/nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7"
 SOURCE_COMMIT = "f97608f178d1ffeca59860195ab7da295f7c8e5f"
 REPORT_CAP = 4096
@@ -216,7 +216,7 @@ for event in conn.execute("SELECT session_hash, outcome_code FROM output_hook_ev
         "session_missing", "session_unmapped", "hook_exception", "hook_empty", "timeout_injected",
         "input_invalid", "presentation_invalid", "artifact_missing",
         "artifact_not_committed", "artifact_binding_invalid", "ready",
-        "request_lookup_error", "artifact_lookup_error",
+        "request_lookup_error", "artifact_lookup_error", "reprojected", "reprojection_replayed",
     }:
         hook_event_counts[event["outcome_code"]] = hook_event_counts.get(event["outcome_code"], 0) + 1
         hook_outcomes.setdefault(event["session_hash"], []).append(event["outcome_code"])
@@ -271,6 +271,94 @@ for name in sorted({r["poc_case"] for r in requests} | set(by_case)):
         ),
         "artifacts": by_case.get(name, []),
     })
+presentation_repairs = []
+repair_table = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='presentation_repairs'").fetchone()
+if repair_table:
+    for repair in conn.execute("SELECT * FROM presentation_repairs"):
+        repair = dict(repair)
+        matches = [r for r in requests if hashlib.sha256(r["session_id"].encode("utf-8")).hexdigest() == repair["session_hash"]]
+        artifacts_for_repair = [
+            a for a in artifacts
+            if len(matches) == 1 and a["owner_scope"] == matches[0]["owner_scope"]
+            and a["task_id"] == matches[0]["task_id"] and a["run_id"] == matches[0]["run_id"]
+        ]
+        reference_hash_matches = (
+            len(artifacts_for_repair) == 1
+            and hashlib.sha256(artifacts_for_repair[0]["artifact_ref"].encode()).hexdigest() == repair["artifact_ref_hash"]
+        )
+        session_hash = repair["session_hash"]
+        presentation_repairs.append({
+            "case": matches[0]["poc_case"] if len(matches) == 1 else "unbound",
+            "single_mapping": len(matches) == 1,
+            "mapping_completed": bool(matches and matches[0]["submit_state"] == "accepted" and matches[0]["hermes_run_status"] == "completed" and matches[0]["artifact_status"] == "committed"),
+            "artifact_ref_hash_matches": reference_hash_matches,
+            "binding_digest_matches": (
+                len(matches) == 1
+                and hashlib.sha256(chr(0).join((matches[0]["owner_scope"], matches[0]["task_id"], matches[0]["session_id"], matches[0]["run_id"])).encode("utf-8")).hexdigest() == repair["binding_sha256"]
+            ),
+            "source_digest_valid": bool(__import__("re").fullmatch(r"[0-9a-f]{64}", repair["source_sha256"])),
+            "output_digest_valid": bool(__import__("re").fullmatch(r"[0-9a-f]{64}", repair["output_sha256"])),
+            "replay_count": int(repair["replay_count"]),
+            "hook_events": hook_outcomes.get(session_hash, []),
+        })
+reprojection_guard = {
+    "source_state": "unavailable",
+    "projection_state": "unavailable",
+    "changed_state": "unavailable",
+    "changed_envelope_valid": False,
+}
+try:
+    import sys
+    sys.path.insert(0, "/poc")
+    from plugin.reprojection import check_existing_reprojection, project_presentation
+    lost_requests = [r for r in requests if r["poc_case"] == "lost_envelope_10k"]
+    if len(lost_requests) == 1:
+        lost = lost_requests[0]
+        bound_artifacts = [
+            a for a in artifacts
+            if a["owner_scope"] == lost["owner_scope"] and a["task_id"] == lost["task_id"]
+            and a["session_id"] == lost["session_id"] and a["run_id"] == lost["run_id"]
+        ]
+        if len(bound_artifacts) == 1:
+            artifact = bound_artifacts[0]
+            raw = json.dumps({
+                "schema_version": 1,
+                "speak": "The report is ready for review.",
+                "card": {"title": "Report ready", "lines": ["Synthetic report saved.", "Review the recorded findings."]},
+                "details_md": "A deterministic synthetic report was saved for this proof.",
+            }, ensure_ascii=False, separators=(",", ":"))
+            projected, projected_status = project_presentation(raw, artifact["artifact_ref"])
+            changed_raw = json.dumps({
+                "schema_version": 1,
+                "speak": "The updated report is ready for review.",
+                "card": {"title": "Report ready", "lines": ["Synthetic report saved.", "Review the recorded findings."]},
+                "details_md": "A deterministic synthetic report was saved for this proof.",
+            }, ensure_ascii=False, separators=(",", ":"))
+            changed_output, changed_status = project_presentation(changed_raw, artifact["artifact_ref"])
+            source_state, _ = check_existing_reprojection(raw, lost["session_id"])
+            projection_state, _ = check_existing_reprojection(projected, lost["session_id"])
+            changed_state, _ = check_existing_reprojection(changed_output, lost["session_id"])
+            changed_value = json.loads(changed_output) if changed_output else {}
+            changed_valid = (
+                changed_status == "ready"
+                and isinstance(changed_value, dict)
+                and set(changed_value) == {
+                    "schema_version", "speak", "card", "details_md",
+                    "execution_status", "artifact_status", "presentation_status", "artifact_ref",
+                }
+                and changed_value.get("execution_status") == "completed"
+                and changed_value.get("artifact_status") == "committed"
+                and changed_value.get("presentation_status") == "ready"
+                and changed_value.get("artifact_ref") == artifact["artifact_ref"]
+            )
+            reprojection_guard = {
+                "source_state": source_state,
+                "projection_state": projection_state,
+                "changed_state": changed_state,
+                "changed_envelope_valid": changed_valid,
+            }
+except Exception:
+    pass
 idem = conn.execute("SELECT upstream_post_count, submit_state, run_id FROM requests WHERE task_id=?", (''' + repr(idem_task) + r''',)).fetchone()
 print(json.dumps({
     "request_case_summaries": case_summaries,
@@ -278,6 +366,8 @@ print(json.dumps({
     "registered_artifact_count": len(artifacts),
     "unregistered_artifact_file_count": len(all_files),
     "output_hook_event_counts": hook_event_counts,
+    "presentation_repairs": presentation_repairs,
+    "reprojection_guard": reprojection_guard,
 }, separators=(",", ":")))
 '''
 
@@ -474,7 +564,7 @@ def validate_run_outputs(results: dict, db: dict, provider: dict, evidence: dict
         "hook_empty": ("completed", "failed"),
         "hook_timeout": ("completed", "failed"),
         "late_mutation": ("completed", "failed"),
-        "lost_envelope_10k": ("completed", "failed"),
+        "lost_envelope_10k": ("completed", "ready"),
     }
     if set(cases) != set(expected_cases):
         raise RunnerError("failure", "case_set_mismatch")
@@ -532,13 +622,46 @@ def validate_run_outputs(results: dict, db: dict, provider: dict, evidence: dict
             raise RunnerError("failure", "durable_artifact_check_" + name)
         if cases[name].get("artifact_ref_hash") != arts[0].get("artifact_ref_hash"):
             raise RunnerError("failure", "artifact_reference_binding_" + name)
-    for name in ("malformed_json", "oversized_final", "missing_speech", "hook_exception", "hook_empty", "hook_timeout", "late_mutation", "lost_envelope_10k"):
+    for name in ("malformed_json", "oversized_final", "missing_speech", "hook_exception", "hook_empty", "hook_timeout", "late_mutation"):
         row = summaries.get(name)
         arts = row.get("artifacts", []) if row else []
         if len(arts) != 1 or not arts[0].get("sha256_valid") or not arts[0].get("identity_binding_valid") or not arts[0].get("commit_before_terminal"):
             raise RunnerError("failure", "artifact_survives_presentation_failure_" + name)
         if cases[name].get("artifact_ref_hash") != arts[0].get("artifact_ref_hash"):
             raise RunnerError("failure", "fallback_reference_binding_" + name)
+    lost_row = summaries.get("lost_envelope_10k", {})
+    lost_artifacts = lost_row.get("artifacts", [])
+    repairs = [item for item in db.get("presentation_repairs", []) if item.get("case") == "lost_envelope_10k"]
+    if (
+        len(lost_artifacts) != 1
+        or not lost_artifacts[0].get("sha256_valid")
+        or not lost_artifacts[0].get("identity_binding_valid")
+        or not lost_artifacts[0].get("commit_before_terminal")
+        or cases["lost_envelope_10k"].get("artifact_ref_hash") != lost_artifacts[0].get("artifact_ref_hash")
+    ):
+        raise RunnerError("failure", "reprojected_artifact_binding")
+    if (
+        len(repairs) != 1
+        or not repairs[0].get("single_mapping")
+        or not repairs[0].get("mapping_completed")
+        or not repairs[0].get("artifact_ref_hash_matches")
+        or not repairs[0].get("binding_digest_matches")
+        or not repairs[0].get("source_digest_valid")
+        or not repairs[0].get("output_digest_valid")
+        or repairs[0].get("replay_count", 0) < 1
+        or not {"reprojected", "reprojection_replayed"} <= set(repairs[0].get("hook_events", []))
+    ):
+        raise RunnerError("failure", "idempotent_reprojection_not_proven")
+    if lost_row.get("presentation_errors") != ["none"]:
+        raise RunnerError("failure", "reprojection_not_recorded_as_recovered")
+    guard = db.get("reprojection_guard", {})
+    if (
+        guard.get("source_state") != "source"
+        or guard.get("projection_state") != "projection"
+        or guard.get("changed_state") != "conflict"
+        or guard.get("changed_envelope_valid") is not True
+    ):
+        raise RunnerError("failure", "changed_valid_envelope_not_rejected")
     if summaries.get("late_mutation", {}).get("presentation_errors", ["none"]) == ["none"]:
         raise RunnerError("failure", "late_finalizer_mutation_not_rejected")
     for name in ("no_writer", "writer_fail", "writer_slow", "wrong_binding"):
@@ -871,6 +994,7 @@ def main() -> int:
             "functions_field_counts": provider.get("functions_field_counts"),
         }
     diagnostic_summary["output_hook_event_counts"] = evidence.get("artifact_database_and_files", {}).get("output_hook_event_counts", {})
+    diagnostic_summary["presentation_repairs"] = evidence.get("artifact_database_and_files", {}).get("presentation_repairs", [])
     if isinstance(provider_cases, dict) and "lost_envelope_10k" in provider_cases:
         provider = provider_cases["lost_envelope_10k"]
         diagnostic_summary["lost_envelope_10k_provider"] = {
