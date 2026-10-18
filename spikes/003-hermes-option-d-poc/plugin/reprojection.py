@@ -123,6 +123,19 @@ def _load_committed_artifact(row):
         return None, "artifact_unavailable"
 
 
+def project_presentation(response_text, artifact_ref):
+    """Apply the same allowlisted projection used by both hook and recovery."""
+    if not isinstance(artifact_ref, str) or not ARTIFACT_REF_RE.fullmatch(artifact_ref):
+        return None, "artifact_binding_invalid"
+    value, status = _presentation(response_text)
+    if value is None:
+        return None, status
+    encoded = _envelope(value, artifact_ref)
+    if len(encoded.encode("utf-8")) > MAX_PRESENTATION_BYTES:
+        return None, "presentation_invalid"
+    return encoded, "ready"
+
+
 def _envelope(value, artifact_ref):
     return _compact_json({
         "schema_version": 1,
