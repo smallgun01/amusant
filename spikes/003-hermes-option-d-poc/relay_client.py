@@ -286,7 +286,7 @@ async def run_all_cases():
 
 async def start_restart_case():
     db = store()
-    task_id, owner = make_task(db, "restart_10k")
+    task_id, owner = make_task(db, "restart_10k", owner=owner_for_tag("restart"))
     claimed = db.claim_due(now=datetime.now(timezone.utc), lease_seconds=60, limit=1)
     if not claimed or claimed[0].task_id != task_id:
         raise RuntimeError("restart task was not claimable")
@@ -367,7 +367,7 @@ async def resume_restart_case():
 
 async def ambiguous_submit_case():
     db = store()
-    task_id, _owner = make_task(db, "ambiguous_10k")
+    task_id, _owner = make_task(db, "ambiguous_10k", owner=owner_for_tag("ambiguous"))
     transport = HermesRunsExecutor(
         url=FACADE_URL, api_key=FACADE_KEY, allow_plaintext=True, **executor_options(db)
     )
@@ -497,7 +497,7 @@ def access_and_idempotency_gate():
 
 def stop_gate():
     db = store()
-    owner_name = owner_for_tag()
+    owner_name = owner_for_tag("stop")
     transport = HermesRunsExecutor(
         url=FACADE_URL, api_key=FACADE_KEY, allow_plaintext=True,
         **executor_options(db),
