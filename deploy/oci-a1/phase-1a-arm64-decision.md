@@ -5,7 +5,9 @@ Scope: offline CI only; parent architecture review #62 Phase 0; Option D accepte
 
 ## Current recommendation
 
-**UNKNOWN pending the native ARM64 CI artifact.** The source-only upstream study in [issue #82](https://github.com/smallgun01/amusant/issues/82#issuecomment-6250887411) does not establish that the pinned image digest runs correctly. This PR adds the native gate and records its result at `deploy/oci-a1/evidence/arm64-gate.json` in the CI artifact. The executable result must replace this pending status after the gate completes.
+**GO for the Phase 1A native ARM64 image and runtime gates only.** Workflow run [#39137736138](https://github.com/smallgun01/amusant/actions/runs/39137736138) on PR head `9c3808c59616f94537dad9679c0d740379a3dec4` reported GO with all 12 checks PASS: native ARM64 runner; exact Hermes manifest and pull; image architecture; Python/native ELF imports; Hermes CLI; Relay native build/runtime imports; Opus and TLS-PSK tests; persistent Relay entrypoint; and Option D fake-provider proof. The sanitized `arm64-gate.json` and `phase2.json` are in the [workflow artifact](https://github.com/smallgun01/amusant/actions/runs/39137736138/artifacts/12140328236).
+
+This GO does not approve OCI deployment or establish 1-OCPU performance. The source-only upstream study in [issue #82](https://github.com/smallgun01/amusant/issues/82#issuecomment-6250887411) did not establish exact-digest runtime compatibility; the native run now supplies that missing evidence.
 
 Pinned Hermes candidate:
 
