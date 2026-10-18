@@ -600,6 +600,10 @@ def main() -> int:
         if any(name not in state_by_service or state_by_service[name]["running"] or state_by_service[name]["exit_code"] != 0 for name in expected_complete):
             raise RunnerError("failure", "proof_bootstrap_not_complete")
         for name, expected_limit in evidence["resources"]["configured_memory_caps_bytes"].items():
+            # relay-client runs with --rm, so Docker removes each completed container before inspection.
+            # Its positive service cap was checked in resolved Compose config above.
+            if name == "relay-client":
+                continue
             if name not in state_by_service or state_by_service[name]["configured_memory_limit_bytes"] != expected_limit:
                 raise RunnerError("failure", "runtime_memory_limit_mismatch_" + name)
         if any(row["oom_killed"] for row in states):
@@ -690,6 +694,7 @@ def main() -> int:
             "same_run_id": resume_phase.get("same_run_id"),
             "get_only_after_restart": resume_phase.get("get_only_after_restart"),
             "presentation_status": resume_phase.get("presentation_status"),
+            "task_error_code": resume_phase.get("task_error_code"),
             "report_marker_in_relay_response": resume_phase.get("report_marker_in_relay_response"),
             "final_marker_in_relay_response": resume_phase.get("final_marker_in_relay_response"),
             "tool_marker_in_relay_response": resume_phase.get("tool_marker_in_relay_response"),

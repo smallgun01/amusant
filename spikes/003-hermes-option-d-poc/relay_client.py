@@ -365,6 +365,9 @@ async def resume_restart_case():
     after = db.get_by_task_id(state["task_id"])
     methods = [item["method"] for item in audit.requests]
     terminal_envelope = next((item for item in reversed(audit.requests) if item["presentation_status"] is not None), None)
+    task_error_code = final.get("last_error")
+    if not isinstance(task_error_code, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,80}", task_error_code):
+        task_error_code = None
     print(json.dumps({
         "phase": "restart_resume",
         "recovery_uncertain": getattr(recovery, "uncertain", None),
@@ -378,6 +381,7 @@ async def resume_restart_case():
         "tool_marker_in_relay_response": any(item["tool_marker_in_response"] for item in audit.requests),
         "artifact_ref_hash": terminal_envelope["artifact_ref_hash"] if terminal_envelope else None,
         "presentation_status": terminal_envelope["presentation_status"] if terminal_envelope else None,
+        "task_error_code": task_error_code,
     }, separators=(",", ":")))
     return 0 if final.get("status") == "completed" and methods and all(m == "GET" for m in methods) else 2
 
