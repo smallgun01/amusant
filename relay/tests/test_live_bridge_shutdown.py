@@ -105,7 +105,7 @@ class LiveBridgeSigtermProcessTests(unittest.TestCase):
                 "AMUSANT_TASK_DB": str(db_path),
                 "AMUSANT_SLOW_EXECUTOR": "hermes_runs",
                 "AMUSANT_HERMES_RUNS_URL": f"http://127.0.0.1:{hermes.server_port}",
-                "AMUSANT_HERMES_API_KEY": "offline-hermes-api-key-123",
+                "AMUSANT_FACADE_API_KEY": "offline-hermes-api-key-123",
                 "AMUSANT_HERMES_ALLOW_PLAINTEXT": "1",
                 "AMUSANT_HERMES_RUN_DEADLINE_SECONDS": "60",
                 "AMUSANT_HERMES_POLL_CYCLE_SECONDS": "10",
