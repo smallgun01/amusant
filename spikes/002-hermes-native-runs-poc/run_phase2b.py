@@ -17,6 +17,9 @@ REPO_ROOT = ROOT.parents[1]
 COMPOSE = ROOT / "compose.yaml"
 PROJECT = "amusant-hermes-runs-h1-v1"
 IMAGE = "docker.io/nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7"
+HERMES_SOURCE_TAG = "v2026.9.24"
+HERMES_SOURCE_COMMIT = "f97608f178d1ffeca59860195ab7da295f7c8e5f"
+STOP_ROUTE_SOURCE = "gateway/platforms/api_server_runs.py"
 _DOCKER_ENV_KEYS = ("PATH", "HOME", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_CERT_PATH", "DOCKER_TLS_VERIFY", "XDG_RUNTIME_DIR")
 COMPOSE_ENV = {key: os.environ[key] for key in _DOCKER_ENV_KEYS if key in os.environ}
 COMPOSE_ENV["POC_API_KEY"] = "poc-" + secrets.token_urlsafe(24)
@@ -27,6 +30,10 @@ COMPOSE_ENV["POC_RUN_DEADLINE_SECONDS"] = "60"
 COMPOSE_ENV["POC_POLL_CYCLE_SECONDS"] = "2"
 COMPOSE_ENV["POC_HTTP_TIMEOUT_SECONDS"] = "3"
 COMPOSE_ENV["POC_POLL_INTERVAL_SECONDS"] = "0.05"
+COMPOSE_ENV["POC_STOP_GRACE_SECONDS"] = "30"
+COMPOSE_ENV["POC_STOP_MAX_ATTEMPTS"] = "3"
+COMPOSE_ENV["POC_STOP_RETRY_BASE_SECONDS"] = "0.05"
+COMPOSE_ENV["POC_STOP_RETRY_MAX_SECONDS"] = "0.2"
 
 
 def compose(*args, check=True):
@@ -85,11 +92,67 @@ def provider_stats():
     return result
 
 
+def wait_for_provider_case_active(slow_case, timeout=20):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        matches = [row for row in provider_stats().get("requests", []) if row.get("slow_case") == slow_case]
+        if any(row.get("active") is True for row in matches):
+            return matches
+        time.sleep(0.05)
+    raise RuntimeError("fake provider request did not become active")
+
+
+def resource_snapshot():
+    wanted = {"MemTotal", "MemAvailable", "SwapTotal", "SwapFree"}
+    memory = {}
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            name, _, value = line.partition(":")
+            if name in wanted:
+                memory[name] = int(value.strip().split()[0])
+        memory["loadavg"] = Path("/proc/loadavg").read_text().split()[:3]
+    except Exception as exc:
+        memory["read_error"] = type(exc).__name__
+    return memory
+
+
+def docker_resource_snapshot():
+    try:
+        result = subprocess.run(
+            ["docker", "system", "df", "--format", "{{.Type}} {{.TotalCount}} {{.Size}} {{.Reclaimable}}"],
+            capture_output=True, text=True, timeout=10,
+        )
+        return result.stdout.strip().splitlines() if result.returncode == 0 else ["unavailable"]
+    except Exception as exc:
+        return ["unavailable:" + type(exc).__name__]
+
+
+def poc_container_stats():
+    try:
+        ids = compose("ps", "-q", "hermes", "fake-provider", check=False).stdout.split()
+        if not ids:
+            return []
+        result = subprocess.run(
+            ["docker", "stats", "--no-stream", "--format", "{{.Name}} {{.CPUPerc}} {{.MemUsage}} {{.MemPerc}}", *ids],
+            capture_output=True, text=True, timeout=10,
+        )
+        return result.stdout.strip().splitlines() if result.returncode == 0 else ["unavailable"]
+    except Exception as exc:
+        return ["unavailable:" + type(exc).__name__]
+
+
+def require(condition, message):
+    if not condition:
+        raise AssertionError(message)
+
+
 def main():
     run_tag = COMPOSE_ENV["POC_RUN_TAG"]
     gates = {}
     started = False
     setup_error = None
+    resources_before = resource_snapshot()
+    docker_before = docker_resource_snapshot()
     try:
         compose("--profile", "bootstrap", "run", "--rm", "--no-deps", "seed")
         compose("run", "--rm", "--no-deps", "phase2b-state-init")
@@ -142,9 +205,69 @@ def main():
             }
             if gates["ambiguous_submit_fail_closed"]["status"] != "PASS":
                 raise RuntimeError("ambiguous submit was not preserved as uncertain without replay")
+
+            # Focused compatibility gate against the pinned Hermes HTTP server.
+            # Its source returns 200 {status: stopping} for an active Run; GET is
+            # still required to observe a terminal state before slot release.
+            stop_stage = "submit"
+            try:
+                stop_submit = client(
+                    "submit",
+                    "--key", "p2b-" + run_tag + "-stop-contract",
+                    "--input", "Synthetic [POC_STOP_CONTRACT] cancellation contract task.",
+                )
+                stop_run_id = stop_submit.get("run_id")
+                require(stop_submit.get("http_status", 500) < 400 and stop_run_id, "stop-contract Run was not created")
+                stop_stage = "wait_for_active_fake_provider"
+                wait_for_provider_case_active("stop_contract", timeout=20)
+                stop_stage = "get_running_before_stop"
+                before_stop = client("get", "--run-id", stop_run_id)
+                stop_stage = "post_stop"
+                stop_ack = client("stop", "--run-id", stop_run_id)
+                stop_stage = "get_after_stop"
+                after_stop = client("get", "--run-id", stop_run_id)
+                stop_stage = "poll_terminal_get"
+                terminal = client("get", "--run-id", stop_run_id, "--wait", "--timeout", "45")
+                stop_stage = "count_fake_provider_requests"
+                stop_requests = [
+                    row for row in provider_stats().get("requests", [])
+                    if row.get("slow_case") == "stop_contract"
+                ]
+                final_status = terminal.get("status")
+                terminals = {"completed", "failed", "cancelled", "interrupted"}
+                stop_pass = (
+                    before_stop.get("status") == "running"
+                    and stop_ack.get("http_status") == 200
+                    and stop_ack.get("status") == "stopping"
+                    and after_stop.get("status") in {"running", "stopping", *terminals}
+                    and final_status in terminals
+                    and len(stop_requests) == 1
+                )
+                gates["pinned_stop_contract"] = {
+                    "status": "PASS" if stop_pass else "FAIL",
+                    "source_tag": HERMES_SOURCE_TAG,
+                    "source_commit": HERMES_SOURCE_COMMIT,
+                    "source_file": STOP_ROUTE_SOURCE,
+                    "before_stop_get_status": before_stop.get("status"),
+                    "stop_http_status": stop_ack.get("http_status"),
+                    "stop_ack_status": stop_ack.get("status"),
+                    "get_status_after_stop": after_stop.get("status"),
+                    "terminal_get_status": final_status,
+                    "fake_provider_requests_for_run": len(stop_requests),
+                    "completion_won_stop_race": final_status == "completed",
+                }
+            except Exception as exc:
+                gates["pinned_stop_contract"] = {
+                    "status": "FAIL",
+                    "source_tag": HERMES_SOURCE_TAG,
+                    "source_commit": HERMES_SOURCE_COMMIT,
+                    "stage": stop_stage,
+                    "error_type": type(exc).__name__,
+                }
         except Exception as exc:
             gates.setdefault("adapter_and_recovery", {"status": "FAIL", "error_type": type(exc).__name__, "reason": str(exc)[:200]})
 
+    poc_usage_before_stop = poc_container_stats()
     try:
         compose("stop", "hermes", "fake-provider", check=False)
     except Exception:
@@ -153,11 +276,20 @@ def main():
     worktree_status = subprocess.run(["git", "-C", str(REPO_ROOT), "status", "--porcelain"], capture_output=True, text=True).stdout.strip()
     evidence = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "command": "cd spikes/002-hermes-native-runs-poc && python3 run_phase2b.py",
         "working_tree_dirty_at_test": bool(worktree_status),
         "provider_count_metric": "fake provider completion requests; Relay Run submissions are separately counted from Relay HTTP methods",
         "repo_head": subprocess.run(["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip(),
         "branch": subprocess.run(["git", "-C", str(REPO_ROOT), "branch", "--show-current"], capture_output=True, text=True).stdout.strip(),
         "hermes_image": IMAGE,
+        "hermes_source_tag": HERMES_SOURCE_TAG,
+        "hermes_source_commit": HERMES_SOURCE_COMMIT,
+        "stop_route_source": STOP_ROUTE_SOURCE,
+        "host_resources_before": resources_before,
+        "host_resources_after": resource_snapshot(),
+        "docker_usage_before": docker_before,
+        "poc_container_usage_before_stop": poc_usage_before_stop,
+        "docker_usage_after": docker_resource_snapshot(),
         "mode": "local Docker only; internal network; deterministic fake provider; no AWS; no paid model API",
         "setup_status": "PASS" if started else "FAIL",
         "setup_error_type": setup_error,

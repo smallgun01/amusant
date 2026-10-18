@@ -208,6 +208,41 @@ class AsyncDispatcher:
                 code=code,
             )
             return
+        if (
+            outcome.status == "uncertain"
+            and outcome.code == "hermes_run_deadline_exceeded"
+            and task.executor_kind == "hermes_runs"
+            and task.backend_run_id
+        ):
+            try:
+                receipt = await self._store_call(
+                    self._store.request_stop,
+                    task.task_id,
+                    reason="run_deadline",
+                    now=self._now(),
+                )
+                if receipt.status != "stopping":
+                    await self._safe_store(
+                        self._store.mark_uncertain,
+                        task.task_id,
+                        code=receipt.code or "hermes_stop_unconfirmed",
+                    )
+                    return
+                refreshed = await self._store_call(self._store.get_by_task_id, task.task_id)
+                if refreshed is None:
+                    raise ValueError("Run disappeared while recording deadline stop")
+                task = replace(
+                    task,
+                    stop_requested_at=refreshed.get("stop_requested_at"),
+                    stop_reason=refreshed.get("stop_reason"),
+                    stop_attempts=int(refreshed.get("stop_attempts") or 0),
+                    stop_accepted_at=refreshed.get("stop_accepted_at"),
+                )
+                outcome = await self._executor.execute(task)
+            except Exception as exc:
+                code = getattr(exc, "code", "hermes_stop_unconfirmed")
+                await self._safe_store(self._store.mark_uncertain, task.task_id, code=code)
+                return
         if outcome.status == "deferred":
             if (
                 task.executor_kind != "hermes_runs"

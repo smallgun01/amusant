@@ -14,6 +14,8 @@ class CompanionPersonaTests(unittest.TestCase):
         self.assertIn("Traditional Chinese", prompt)
         self.assertIn("delegate_task", prompt)
         self.assertIn("check_task_status", prompt)
+        self.assertIn("cancel_task", prompt)
+        self.assertIn("slow_busy", prompt)
         self.assertIn("long-term personal memory", prompt)
 
     def test_unknown_profile_fails_closed(self):

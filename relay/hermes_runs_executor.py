@@ -76,10 +76,15 @@ class HermesRunsExecutor:
         api_key: str,
         save_backend_run_id: Callable[..., None],
         update_poll_state: Callable[..., None],
+        update_stop_state: Callable[..., None],
         run_deadline_seconds: float,
         poll_cycle_seconds: float,
         http_timeout_seconds: float,
         poll_interval_seconds: float,
+        stop_grace_seconds: float,
+        stop_max_attempts: int,
+        stop_retry_base_seconds: float,
+        stop_retry_max_seconds: float,
         allow_plaintext: bool = False,
         request_json=None,
         clock: Callable[[], datetime] | None = None,
@@ -87,8 +92,8 @@ class HermesRunsExecutor:
         self._endpoint = self._parse_endpoint(url, allow_plaintext=allow_plaintext)
         if not isinstance(api_key, str) or len(api_key.strip()) < 12:
             raise HermesConfigError("AMUSANT_HERMES_API_KEY must contain at least 12 characters")
-        if not callable(save_backend_run_id) or not callable(update_poll_state):
-            raise HermesConfigError("task store must support durable Hermes Run and poll-state mapping")
+        if not all(callable(callback) for callback in (save_backend_run_id, update_poll_state, update_stop_state)):
+            raise HermesConfigError("task store must support durable Run, poll-state, and stop-state mapping")
         if clock is not None and not callable(clock):
             raise HermesConfigError("Hermes clock must be callable")
         values = {
@@ -96,22 +101,35 @@ class HermesRunsExecutor:
             "poll cycle": poll_cycle_seconds,
             "HTTP timeout": http_timeout_seconds,
             "poll interval": poll_interval_seconds,
+            "stop grace": stop_grace_seconds,
+            "stop retry base": stop_retry_base_seconds,
+            "stop retry maximum": stop_retry_max_seconds,
         }
         for name, value in values.items():
             if (isinstance(value, bool) or not isinstance(value, (int, float))
                     or not math.isfinite(float(value)) or float(value) <= 0):
                 raise HermesConfigError(f"Hermes {name} must be finite and positive")
+        if type(stop_max_attempts) is not int or stop_max_attempts <= 0:
+            raise HermesConfigError("Hermes stop max attempts must be a positive integer")
+        if float(stop_retry_max_seconds) < float(stop_retry_base_seconds):
+            raise HermesConfigError("Hermes stop retry maximum must be at least its base interval")
         try:
             timedelta(seconds=float(run_deadline_seconds))
+            timedelta(seconds=float(stop_grace_seconds))
         except OverflowError:
-            raise HermesConfigError("Hermes Run deadline is outside the supported datetime range") from None
+            raise HermesConfigError("Hermes deadline or stop grace is outside the supported datetime range") from None
         self._api_key = api_key.strip()
         self._save_backend_run_id = save_backend_run_id
         self._update_poll_state = update_poll_state
+        self._update_stop_state = update_stop_state
         self._run_deadline_seconds = float(run_deadline_seconds)
         self._poll_cycle_seconds = float(poll_cycle_seconds)
         self._http_timeout_seconds = float(http_timeout_seconds)
         self._poll_interval = float(poll_interval_seconds)
+        self._stop_grace_seconds = float(stop_grace_seconds)
+        self._stop_max_attempts = stop_max_attempts
+        self._stop_retry_base_seconds = float(stop_retry_base_seconds)
+        self._stop_retry_max_seconds = float(stop_retry_max_seconds)
         self._request_json = request_json or self._http_request
         self._clock = clock or (lambda: datetime.now(timezone.utc))
 
@@ -210,8 +228,21 @@ class HermesRunsExecutor:
         except (OverflowError, TypeError, ValueError):
             return ExecutionOutcome(status="uncertain", code="hermes_run_deadline_unconfirmed")
         poll_attempts = int(task.poll_attempts or 0)
+        stop_requested_at = None
+        stop_accepted_at = None
+        try:
+            if task.stop_requested_at:
+                stop_requested_at = _parse_utc_timestamp(task.stop_requested_at)
+            if task.stop_accepted_at:
+                stop_accepted_at = _parse_utc_timestamp(task.stop_accepted_at)
+        except (TypeError, ValueError):
+            return ExecutionOutcome(status="uncertain", code="hermes_stop_state_unconfirmed")
+        stop_reason = task.stop_reason
+        stop_attempts = int(task.stop_attempts or 0)
 
         if run_id is None:
+            if stop_requested_at is not None:
+                return ExecutionOutcome(status="uncertain", code="hermes_submission_unconfirmed")
             try:
                 prompt = build_hermes_run_prompt(task)
             except ValueError as exc:
@@ -286,6 +317,143 @@ class HermesRunsExecutor:
             except Exception:
                 raise HermesRequestError("Hermes next-poll state persistence is unconfirmed") from None
 
+        async def persist_stop_state(*, accepted_at: datetime | None, next_at: datetime) -> None:
+            try:
+                await asyncio.to_thread(
+                    self._update_stop_state,
+                    task.task_id,
+                    stop_attempts=stop_attempts,
+                    stop_accepted_at=accepted_at,
+                    next_poll_at=next_at,
+                )
+            except Exception:
+                raise HermesRequestError("Hermes stop state persistence is unconfirmed") from None
+
+        def retry_delay(attempts: int) -> float:
+            exponent = min(max(0, attempts - 1), 16)
+            return min(self._stop_retry_base_seconds * (2 ** exponent), self._stop_retry_max_seconds)
+
+        def terminal(state: str, payload: dict[str, Any]) -> ExecutionOutcome | None:
+            if state in _TERMINAL_SUCCESS:
+                # The API has confirmed a terminal remote Run. Invalid output is
+                # a local result failure, not evidence of possible remote activity.
+                if payload.get("partial") is True or payload.get("interrupted") is True:
+                    return ExecutionOutcome(status="failed", code="hermes_invalid_result")
+                output = _extract_output(payload)
+                if output is None:
+                    return ExecutionOutcome(status="failed", code="hermes_invalid_result")
+                try:
+                    result = parse_hermes_run_result(output)
+                except ValueError:
+                    return ExecutionOutcome(status="failed", code="hermes_invalid_result")
+                return ExecutionOutcome(status="completed", result=result)
+            if state in _TERMINAL_FAILURE:
+                return ExecutionOutcome(status="failed", code=f"hermes_{state}")
+            if state in {"cancelled", "interrupted"}:
+                if stop_requested_at is None:
+                    return ExecutionOutcome(status="uncertain", code=f"hermes_{state}")
+                code = "hermes_run_timed_out" if stop_reason == "run_deadline" else "hermes_cancelled"
+                return ExecutionOutcome(status="failed", code=code)
+            if state == "expired":
+                return ExecutionOutcome(status="uncertain", code="hermes_expired")
+            if state not in _NONTERMINAL:
+                return ExecutionOutcome(status="uncertain", code="hermes_result_unconfirmed")
+            return None
+
+        if stop_requested_at is not None:
+            if run_id is None:
+                return ExecutionOutcome(status="uncertain", code="hermes_submission_unconfirmed")
+            grace_deadline = stop_requested_at + timedelta(seconds=self._stop_grace_seconds)
+            now = self._clock()
+            if stop_accepted_at is None and stop_attempts < self._stop_max_attempts and now < grace_deadline:
+                stop_attempts += 1
+                try:
+                    stop_http, stop_payload = await asyncio.to_thread(
+                        self._request_json,
+                        "POST",
+                        f"/v1/runs/{quoted_id}/stop",
+                        None,
+                        headers,
+                    )
+                except Exception:
+                    now = self._clock()
+                    if stop_attempts >= self._stop_max_attempts or now >= grace_deadline:
+                        await persist_stop_state(accepted_at=stop_accepted_at, next_at=now)
+                        return ExecutionOutcome(status="uncertain", code="hermes_stop_unconfirmed")
+                    next_poll_at = now + timedelta(seconds=retry_delay(stop_attempts))
+                    poll_attempts += 1
+                    await persist_poll_state()
+                    await persist_stop_state(accepted_at=None, next_at=next_poll_at)
+                    return deferred()
+                if stop_http in {408, 429} or stop_http >= 500:
+                    now = self._clock()
+                    if stop_attempts >= self._stop_max_attempts or now >= grace_deadline:
+                        await persist_stop_state(accepted_at=stop_accepted_at, next_at=now)
+                        return ExecutionOutcome(status="uncertain", code="hermes_stop_unconfirmed")
+                    next_poll_at = now + timedelta(seconds=retry_delay(stop_attempts))
+                    poll_attempts += 1
+                    await persist_poll_state()
+                    await persist_stop_state(accepted_at=None, next_at=next_poll_at)
+                    return deferred()
+                if stop_http >= 400 and stop_http not in {404, 409, 410}:
+                    await persist_stop_state(accepted_at=stop_accepted_at, next_at=self._clock())
+                    return ExecutionOutcome(status="uncertain", code="hermes_stop_rejected")
+                if 200 <= stop_http < 300:
+                    # Any 2xx confirms that the stop request was accepted, not that
+                    # the Run terminated. Hermes v2026.9.24 returns 200 with
+                    # {status: stopping}; tolerate 202/empty JSON too. Only GET
+                    # status below may establish the terminal outcome.
+                    stop_accepted_at = self._clock()
+                    await persist_stop_state(accepted_at=stop_accepted_at, next_at=stop_accepted_at)
+
+            try:
+                status_code, payload = await asyncio.to_thread(
+                    self._request_json, "GET", f"/v1/runs/{quoted_id}", None, headers
+                )
+            except Exception:
+                now = self._clock()
+                if now >= grace_deadline or (stop_accepted_at is None and stop_attempts >= self._stop_max_attempts):
+                    await persist_stop_state(accepted_at=stop_accepted_at, next_at=now)
+                    return ExecutionOutcome(status="uncertain", code="hermes_stop_unconfirmed")
+                delay = self._poll_interval if stop_accepted_at is not None else retry_delay(max(1, stop_attempts))
+                next_poll_at = now + timedelta(seconds=delay)
+                poll_attempts += 1
+                await persist_poll_state()
+                await persist_stop_state(accepted_at=stop_accepted_at, next_at=next_poll_at)
+                return deferred()
+            if status_code in {408, 429} or status_code >= 500:
+                now = self._clock()
+                if now >= grace_deadline or (stop_accepted_at is None and stop_attempts >= self._stop_max_attempts):
+                    await persist_stop_state(accepted_at=stop_accepted_at, next_at=now)
+                    return ExecutionOutcome(status="uncertain", code="hermes_stop_unconfirmed")
+                delay = self._poll_interval if stop_accepted_at is not None else retry_delay(max(1, stop_attempts))
+                next_poll_at = now + timedelta(seconds=delay)
+                poll_attempts += 1
+                await persist_poll_state()
+                await persist_stop_state(accepted_at=stop_accepted_at, next_at=next_poll_at)
+                return deferred()
+            if status_code >= 400:
+                code = "hermes_run_status_expired" if status_code in {404, 410} else "hermes_stop_unconfirmed"
+                await persist_stop_state(accepted_at=stop_accepted_at, next_at=self._clock())
+                return ExecutionOutcome(status="uncertain", code=code)
+            state = payload.get("status")
+            if not isinstance(state, str):
+                await persist_stop_state(accepted_at=stop_accepted_at, next_at=self._clock())
+                return ExecutionOutcome(status="uncertain", code="hermes_stop_unconfirmed")
+            state = state.lower()
+            terminal_result = terminal(state, payload)
+            if terminal_result is not None:
+                return terminal_result
+            now = self._clock()
+            if now >= grace_deadline or (stop_accepted_at is None and stop_attempts >= self._stop_max_attempts):
+                return ExecutionOutcome(status="uncertain", code="hermes_stop_unconfirmed")
+            delay = self._poll_interval if stop_accepted_at is not None else retry_delay(max(1, stop_attempts))
+            next_poll_at = now + timedelta(seconds=delay)
+            poll_attempts += 1
+            await persist_poll_state()
+            await persist_stop_state(accepted_at=stop_accepted_at, next_at=next_poll_at)
+            return deferred()
+
         while True:
             now = self._clock()
             run_remaining = (run_deadline_at - now).total_seconds()
@@ -335,15 +503,18 @@ class HermesRunsExecutor:
                 return ExecutionOutcome(status="uncertain", code="hermes_result_unconfirmed")
             state = state.lower()
             if state in _TERMINAL_SUCCESS:
+                # A confirmed remote terminal with an invalid result is safely
+                # terminal but not speakable; Dispatcher records failed and frees
+                # the slot without storing or reading the untrusted payload.
                 if payload.get("partial") is True or payload.get("interrupted") is True:
-                    return ExecutionOutcome(status="uncertain", code="hermes_result_unconfirmed")
+                    return ExecutionOutcome(status="failed", code="hermes_invalid_result")
                 output = _extract_output(payload)
                 if output is None:
-                    return ExecutionOutcome(status="uncertain", code="hermes_result_unconfirmed")
+                    return ExecutionOutcome(status="failed", code="hermes_invalid_result")
                 try:
                     result = parse_hermes_run_result(output)
                 except ValueError:
-                    return ExecutionOutcome(status="uncertain", code="hermes_result_unconfirmed")
+                    return ExecutionOutcome(status="failed", code="hermes_invalid_result")
                 return ExecutionOutcome(status="completed", result=result)
             if state in _TERMINAL_FAILURE:
                 return ExecutionOutcome(status="failed", code=f"hermes_{state}")
@@ -382,7 +553,8 @@ def load_hermes_runs_executor(
     environ,
     *,
     save_backend_run_id,
-    update_poll_state=None,
+    update_poll_state,
+    update_stop_state,
 ) -> HermesRunsExecutor | None:
     url = environ.get("AMUSANT_HERMES_RUNS_URL")
     key = environ.get("AMUSANT_HERMES_API_KEY")
@@ -400,6 +572,10 @@ def load_hermes_runs_executor(
         "AMUSANT_HERMES_POLL_CYCLE_SECONDS",
         "AMUSANT_HERMES_HTTP_TIMEOUT_SECONDS",
         "AMUSANT_HERMES_POLL_INTERVAL_SECONDS",
+        "AMUSANT_HERMES_STOP_GRACE_SECONDS",
+        "AMUSANT_HERMES_STOP_MAX_ATTEMPTS",
+        "AMUSANT_HERMES_STOP_RETRY_BASE_SECONDS",
+        "AMUSANT_HERMES_STOP_RETRY_MAX_SECONDS",
     )
     timing_raw = {name: environ.get(name) for name in timing_names}
     for name, value in timing_raw.items():
@@ -410,6 +586,13 @@ def load_hermes_runs_executor(
         poll_cycle = float(timing_raw["AMUSANT_HERMES_POLL_CYCLE_SECONDS"])
         http_timeout = float(timing_raw["AMUSANT_HERMES_HTTP_TIMEOUT_SECONDS"])
         poll_interval = float(timing_raw["AMUSANT_HERMES_POLL_INTERVAL_SECONDS"])
+        stop_grace = float(timing_raw["AMUSANT_HERMES_STOP_GRACE_SECONDS"])
+        stop_max_attempts_raw = timing_raw["AMUSANT_HERMES_STOP_MAX_ATTEMPTS"]
+        if not stop_max_attempts_raw.isdigit():
+            raise ValueError("stop max attempts must be an integer")
+        stop_max_attempts = int(stop_max_attempts_raw)
+        stop_retry_base = float(timing_raw["AMUSANT_HERMES_STOP_RETRY_BASE_SECONDS"])
+        stop_retry_max = float(timing_raw["AMUSANT_HERMES_STOP_RETRY_MAX_SECONDS"])
     except (TypeError, ValueError):
         raise HermesConfigError("Hermes timing settings must be numeric") from None
     allow_plaintext = environ.get("AMUSANT_HERMES_ALLOW_PLAINTEXT", "") == "1"
@@ -418,9 +601,14 @@ def load_hermes_runs_executor(
         api_key=key.strip(),
         save_backend_run_id=save_backend_run_id,
         update_poll_state=update_poll_state,
+        update_stop_state=update_stop_state,
         run_deadline_seconds=run_deadline,
         poll_cycle_seconds=poll_cycle,
         http_timeout_seconds=http_timeout,
         poll_interval_seconds=poll_interval,
+        stop_grace_seconds=stop_grace,
+        stop_max_attempts=stop_max_attempts,
+        stop_retry_base_seconds=stop_retry_base,
+        stop_retry_max_seconds=stop_retry_max,
         allow_plaintext=allow_plaintext,
     )

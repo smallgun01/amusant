@@ -232,6 +232,8 @@ class InboxTests(unittest.IsolatedAsyncioTestCase):
         store = self.store()
         older = NOW - timedelta(seconds=30)
         store.admit(request_for(TASK_ID, turn_id=1, call_id="call-old", created=older))
+        store.claim_due(now=older, lease_seconds=30, limit=1)
+        store.complete(TASK_ID, result=RESULT)
         store.admit(request_for(TASK_ID_2, turn_id=2, call_id="call-new", created=NOW))
         result = await make_router(store)(ToolCallEvent("lookup-latest", INBOX_TOOL_NAME, {}), 3)
         self.assertEqual(result["task_id"], TASK_ID_2)
@@ -247,7 +249,7 @@ class InboxTests(unittest.IsolatedAsyncioTestCase):
 
     def test_supported_startup_attaches_inbox_tool(self):
         names = [item.name for item in build_relay_tools(FakeSchemaTypes).function_declarations]
-        self.assertEqual(names, ["delegate_task", "check_task_status"])
+        self.assertEqual(names, ["delegate_task", "check_task_status", "cancel_task"])
         env = {
             "AMUSANT_LIVE_PROVIDER": "gemini",
             "GEMINI_API_KEY": "offline-test-key",

@@ -14,7 +14,7 @@ from uuid import UUID
 
 MAX_TASK_CHARS = 4096
 TASK_KINDS = frozenset({"research", "compare", "summarize"})
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 EXECUTOR_KINDS = frozenset({"openab_acp", "hermes_runs"})
 DELIVERY_STATES = frozenset({"pending", "notified", "read", "spoken"})
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
@@ -34,6 +34,14 @@ class AdmissionConflict(AdmissionError):
 
 class AdmissionCapacity(AdmissionError):
     """The bounded pending-task registry is full."""
+
+
+class AdmissionBusy(AdmissionError):
+    """This authenticated owner already has an outstanding Slow Task."""
+
+    def __init__(self, active_task_id: str | None = None):
+        super().__init__("slow_busy")
+        self.active_task_id = active_task_id
 
 
 class AdmissionUnavailable(AdmissionError):
@@ -93,6 +101,18 @@ class ClaimedTask:
     run_deadline_at: str | None = None
     next_poll_at: str | None = None
     poll_attempts: int = 0
+    stop_requested_at: str | None = None
+    stop_reason: str | None = None
+    stop_attempts: int = 0
+    stop_accepted_at: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CancelReceipt:
+    task_id: str
+    status: str
+    code: str = "ok"
+    duplicate: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,6 +184,31 @@ class TaskStore(Protocol):
     def fail(self, task_id: str, *, code: str) -> None: ...
 
     def mark_uncertain(self, task_id: str, *, code: str = "acp_result_unconfirmed") -> None: ...
+
+    def request_cancel(self, *, client_id: str, task_id: str, now: datetime) -> CancelReceipt: ...
+
+    def request_stop(self, task_id: str, *, reason: str, now: datetime) -> CancelReceipt: ...
+
+    def update_hermes_stop_state(
+        self,
+        task_id: str,
+        *,
+        stop_attempts: int,
+        stop_accepted_at: datetime | None,
+        next_poll_at: datetime,
+    ) -> None: ...
+
+    def operator_reconcile_uncertain(
+        self,
+        *,
+        client_id: str,
+        task_id: str,
+        terminal_state: str,
+        verified_run_id: str | None,
+        operator_id: str,
+        evidence_ref: str,
+        now: datetime,
+    ) -> CancelReceipt: ...
 
     def lookup_inbox(
         self,
@@ -254,6 +299,9 @@ class SQLiteTaskStore:
                     version = 5
                 if version < 6:
                     self._migrate_v5_to_v6(connection)
+                    version = 6
+                if version < 7:
+                    self._migrate_v6_to_v7(connection)
             os.chmod(self._path, 0o600)
         except (sqlite3.Error, OSError, AdmissionUnavailable):
             raise AdmissionUnavailable("task_store_unavailable") from None
@@ -279,6 +327,15 @@ class SQLiteTaskStore:
                 run_deadline_at TEXT,
                 next_poll_at TEXT,
                 poll_attempts INTEGER NOT NULL DEFAULT 0,
+                stop_requested_at TEXT,
+                stop_reason TEXT,
+                stop_attempts INTEGER NOT NULL DEFAULT 0,
+                stop_accepted_at TEXT,
+                manual_reconciled_at TEXT,
+                manual_reconciled_by TEXT,
+                manual_reconciliation_ref TEXT,
+                manual_reconciled_state TEXT,
+                manual_reconciled_run_id TEXT,
                 status TEXT NOT NULL CHECK(status IN {_V2_TASK_STATUSES}),
                 created_at TEXT NOT NULL,
                 expires_at TEXT NOT NULL,
@@ -369,6 +426,29 @@ class SQLiteTaskStore:
             "AND dispatch_started_at IS NOT NULL)"
         )
         connection.execute("PRAGMA user_version=6")
+
+    def _migrate_v6_to_v7(self, connection: sqlite3.Connection) -> None:
+        """Persist owner cancellation/stop state on the existing task row."""
+        columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(slow_tasks)")}
+        if "stop_requested_at" not in columns:
+            connection.execute("ALTER TABLE slow_tasks ADD COLUMN stop_requested_at TEXT")
+        if "stop_reason" not in columns:
+            connection.execute("ALTER TABLE slow_tasks ADD COLUMN stop_reason TEXT")
+        if "stop_attempts" not in columns:
+            connection.execute("ALTER TABLE slow_tasks ADD COLUMN stop_attempts INTEGER NOT NULL DEFAULT 0")
+        if "stop_accepted_at" not in columns:
+            connection.execute("ALTER TABLE slow_tasks ADD COLUMN stop_accepted_at TEXT")
+        if "manual_reconciled_at" not in columns:
+            connection.execute("ALTER TABLE slow_tasks ADD COLUMN manual_reconciled_at TEXT")
+        if "manual_reconciled_by" not in columns:
+            connection.execute("ALTER TABLE slow_tasks ADD COLUMN manual_reconciled_by TEXT")
+        if "manual_reconciliation_ref" not in columns:
+            connection.execute("ALTER TABLE slow_tasks ADD COLUMN manual_reconciliation_ref TEXT")
+        if "manual_reconciled_state" not in columns:
+            connection.execute("ALTER TABLE slow_tasks ADD COLUMN manual_reconciled_state TEXT")
+        if "manual_reconciled_run_id" not in columns:
+            connection.execute("ALTER TABLE slow_tasks ADD COLUMN manual_reconciled_run_id TEXT")
+        connection.execute("PRAGMA user_version=7")
 
     def _migrate_v1_to_v2(self, connection: sqlite3.Connection) -> None:
         connection.execute("PRAGMA foreign_keys=OFF")
@@ -478,8 +558,19 @@ class SQLiteTaskStore:
                 transaction_open = False
                 return AdmissionReceipt(task_id=row[0], duplicate=True)
 
+            active = connection.execute(
+                "SELECT t.task_id FROM slow_tasks AS t JOIN dispatch_outbox AS o USING(task_id) "
+                "WHERE t.client_id=? AND (t.status IN ('running','uncertain') OR "
+                "(t.status='queued' AND (t.backend_run_id IS NOT NULL OR o.dispatch_started_at IS NOT NULL OR t.expires_at>?))) "
+                "ORDER BY t.created_at ASC LIMIT 1",
+                (request.client_id, created),
+            ).fetchone()
+            if active is not None:
+                raise AdmissionBusy(str(active[0]))
+
             count = connection.execute(
-                "SELECT COUNT(*) FROM slow_tasks WHERE status='queued'"
+                "SELECT COUNT(*) FROM slow_tasks WHERE status='queued' AND expires_at>?",
+                (created,),
             ).fetchone()[0]
             if count >= self._max_pending_tasks:
                 raise AdmissionCapacity("task_capacity")
@@ -504,7 +595,7 @@ class SQLiteTaskStore:
                 raise AdmissionUnknown("acceptance_unconfirmed") from None
             transaction_open = False
             return AdmissionReceipt(task_id=request.task_id, duplicate=False)
-        except (AdmissionConflict, AdmissionCapacity, AdmissionUnknown):
+        except (AdmissionConflict, AdmissionCapacity, AdmissionBusy, AdmissionUnknown):
             if transaction_open:
                 try:
                     connection.execute("ROLLBACK")
@@ -610,16 +701,30 @@ class SQLiteTaskStore:
             rows = connection.execute(
                 "SELECT t.task_id,t.client_id,t.conversation_id,t.turn_id,t.call_id,"
                 "t.task_text,t.task_kind,t.backend,t.executor_kind,t.backend_run_id,"
-                "t.run_started_at,t.run_deadline_at,t.next_poll_at,t.poll_attempts,o.dispatch_started_at,o.attempts "
+                "t.run_started_at,t.run_deadline_at,t.next_poll_at,t.poll_attempts,o.dispatch_started_at,o.attempts,"
+                "t.stop_requested_at,t.stop_reason,t.stop_attempts,t.stop_accepted_at "
                 "FROM slow_tasks AS t JOIN dispatch_outbox AS o USING(task_id) "
                 "WHERE o.state='pending' AND ("
                 "(t.status='queued' AND t.expires_at>? "
-                "AND NOT (t.executor_kind='hermes_runs' AND t.backend_run_id IS NOT NULL)) "
+                "AND NOT (t.executor_kind='hermes_runs' AND t.backend_run_id IS NOT NULL) "
+                "AND NOT EXISTS (SELECT 1 FROM slow_tasks AS active "
+                "JOIN dispatch_outbox AS active_outbox USING(task_id) "
+                "WHERE active.client_id=t.client_id AND active.task_id<>t.task_id "
+                "AND (active.status IN ('running','uncertain') OR "
+                "(active.status='queued' AND (active.backend_run_id IS NOT NULL "
+                "OR active_outbox.dispatch_started_at IS NOT NULL)))) "
+                "AND NOT EXISTS (SELECT 1 FROM slow_tasks AS earlier "
+                "JOIN dispatch_outbox AS earlier_outbox USING(task_id) "
+                "WHERE earlier.client_id=t.client_id AND earlier.task_id<>t.task_id "
+                "AND earlier.status='queued' AND earlier.expires_at>? "
+                "AND earlier.backend_run_id IS NULL AND earlier_outbox.dispatch_started_at IS NULL "
+                "AND (earlier.created_at<t.created_at OR "
+                "(earlier.created_at=t.created_at AND earlier.task_id<t.task_id)))) "
                 "OR (t.executor_kind='hermes_runs' AND t.backend_run_id IS NOT NULL "
                 "AND t.status IN ('queued','running') AND (t.next_poll_at IS NULL OR t.next_poll_at<=? "
                 "OR (t.run_deadline_at IS NOT NULL AND t.run_deadline_at<=?)))) "
                 "ORDER BY o.created_at ASC LIMIT ?",
-                (_utc_iso(now), _utc_iso(now), _utc_iso(now), limit),
+                (_utc_iso(now), _utc_iso(now), _utc_iso(now), _utc_iso(now), limit),
             ).fetchall()
             for row in rows:
                 connection.execute(
@@ -649,6 +754,10 @@ class SQLiteTaskStore:
                         next_poll_at=row[12],
                         poll_attempts=int(row[13] or 0),
                         dispatch_started_at=row[14],
+                        stop_requested_at=row[16],
+                        stop_reason=row[17],
+                        stop_attempts=int(row[18] or 0),
+                        stop_accepted_at=row[19],
                     )
                 )
             connection.execute("COMMIT")
@@ -812,7 +921,8 @@ class SQLiteTaskStore:
         try:
             connection.execute("BEGIN IMMEDIATE")
             task = connection.execute(
-                "SELECT backend_run_id,run_started_at,run_deadline_at,status FROM slow_tasks "
+                "SELECT backend_run_id,run_started_at,run_deadline_at,status,stop_requested_at,"
+                "stop_attempts,stop_accepted_at FROM slow_tasks "
                 "WHERE task_id=? AND executor_kind='hermes_runs'",
                 (task_id,),
             ).fetchone()
@@ -825,11 +935,17 @@ class SQLiteTaskStore:
             ):
                 connection.execute("ROLLBACK")
                 raise AdmissionUnavailable("hermes_defer_state_unavailable")
+            # If cancellation arrived while the old executor invocation was
+            # already polling, wake once immediately to issue the first stop.
+            # Once a stop attempt exists, preserve its persisted backoff/GET interval.
+            effective_poll_iso = next_poll_iso
+            if task[4] and int(task[5] or 0) == 0 and task[6] is None:
+                effective_poll_iso = min(next_poll_iso, task[4])
             updated = connection.execute(
                 "UPDATE slow_tasks SET next_poll_at=?,poll_attempts=? "
                 "WHERE task_id=? AND executor_kind='hermes_runs' AND backend_run_id=? "
                 "AND run_started_at=? AND run_deadline_at=? AND status='running'",
-                (next_poll_iso, poll_attempts, task_id, backend_run_id, started_iso, deadline_iso),
+                (effective_poll_iso, poll_attempts, task_id, backend_run_id, started_iso, deadline_iso),
             ).rowcount
             released = connection.execute(
                 "UPDATE dispatch_outbox SET state='pending',claimed_until=NULL,last_error=NULL "
@@ -857,6 +973,264 @@ class SQLiteTaskStore:
 
     def mark_uncertain(self, task_id: str, *, code: str = "acp_result_unconfirmed") -> None:
         self._finish(task_id, task_status="uncertain", outbox_state="uncertain", error=_sanitize_error(code))
+
+    def request_cancel(self, *, client_id: str, task_id: str, now: datetime) -> CancelReceipt:
+        if not isinstance(client_id, str) or not _ID_RE.fullmatch(client_id):
+            raise AdmissionUnavailable("invalid_identity")
+        return self._request_stop(task_id, reason="owner_cancel", now=now, client_id=client_id)
+
+    def request_stop(self, task_id: str, *, reason: str, now: datetime) -> CancelReceipt:
+        if reason not in {"owner_cancel", "run_deadline"}:
+            raise AdmissionUnavailable("invalid_stop_reason")
+        return self._request_stop(task_id, reason=reason, now=now, client_id=None)
+
+    def _request_stop(
+        self, task_id: str, *, reason: str, now: datetime, client_id: str | None
+    ) -> CancelReceipt:
+        if not isinstance(task_id, str) or not task_id:
+            raise AdmissionUnavailable("invalid_task_id")
+        now_iso = _utc_iso(now)
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            sql = (
+                "SELECT t.client_id,t.status,t.executor_kind,t.backend_run_id,t.stop_requested_at,"
+                "t.stop_reason,t.stop_attempts,t.stop_accepted_at,o.state,o.dispatch_started_at,o.last_error "
+                "FROM slow_tasks AS t JOIN dispatch_outbox AS o USING(task_id) WHERE t.task_id=?"
+            )
+            params: tuple[object, ...] = (task_id,)
+            if client_id is not None:
+                sql += " AND t.client_id=?"
+                params += (client_id,)
+            row = connection.execute(sql, params).fetchone()
+            if row is None:
+                connection.execute("COMMIT")
+                return CancelReceipt(task_id, "not_found", "task_not_found")
+            _owner, status, executor_kind, run_id, stop_at, stop_reason, stop_attempts, stop_accepted, outbox_state, dispatch_started, last_error = row
+            if status == "completed":
+                connection.execute("COMMIT")
+                return CancelReceipt(task_id, "completed", "already_terminal")
+            if status == "failed":
+                code = str(last_error or "already_terminal")
+                visible = "cancelled" if code in {"slow_cancelled_before_dispatch", "hermes_cancelled"} else ("timed_out" if code == "hermes_run_timed_out" else "failed")
+                connection.execute("COMMIT")
+                return CancelReceipt(task_id, visible, code)
+            if stop_at is not None:
+                if status == "uncertain" and last_error == "hermes_stop_unconfirmed":
+                    connection.execute("COMMIT")
+                    return CancelReceipt(task_id, "uncertain", "hermes_stop_unconfirmed", duplicate=True)
+                waiting_for_id = executor_kind == "hermes_runs" and not run_id and dispatch_started is not None and outbox_state == "claimed"
+                connection.execute("COMMIT")
+                return CancelReceipt(
+                    task_id,
+                    "stopping" if run_id or waiting_for_id else "uncertain",
+                    "hermes_stop_pending" if run_id else ("hermes_stop_waiting_run_id" if waiting_for_id else str(last_error or "hermes_submission_unconfirmed")),
+                    duplicate=True,
+                )
+            if run_id and executor_kind == "hermes_runs":
+                connection.execute(
+                    "UPDATE slow_tasks SET status='running',stop_requested_at=?,stop_reason=?,"
+                    "stop_attempts=0,stop_accepted_at=NULL,next_poll_at=? "
+                    "WHERE task_id=? AND executor_kind='hermes_runs' AND backend_run_id=? "
+                    "AND status IN ('queued','running','uncertain')",
+                    (now_iso, reason, now_iso, task_id, run_id),
+                )
+                if outbox_state == "uncertain":
+                    connection.execute(
+                        "UPDATE dispatch_outbox SET state='pending',claimed_until=NULL,last_error=NULL "
+                        "WHERE task_id=? AND state='uncertain'",
+                        (task_id,),
+                    )
+                connection.execute("COMMIT")
+                return CancelReceipt(task_id, "stopping", "hermes_stop_requested")
+            if (
+                executor_kind == "hermes_runs"
+                and run_id is None
+                and dispatch_started is not None
+                and outbox_state == "claimed"
+                and status == "running"
+            ):
+                # POST is in flight. Record the cancel intent but keep the claim
+                # so a successful response can still persist the write-once Run ID.
+                connection.execute(
+                    "UPDATE slow_tasks SET stop_requested_at=?,stop_reason=?,stop_attempts=0,"
+                    "stop_accepted_at=NULL,next_poll_at=? WHERE task_id=? AND status='running'",
+                    (now_iso, reason, now_iso, task_id),
+                )
+                connection.execute("COMMIT")
+                return CancelReceipt(task_id, "stopping", "hermes_stop_waiting_run_id")
+            if dispatch_started is None and status in {"queued", "running"}:
+                code = "slow_cancelled_before_dispatch" if reason == "owner_cancel" else "hermes_deadline_without_run"
+                released = connection.execute(
+                    "UPDATE dispatch_outbox SET state='failed',claimed_until=NULL,last_error=? "
+                    "WHERE task_id=? AND state IN ('pending','claimed') AND dispatch_started_at IS NULL",
+                    (code, task_id),
+                ).rowcount
+                if not released:
+                    connection.execute("ROLLBACK")
+                    raise AdmissionUnavailable("cancel_state_unavailable")
+                connection.execute(
+                    "UPDATE slow_tasks SET status='failed',stop_requested_at=?,stop_reason=?,"
+                    "stop_accepted_at=NULL,next_poll_at=NULL WHERE task_id=?",
+                    (now_iso, reason, task_id),
+                )
+                connection.execute(
+                    "INSERT OR IGNORE INTO task_inbox(task_id,delivery_state,updated_at) VALUES(?,?,?)",
+                    (task_id, "pending", now_iso),
+                )
+                connection.execute("COMMIT")
+                return CancelReceipt(task_id, "cancelled", code)
+            # A prompt may have reached a legacy ACP or Hermes before the response
+            # was lost. Keep the owner slot occupied; never infer remote cancellation.
+            code = "hermes_submission_unconfirmed" if executor_kind == "hermes_runs" else "acp_cancel_unconfirmed"
+            connection.execute(
+                "UPDATE dispatch_outbox SET state='uncertain',last_error=? "
+                "WHERE task_id=? AND state IN ('pending','claimed','uncertain')",
+                (code, task_id),
+            )
+            connection.execute(
+                "UPDATE slow_tasks SET status='uncertain',stop_requested_at=?,stop_reason=?,next_poll_at=NULL "
+                "WHERE task_id=? AND status IN ('queued','running','uncertain')",
+                (now_iso, reason, task_id),
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO task_inbox(task_id,delivery_state,updated_at) VALUES(?,?,?)",
+                (task_id, "pending", now_iso),
+            )
+            connection.execute("COMMIT")
+            return CancelReceipt(task_id, "uncertain", code)
+        except AdmissionUnavailable:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
+        except sqlite3.Error:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise AdmissionUnavailable("task_store_unavailable") from None
+        finally:
+            connection.close()
+
+    def update_hermes_stop_state(
+        self,
+        task_id: str,
+        *,
+        stop_attempts: int,
+        stop_accepted_at: datetime | None,
+        next_poll_at: datetime,
+    ) -> None:
+        if type(stop_attempts) is not int or stop_attempts < 0:
+            raise AdmissionUnavailable("invalid_stop_attempts")
+        accepted_iso = _utc_iso(stop_accepted_at) if stop_accepted_at is not None else None
+        next_poll_iso = _utc_iso(next_poll_at)
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            updated = connection.execute(
+                "UPDATE slow_tasks SET stop_attempts=?,stop_accepted_at=COALESCE(?,stop_accepted_at),next_poll_at=? "
+                "WHERE task_id=? AND executor_kind='hermes_runs' AND backend_run_id IS NOT NULL "
+                "AND stop_requested_at IS NOT NULL AND status='running'",
+                (stop_attempts, accepted_iso, next_poll_iso, task_id),
+            ).rowcount
+            if not updated:
+                connection.execute("ROLLBACK")
+                raise AdmissionUnavailable("hermes_stop_state_unavailable")
+            connection.execute("COMMIT")
+        except AdmissionUnavailable:
+            raise
+        except sqlite3.Error:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise AdmissionUnavailable("task_store_unavailable") from None
+        finally:
+            connection.close()
+
+    def operator_reconcile_uncertain(
+        self,
+        *,
+        client_id: str,
+        task_id: str,
+        terminal_state: str,
+        verified_run_id: str | None,
+        operator_id: str,
+        evidence_ref: str,
+        now: datetime,
+    ) -> CancelReceipt:
+        if not isinstance(client_id, str) or not _ID_RE.fullmatch(client_id):
+            raise AdmissionUnavailable("invalid_identity")
+        if terminal_state not in {"completed", "failed", "cancelled", "interrupted", "no_remote_run"}:
+            raise AdmissionUnavailable("invalid_reconciliation_state")
+        if not isinstance(operator_id, str) or not _ID_RE.fullmatch(operator_id):
+            raise AdmissionUnavailable("invalid_operator_id")
+        if not isinstance(evidence_ref, str) or not evidence_ref.strip() or len(evidence_ref) > 512:
+            raise AdmissionUnavailable("reconciliation_evidence_required")
+        if verified_run_id is not None and (not isinstance(verified_run_id, str) or not _RUN_ID_RE.fullmatch(verified_run_id)):
+            raise AdmissionUnavailable("invalid_reconciled_run_id")
+        now_iso = _utc_iso(now)
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT t.status,t.backend_run_id,t.stop_reason,o.state FROM slow_tasks AS t "
+                "JOIN dispatch_outbox AS o USING(task_id) WHERE t.client_id=? AND t.task_id=?",
+                (client_id, task_id),
+            ).fetchone()
+            if row is None:
+                connection.execute("COMMIT")
+                return CancelReceipt(task_id, "not_found", "task_not_found")
+            status, saved_run_id, stop_reason, outbox_state = row
+            if status != "uncertain" or outbox_state != "uncertain":
+                connection.execute("ROLLBACK")
+                raise AdmissionUnavailable("task_not_in_manual_reconciliation")
+            if saved_run_id:
+                if verified_run_id != saved_run_id or terminal_state == "no_remote_run":
+                    connection.execute("ROLLBACK")
+                    raise AdmissionUnavailable("reconciliation_run_id_mismatch")
+            elif terminal_state == "no_remote_run":
+                if verified_run_id is not None:
+                    connection.execute("ROLLBACK")
+                    raise AdmissionUnavailable("reconciliation_run_id_mismatch")
+            elif verified_run_id is None:
+                connection.execute("ROLLBACK")
+                raise AdmissionUnavailable("reconciliation_run_id_required")
+            if terminal_state == "completed":
+                code = "hermes_operator_reconciled_completed_no_result"
+                visible = "failed"
+            elif terminal_state in {"cancelled", "interrupted"}:
+                code = "hermes_run_timed_out" if stop_reason == "run_deadline" else "hermes_cancelled"
+                visible = "timed_out" if stop_reason == "run_deadline" else "cancelled"
+            elif terminal_state == "no_remote_run":
+                code = "hermes_operator_confirmed_no_remote_run"
+                visible = "cancelled" if stop_reason == "owner_cancel" else "failed"
+            else:
+                code = "hermes_failed"
+                visible = "failed"
+            connection.execute(
+                "UPDATE dispatch_outbox SET state='failed',claimed_until=NULL,last_error=? "
+                "WHERE task_id=? AND state='uncertain'",
+                (code, task_id),
+            )
+            connection.execute(
+                "UPDATE slow_tasks SET status='failed',next_poll_at=NULL,manual_reconciled_at=?,"
+                "manual_reconciled_by=?,manual_reconciliation_ref=?,manual_reconciled_state=?,"
+                "manual_reconciled_run_id=? WHERE task_id=? AND client_id=? AND status='uncertain'",
+                (now_iso, operator_id, evidence_ref.strip(), terminal_state, verified_run_id, task_id, client_id),
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO task_inbox(task_id,delivery_state,updated_at) VALUES(?,?,?)",
+                (task_id, "pending", now_iso),
+            )
+            connection.execute("COMMIT")
+            return CancelReceipt(task_id, visible, code)
+        except AdmissionUnavailable:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
+        except sqlite3.Error:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise AdmissionUnavailable("task_store_unavailable") from None
+        finally:
+            connection.close()
 
     def _finish(
         self,
@@ -939,7 +1313,8 @@ class SQLiteTaskStore:
             row = connection.execute(
                 "SELECT t.task_id,t.status,o.state,o.attempts,o.dispatch_started_at,o.last_error, "
                 "t.executor_kind,t.backend_run_id,t.run_started_at,t.run_deadline_at,"
-                "t.next_poll_at,t.poll_attempts "
+                "t.next_poll_at,t.poll_attempts,t.stop_requested_at,t.stop_reason,"
+                "t.stop_attempts,t.stop_accepted_at "
                 "FROM slow_tasks AS t JOIN dispatch_outbox AS o USING(task_id) WHERE t.task_id=?",
                 (task_id,),
             ).fetchone()
@@ -959,6 +1334,10 @@ class SQLiteTaskStore:
                 "run_deadline_at": row[9],
                 "next_poll_at": row[10],
                 "poll_attempts": int(row[11] or 0),
+                "stop_requested_at": row[12],
+                "stop_reason": row[13],
+                "stop_attempts": int(row[14] or 0),
+                "stop_accepted_at": row[15],
             }
         except sqlite3.Error:
             raise AdmissionUnavailable("task_store_unavailable") from None
@@ -991,7 +1370,8 @@ class SQLiteTaskStore:
             if task_id is None:
                 row = connection.execute(
                     "SELECT t.task_id,t.status,t.task_kind,t.expires_at,i.delivery_state,"
-                    "r.speak,r.card_json,r.details_md,t.backend_run_id,t.executor_kind,o.last_error "
+                    "r.speak,r.card_json,r.details_md,t.backend_run_id,t.executor_kind,o.last_error,"
+                    "t.stop_requested_at,t.stop_reason,t.stop_attempts,t.stop_accepted_at "
                     "FROM slow_tasks AS t LEFT JOIN dispatch_outbox AS o USING(task_id) "
                     "LEFT JOIN task_inbox AS i USING(task_id) "
                     "LEFT JOIN task_results AS r USING(task_id) "
@@ -1001,7 +1381,8 @@ class SQLiteTaskStore:
             else:
                 row = connection.execute(
                     "SELECT t.task_id,t.status,t.task_kind,t.expires_at,i.delivery_state,"
-                    "r.speak,r.card_json,r.details_md,t.backend_run_id,t.executor_kind,o.last_error "
+                    "r.speak,r.card_json,r.details_md,t.backend_run_id,t.executor_kind,o.last_error,"
+                    "t.stop_requested_at,t.stop_reason,t.stop_attempts,t.stop_accepted_at "
                     "FROM slow_tasks AS t LEFT JOIN dispatch_outbox AS o USING(task_id) "
                     "LEFT JOIN task_inbox AS i USING(task_id) "
                     "LEFT JOIN task_results AS r USING(task_id) "
@@ -1012,15 +1393,23 @@ class SQLiteTaskStore:
                 connection.execute("COMMIT")
                 return None
             status = row[1]
-            if status == "uncertain" and row[10] == "hermes_run_deadline_exceeded":
-                # The Relay deadline is known, but the remote Run may still be active.
-                # Expose the policy timeout without claiming remote cancellation.
+            stop_requested_at = row[11]
+            stop_reason = row[12]
+            if status == "uncertain" and (
+                row[10] in {"hermes_run_deadline_exceeded", "hermes_run_timed_out"}
+                or (stop_reason == "run_deadline" and row[10] == "hermes_stop_unconfirmed")
+            ):
+                # The deadline is known but remote activity may continue.
                 status = "timed_out"
+            elif status == "failed" and row[10] in {"hermes_cancelled", "slow_cancelled_before_dispatch"}:
+                status = "cancelled"
             if status in {"queued", "running"} and row[3] <= now_iso:
                 # Preserve OpenAB's legacy expiry behavior. For Hermes, this is a queue
                 # deadline only; active work and known Runs use the executor/result state.
                 if row[9] != "hermes_runs" or (status == "queued" and row[8] is None):
                     status = "expired"
+            if status == "running" and stop_requested_at is not None:
+                status = "stopping"
             delivery = row[4]
             result = None
             if row[5] is not None:
@@ -1030,7 +1419,7 @@ class SQLiteTaskStore:
                     "details_md": row[7],
                 }
             next_delivery = delivery
-            if status in {"completed", "failed", "uncertain", "timed_out", "expired"}:
+            if status in {"completed", "failed", "uncertain", "timed_out", "cancelled", "expired"}:
                 # Retrieval is not proof that audio reached the device.
                 if delivery in {None, "pending", "notified"}:
                     next_delivery = "read"
@@ -1049,8 +1438,10 @@ class SQLiteTaskStore:
                 "task_kind": row[2],
                 "delivery_state": delivery,
             }
-            if status in {"failed", "uncertain", "timed_out"} and isinstance(row[10], str):
+            if status in {"failed", "uncertain", "timed_out", "cancelled"} and isinstance(row[10], str):
                 payload["code"] = row[10]
+            if status == "stopping":
+                payload["code"] = "hermes_stop_pending"
             if status == "completed" and result is not None:
                 payload.update(result)
             if speak and status == "completed" and result is not None:

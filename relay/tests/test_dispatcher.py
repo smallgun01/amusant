@@ -182,7 +182,20 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
     async def test_deferred_first_slow_task_releases_dispatcher_for_second_slow_task(self):
         store = self.store()
         store.admit(request_for(TASK_ID, turn_id=1, call_id="slow-first", executor_kind="hermes_runs"))
-        store.admit(request_for(TASK_ID_2, turn_id=2, call_id="slow-second", executor_kind="hermes_runs"))
+        other_owner = "authenticated-client-2"
+        store.admit(TaskAdmissionRequest(
+            task_id=TASK_ID_2,
+            client_id=other_owner,
+            conversation_id="conversation-2",
+            turn_id=2,
+            call_id="slow-second",
+            task="Compare second owner's options",
+            task_kind="compare",
+            backend="openab",
+            created_at=NOW,
+            expires_at=NOW + timedelta(seconds=600),
+            executor_kind="hermes_runs",
+        ))
 
         class TwoSlowTasks:
             def __init__(self):
@@ -673,7 +686,18 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
     async def test_background_loop_recovers_pending_work(self):
         store = self.store()
         store.admit(request_for(TASK_ID, turn_id=1, call_id="call-1"))
-        store.admit(request_for(TASK_ID_2, turn_id=2, call_id="call-2", task="Summarize sources"))
+        store.admit(TaskAdmissionRequest(
+            task_id=TASK_ID_2,
+            client_id="authenticated-client-2",
+            conversation_id="conversation-2",
+            turn_id=2,
+            call_id="call-2",
+            task="Summarize sources",
+            task_kind="compare",
+            backend="openab",
+            created_at=NOW,
+            expires_at=NOW + timedelta(seconds=600),
+        ))
         executor = FakeExecutor()
         dispatcher = AsyncDispatcher(
             store,

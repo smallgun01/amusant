@@ -14,17 +14,20 @@ from fast_voice.contracts import JSONValue, ToolCallEvent
 from .task_store import (
     MAX_TASK_CHARS,
     TASK_KINDS,
+    AdmissionBusy,
     AdmissionCapacity,
     AdmissionConflict,
     AdmissionReceipt,
     AdmissionUnknown,
     AdmissionUnavailable,
+    CancelReceipt,
     EXECUTOR_KINDS,
     TaskAdmissionRequest,
 )
 
 TOOL_NAME = "delegate_task"
 INBOX_TOOL_NAME = "check_task_status"
+CANCEL_TOOL_NAME = "cancel_task"
 LOG = logging.getLogger("amusant.relay.slow_path")
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
@@ -48,6 +51,8 @@ class TaskAdmissionStore(Protocol):
     def mark_inbox_spoken(
         self, *, client_id: str, task_id: str, now=None
     ) -> bool: ...
+
+    def request_cancel(self, *, client_id: str, task_id: str, now) -> CancelReceipt: ...
 
 
 class SlowPathToolRouter:
@@ -103,6 +108,8 @@ class SlowPathToolRouter:
     async def __call__(self, event: ToolCallEvent, turn_id: int) -> Mapping[str, JSONValue]:
         if event.name == INBOX_TOOL_NAME:
             return await self._lookup(event)
+        if event.name == CANCEL_TOOL_NAME:
+            return await self._cancel(event)
         if event.name != TOOL_NAME:
             return {"status": "rejected", "code": "unsupported_tool"}
         if type(turn_id) is not int or turn_id <= 0:
@@ -124,6 +131,15 @@ class SlowPathToolRouter:
             return {"status": "unknown", "task_id": request.task_id, "code": "acceptance_unconfirmed"}
         except AdmissionConflict:
             return {"status": "rejected", "code": "call_id_conflict"}
+        except AdmissionBusy as exc:
+            response: dict[str, JSONValue] = {
+                "status": "busy",
+                "code": "slow_busy",
+                "message": "Another slow task is still active. Check its status or cancel it before starting another.",
+            }
+            if isinstance(exc.active_task_id, str):
+                response["active_task_id"] = exc.active_task_id
+            return response
         except AdmissionCapacity:
             return {"status": "unavailable", "code": "task_capacity"}
         except AdmissionUnavailable:
@@ -146,6 +162,57 @@ class SlowPathToolRouter:
             "task_id": receipt.task_id,
             "duplicate": receipt.duplicate,
         }
+
+    async def _cancel(self, event: ToolCallEvent) -> Mapping[str, JSONValue]:
+        arguments = event.arguments
+        if not isinstance(arguments, Mapping) or set(arguments) != {"task_id"}:
+            return {"status": "rejected", "code": "invalid_arguments"}
+        task_id = arguments.get("task_id")
+        if not isinstance(task_id, str):
+            return {"status": "rejected", "code": "invalid_arguments"}
+        cancel = getattr(self._store, "request_cancel", None)
+        if not callable(cancel):
+            return {"status": "unavailable", "code": "cancel_unavailable"}
+        try:
+            receipt = await asyncio.wait_for(
+                asyncio.to_thread(
+                    cancel,
+                    client_id=self._client_id,
+                    task_id=task_id,
+                    now=self._now(),
+                ),
+                timeout=self._timeout,
+            )
+        except asyncio.TimeoutError:
+            return {"status": "unknown", "task_id": task_id, "code": "cancel_unconfirmed"}
+        except AdmissionUnavailable:
+            return {"status": "unavailable", "code": "task_store_unavailable"}
+        except Exception:
+            return {"status": "unknown", "task_id": task_id, "code": "cancel_unconfirmed"}
+        if not isinstance(receipt, CancelReceipt):
+            return {"status": "unknown", "task_id": task_id, "code": "invalid_cancel_result"}
+        result: dict[str, JSONValue] = {
+            "status": receipt.status,
+            "task_id": receipt.task_id,
+            "code": receipt.code,
+        }
+        if receipt.duplicate:
+            result["duplicate"] = True
+        if receipt.status == "stopping":
+            if receipt.code == "hermes_stop_waiting_run_id":
+                result["message"] = "Cancellation is recorded; Relay is waiting for the in-flight submission result before it can ask Hermes to stop. The task remains busy."
+            else:
+                result["message"] = "Cancellation requested. The task stays busy until Hermes confirms a terminal state."
+            if self._on_admitted is not None:
+                try:
+                    self._on_admitted()
+                except Exception as exc:
+                    LOG.warning("dispatcher cancel notification failed error_type=%s", type(exc).__name__)
+        elif receipt.status == "uncertain":
+            result["message"] = "The remote task may still be active; the owner slot remains held for reconciliation."
+        elif receipt.status == "cancelled":
+            result["message"] = "The task was cancelled before any remote Run was submitted."
+        return result
 
     async def mark_spoken(self, task_id: str) -> bool:
         """Persist spoken only after the bridge confirms its audio boundary."""
@@ -209,7 +276,13 @@ class SlowPathToolRouter:
         code = record.get("code")
         if isinstance(code, str):
             payload["code"] = code
-            if code == "hermes_run_deadline_exceeded":
+            if code == "hermes_stop_pending":
+                payload["message"] = "Cancellation was requested; the task remains busy until Hermes confirms a terminal state."
+            elif code == "hermes_stop_waiting_run_id":
+                payload["message"] = "Cancellation is recorded while submission is in flight; remote stop cannot be sent until its Run ID is confirmed. The task remains busy."
+            elif code == "hermes_stop_unconfirmed":
+                payload["message"] = "Hermes stop was not confirmed; the remote Run may still be active and the task remains busy for operator reconciliation."
+            elif code in {"hermes_run_deadline_exceeded", "hermes_run_timed_out"}:
                 payload["message"] = "Run deadline reached; the remote Run may still be active and cancellation was not confirmed."
             elif code in {"hermes_expired", "hermes_run_status_expired"}:
                 payload["message"] = "Hermes no longer confirms this Run's terminal result; completion is uncertain."
@@ -288,6 +361,27 @@ def build_check_task_status_tool(sdk_types):
     )
 
 
+def build_cancel_task_tool(sdk_types):
+    return sdk_types.FunctionDeclaration(
+        name=CANCEL_TOOL_NAME,
+        description=(
+            "Request owner-only cancellation of this task. This sends a remote stop request when a Hermes Run ID exists; "
+            "the task remains busy until the remote terminal state is confirmed. A stop request is not proof of cancellation."
+        ),
+        behavior=sdk_types.Behavior.BLOCKING,
+        parameters=sdk_types.Schema(
+            type="OBJECT",
+            properties={
+                "task_id": sdk_types.Schema(
+                    type="STRING",
+                    description="The task_id returned by delegate_task or check_task_status.",
+                ),
+            },
+            required=["task_id"],
+        ),
+    )
+
+
 def build_relay_tools(sdk_types):
     """FAST-session tools: admission plus authorized Inbox lookup."""
     delegate = build_delegate_task_tool(sdk_types)
@@ -295,6 +389,7 @@ def build_relay_tools(sdk_types):
         function_declarations=[
             *delegate.function_declarations,
             build_check_task_status_tool(sdk_types),
+            build_cancel_task_tool(sdk_types),
         ]
     )
 
@@ -307,7 +402,7 @@ def build_delegate_task_tool(sdk_types):
                 name=TOOL_NAME,
                 description=(
                     "Admit bounded background research, comparison, or summarization. "
-                    "Acceptance confirms durable admission only, not task completion."
+                    "Acceptance confirms durable admission only, not task completion. If another task is active, you receive slow_busy; do not claim acceptance, and offer status or cancellation."
                 ),
                 behavior=sdk_types.Behavior.BLOCKING,
                 parameters=sdk_types.Schema(
