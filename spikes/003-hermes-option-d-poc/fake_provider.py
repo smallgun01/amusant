@@ -161,23 +161,41 @@ def called_tools(messages):
 
 
 def called_tool_count(messages, wanted):
-    count = 0
+    pending = {}
+    completed = set()
+    completed_without_id = 0
     for message in messages if isinstance(messages, list) else []:
         if not isinstance(message, dict):
             continue
-        calls = message.get("tool_calls")
-        for call in calls if isinstance(calls, list) else []:
-            function = call.get("function") if isinstance(call, dict) else None
-            name = function.get("name") if isinstance(function, dict) else None
-            if name == wanted:
-                count += 1
-            elif name == "tool_call":
-                count += sum(
-                    1 for item in _function_arguments(call).get("calls", [])
-                    if isinstance(item, dict) and item.get("name") == wanted
-                )
-    return count
-
+        if message.get("role") == "assistant":
+            calls = message.get("tool_calls")
+            for call in calls if isinstance(calls, list) else []:
+                function = call.get("function") if isinstance(call, dict) else None
+                name = function.get("name") if isinstance(function, dict) else None
+                targets = [name] if name == wanted else []
+                if name == "tool_call":
+                    targets.extend(
+                        item.get("name") for item in _function_arguments(call).get("calls", [])
+                        if isinstance(item, dict) and isinstance(item.get("name"), str)
+                    )
+                if wanted in targets:
+                    pending[call.get("id")] = wanted
+            continue
+        if message.get("role") != "tool":
+            continue
+        tool_name = message.get("name")
+        tool_call_id = message.get("tool_call_id")
+        is_target_result = (
+            tool_name == wanted
+            or (tool_name == "tool_call" and pending.get(tool_call_id) == wanted)
+        )
+        if not is_target_result:
+            continue
+        if isinstance(tool_call_id, str) and tool_call_id:
+            completed.add(tool_call_id)
+        else:
+            completed_without_id += 1
+    return len(completed) + completed_without_id
 
 def report_tool_result_codes(messages):
     allowed = {

@@ -848,6 +848,17 @@ def main() -> int:
             "functions_field_types": provider.get("functions_field_types"),
             "functions_field_counts": provider.get("functions_field_counts"),
         }
+    if isinstance(provider_cases, dict) and "lost_envelope_10k" in provider_cases:
+        provider = provider_cases["lost_envelope_10k"]
+        diagnostic_summary["lost_envelope_10k_provider"] = {
+            "provider_turns": provider.get("provider_turns"),
+            "tool_calls_requested": provider.get("tool_calls_requested"),
+            "report_tool_call_count": provider.get("report_tool_call_count"),
+            "report_tool_result_codes": provider.get("report_tool_result_codes"),
+            "poc_tool_offered": provider.get("poc_tool_offered"),
+            "tool_search_bridge_offered": provider.get("tool_search_bridge_offered"),
+            "observed_tool_names": provider.get("observed_tool_names"),
+        }
     if isinstance(provider_cases, dict) and "success_10k" in provider_cases:
         provider = provider_cases["success_10k"]
         diagnostic_summary["success_10k_provider"] = {
@@ -945,7 +956,7 @@ def main() -> int:
         }
     facade_case_rows = evidence.get("artifact_database_and_files", {}).get("request_case_summaries", [])
     if isinstance(facade_case_rows, list):
-        for case_name in ("success_10k", "restart_10k"):
+        for case_name in ("success_10k", "restart_10k", "lost_envelope_10k"):
             rows = [row for row in facade_case_rows if isinstance(row, dict) and row.get("case") == case_name]
             if rows:
                 row = rows[0]
@@ -958,6 +969,8 @@ def main() -> int:
                     "writer_result_codes": row.get("writer_result_codes"),
                     "writer_report_byte_counts": row.get("writer_report_byte_counts"),
                     "artifact_statuses": row.get("artifact_statuses"),
+                    "presentation_errors": row.get("presentation_errors"),
+                    "raw_output_byte_counts": row.get("raw_output_byte_counts"),
                 }
     toolset_check = evidence.get("checks", {}).get("hermes_api_toolset")
     if isinstance(toolset_check, dict):
