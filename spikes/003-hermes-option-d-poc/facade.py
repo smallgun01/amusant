@@ -13,7 +13,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import quote
-from plugin.reprojection import reproject_missing_hook
+from plugin.reprojection import check_existing_reprojection, reproject_missing_hook
 
 STATE = Path(os.environ.get("POC_STATE_DIR", "/state"))
 DB_PATH = STATE / "option-d.sqlite3"
@@ -456,6 +456,22 @@ class Handler(BaseHTTPRequestHandler):
                 )
             self.send_json(200, bounded_failure(run_id, error_code, artifact_status))
             return
+        repair_state, repair_error = check_existing_reprojection(output, row["session_id"])
+        if repair_state in {"conflict", "unavailable"}:
+            reason = repair_error or "reprojection_conflict"
+            with connect() as conn:
+                conn.execute(
+                    "UPDATE requests SET presentation_error=? WHERE owner_scope=? AND task_id=?",
+                    (reason, owner_scope, row["task_id"]),
+                )
+            fallback = presentation_failure_envelope(artifact["artifact_ref"])
+            encoded = compact_json(fallback).decode("utf-8")
+            if len(encoded.encode("utf-8")) > MAX_ENVELOPE_BYTES:
+                self.send_json(502, bounded_failure(run_id, "safe_projection_invalid", "committed"))
+                return
+            self.send_json(200, {"run_id": run_id, "status": "completed", "output": encoded})
+            return
+
         good, reason = validate_envelope(output, artifact)
         if not good:
             # If the pinned output hook left no event, reproject only the bounded
