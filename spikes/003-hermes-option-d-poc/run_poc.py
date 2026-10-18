@@ -351,24 +351,29 @@ def inspect_fake_provider() -> dict:
         item["tool_search_bridge_offered"] = item["tool_search_bridge_offered"] or row.get("tool_search_bridge_offered") is True
         names = row.get("tool_names", [])
         if isinstance(names, list):
-            item["observed_tool_names"].extend(name for name in names if isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,96}", name))
+            for name in names:
+                if (isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,96}", name)
+                        and name not in item["observed_tool_names"] and len(item["observed_tool_names"]) < 32):
+                    item["observed_tool_names"].append(name)
             if {"tool_call", "tool_describe", "tool_search"} <= set(names):
                 item["tool_search_bridge_offered"] = True
         for field in ("tools", "functions"):
             field_type = row.get(field + "_field_type")
             field_count = row.get(field + "_field_count")
-            if field_type in {"missing", "null", "list", "dict", "string", "other"}:
+            if field_type in {"missing", "null", "list", "dict", "string", "other"} and len(item[field + "_field_types"]) < 32:
                 item[field + "_field_types"].append(field_type)
-            if type(field_count) is int and 0 <= field_count <= 1000:
+            if type(field_count) is int and 0 <= field_count <= 1000 and len(item[field + "_field_counts"]) < 32:
                 item[field + "_field_counts"].append(field_count)
         result_codes = row.get("report_tool_result_codes", [])
         allowed_codes = {"committed", "invalid_arguments", "report_invalid", "report_over_cap", "trusted_request_context_unavailable", "artifact_write_failed", "artifact_write_timeout", "artifact_conflict", "artifact_commit_failed", "invalid_tool_result", "other_tool_result"}
         if isinstance(result_codes, list):
-            item["report_tool_result_codes"].extend(code for code in result_codes if code in allowed_codes)
+            for code in result_codes:
+                if code in allowed_codes and code not in item["report_tool_result_codes"] and len(item["report_tool_result_codes"]) < 32:
+                    item["report_tool_result_codes"].append(code)
         item["spoofed_identity_fields_included"] = item["spoofed_identity_fields_included"] or row.get("spoofed_identity_fields_included") is True
         item["write_file_observed"] = item.get("write_file_observed", False) or "write_file" in row.get("called_tools", [])
         action = row.get("next_tool")
-        if isinstance(action, str):
+        if isinstance(action, str) and len(item["tool_calls_requested"]) < 32:
             item["tool_calls_requested"].append(action)
         if row.get("report_tool_requested") is True or action == "poc_save_report":
             item["report_tool_call_count"] += 1

@@ -160,42 +160,7 @@ def called_tools(messages):
     return result
 
 
-def called_tool_count(messages, wanted):
-    pending = {}
-    completed = set()
-    completed_without_id = 0
-    for message in messages if isinstance(messages, list) else []:
-        if not isinstance(message, dict):
-            continue
-        if message.get("role") == "assistant":
-            calls = message.get("tool_calls")
-            for call in calls if isinstance(calls, list) else []:
-                function = call.get("function") if isinstance(call, dict) else None
-                name = function.get("name") if isinstance(function, dict) else None
-                targets = [name] if name == wanted else []
-                if name == "tool_call":
-                    targets.extend(
-                        item.get("name") for item in _function_arguments(call).get("calls", [])
-                        if isinstance(item, dict) and isinstance(item.get("name"), str)
-                    )
-                if wanted in targets:
-                    pending[call.get("id")] = wanted
-            continue
-        if message.get("role") != "tool":
-            continue
-        tool_name = message.get("name")
-        tool_call_id = message.get("tool_call_id")
-        is_target_result = (
-            tool_name == wanted
-            or (tool_name == "tool_call" and pending.get(tool_call_id) == wanted)
-        )
-        if not is_target_result:
-            continue
-        if isinstance(tool_call_id, str) and tool_call_id:
-            completed.add(tool_call_id)
-        else:
-            completed_without_id += 1
-    return len(completed) + completed_without_id
+
 
 def report_tool_result_codes(messages):
     allowed = {
@@ -315,7 +280,15 @@ class Handler(BaseHTTPRequestHandler):
         next_tool = None
         arguments = None
 
-        writer_calls = called_tool_count(messages, "poc_save_report")
+        with self.server.state.lock:
+            writer_calls = sum(
+                1 for row in self.server.state.requests
+                if row.get("case") == case and row.get("report_tool_requested") is True
+            )
+            write_file_calls = sum(
+                1 for row in self.server.state.requests
+                if row.get("case") == case and row.get("write_file_requested") is True
+            )
         should_write = case != "no_writer" and (writer_calls == 0 or (case == "writer_redelivery" and writer_calls == 1))
         if should_write:
             report = report_body(case)
@@ -328,7 +301,7 @@ class Handler(BaseHTTPRequestHandler):
                     "artifact_ref": "model-spoofed-reference",
                 })
             next_tool, arguments = request_tool("poc_save_report", report_arguments, tools, messages)
-        elif is_late_case and "write_file" not in called:
+        elif is_late_case and write_file_calls == 0:
             write_arguments = {
                 "path": "/proc/amusant-option-d-poc-denied.txt",
                 "content": f"POC_TOOL_SECRET_{RUN_TAG}_{case}_This deterministic write must fail.",
