@@ -345,9 +345,16 @@ def inspect_fake_provider() -> dict:
         case = row.get("case")
         if not isinstance(case, str):
             continue
-        item = summary.setdefault(case, {"provider_turns": 0, "tool_calls_requested": [], "report_tool_call_count": 0, "report_tool_result_codes": [], "write_file_requested": False, "spoofed_identity_fields_included": False})
+        item = summary.setdefault(case, {"provider_turns": 0, "tool_calls_requested": [], "report_tool_call_count": 0, "report_tool_result_codes": [], "write_file_requested": False, "spoofed_identity_fields_included": False, "tools_field_types": [], "tools_field_counts": [], "functions_field_types": [], "functions_field_counts": []})
         item["provider_turns"] += 1
-        item["poc_tool_offered"] = item.get("poc_tool_offered", False) or "poc_save_report" in row.get("tool_names", [])
+        item["poc_tool_offered"] = item.get("poc_tool_offered", False) or row.get("poc_tool_offered") is True or "poc_save_report" in row.get("tool_names", [])
+        for field in ("tools", "functions"):
+            field_type = row.get(field + "_field_type")
+            field_count = row.get(field + "_field_count")
+            if field_type in {"missing", "null", "list", "dict", "string", "other"}:
+                item[field + "_field_types"].append(field_type)
+            if type(field_count) is int and 0 <= field_count <= 1000:
+                item[field + "_field_counts"].append(field_count)
         result_codes = row.get("report_tool_result_codes", [])
         allowed_codes = {"committed", "invalid_arguments", "report_invalid", "report_over_cap", "trusted_request_context_unavailable", "artifact_write_failed", "artifact_write_timeout", "artifact_conflict", "artifact_commit_failed", "invalid_tool_result", "other_tool_result"}
         if isinstance(result_codes, list):
@@ -818,6 +825,10 @@ def main() -> int:
             "report_tool_call_count": provider.get("report_tool_call_count"),
             "report_tool_result_codes": provider.get("report_tool_result_codes"),
             "poc_tool_offered": provider.get("poc_tool_offered"),
+            "tools_field_types": provider.get("tools_field_types"),
+            "tools_field_counts": provider.get("tools_field_counts"),
+            "functions_field_types": provider.get("functions_field_types"),
+            "functions_field_counts": provider.get("functions_field_counts"),
         }
     if isinstance(provider_cases, dict) and "success_10k" in provider_cases:
         provider = provider_cases["success_10k"]
@@ -827,6 +838,10 @@ def main() -> int:
             "report_tool_call_count": provider.get("report_tool_call_count"),
             "report_tool_result_codes": provider.get("report_tool_result_codes"),
             "poc_tool_offered": provider.get("poc_tool_offered"),
+            "tools_field_types": provider.get("tools_field_types"),
+            "tools_field_counts": provider.get("tools_field_counts"),
+            "functions_field_types": provider.get("functions_field_types"),
+            "functions_field_counts": provider.get("functions_field_counts"),
         }
     case_results = evidence.get("phases", {}).get("cases", {}).get("cases", [])
     if isinstance(case_results, list):

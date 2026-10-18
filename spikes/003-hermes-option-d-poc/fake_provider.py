@@ -41,19 +41,42 @@ def case_from_messages(messages):
     return match.group(1) if match else "unspecified"
 
 
+def _collect_tool_names(value, result, depth=0):
+    if depth > 8:
+        return
+    if isinstance(value, dict):
+        name = value.get("name")
+        if isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,96}", name):
+            result.add(name)
+        for key in ("function", "functions", "tool", "tools"):
+            if key in value:
+                _collect_tool_names(value[key], result, depth + 1)
+    elif isinstance(value, list):
+        for item in value:
+            _collect_tool_names(item, result, depth + 1)
+
+
 def tool_names(payload):
-    values = payload.get("tools")
-    if not isinstance(values, list):
-        values = payload.get("functions", [])
-    result = []
-    for item in values if isinstance(values, list) else []:
-        if not isinstance(item, dict):
-            continue
-        function = item.get("function") if isinstance(item.get("function"), dict) else item
-        name = function.get("name") if isinstance(function, dict) else None
-        if isinstance(name, str):
-            result.append(name)
-    return result
+    result = set()
+    for key in ("tools", "functions", "function"):
+        if key in payload:
+            _collect_tool_names(payload[key], result)
+    return sorted(result)
+
+
+def field_shape(payload, key):
+    if key not in payload:
+        return "missing", 0
+    value = payload[key]
+    if value is None:
+        return "null", 0
+    if isinstance(value, list):
+        return "list", min(len(value), 1000)
+    if isinstance(value, dict):
+        return "dict", min(len(value), 1000)
+    if isinstance(value, str):
+        return "string", 0
+    return "other", 0
 
 
 def called_tools(messages):
@@ -179,6 +202,8 @@ class Handler(BaseHTTPRequestHandler):
         messages = payload.get("messages", [])
         case = case_from_messages(messages)
         tools = tool_names(payload)
+        tools_field_type, tools_field_count = field_shape(payload, "tools")
+        functions_field_type, functions_field_count = field_shape(payload, "functions")
         called = called_tools(messages)
         is_late_case = case == "late_mutation"
         next_tool = None
@@ -213,6 +238,11 @@ class Handler(BaseHTTPRequestHandler):
                 "case": case,
                 "active": True,
                 "tool_names": tools,
+                "poc_tool_offered": "poc_save_report" in tools,
+                "tools_field_type": tools_field_type,
+                "tools_field_count": tools_field_count,
+                "functions_field_type": functions_field_type,
+                "functions_field_count": functions_field_count,
                 "called_tools": sorted(called),
                 "report_tool_result_codes": report_tool_result_codes(messages),
                 "next_tool": next_tool,
