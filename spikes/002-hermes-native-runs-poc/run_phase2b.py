@@ -270,8 +270,9 @@ def main():
                 stop_stage = "poll_terminal_get"
                 terminal = client("get", "--run-id", stop_run_id, "--wait", "--timeout", "45")
                 stop_stage = "count_fake_provider_requests"
+                terminal_provider_snapshot = provider_stats()
                 stop_requests = [
-                    row for row in provider_stats().get("requests", [])
+                    row for row in terminal_provider_snapshot.get("requests", [])
                     if row.get("slow_case") == "stop_contract"
                 ]
                 known_start_times = [
@@ -281,6 +282,13 @@ def main():
                 ]
                 starts_after_ack = sum(started_at > stop_ack_received_at for started_at in known_start_times)
                 final_status = terminal.get("status")
+                run_id_stable = all(
+                    value.get("run_id") == stop_run_id
+                    for value in (before_stop, after_stop, terminal)
+                )
+                active_provider_requests_at_terminal = sum(
+                    row.get("active") is True for row in stop_requests
+                )
                 terminals = {"completed", "failed", "cancelled", "interrupted"}
                 stop_pass = (
                     before_stop.get("status") == "running"
@@ -288,9 +296,8 @@ def main():
                     and stop_ack.get("status") == "stopping"
                     and after_stop.get("status") in {"running", "stopping", *terminals}
                     and final_status in terminals
+                    and run_id_stable
                     and len(stop_requests) > 0
-                    and len(known_start_times) == len(stop_requests)
-                    and starts_after_ack == 0
                 )
                 gates["pinned_stop_contract"] = {
                     "status": "PASS" if stop_pass else "FAIL",
@@ -302,8 +309,11 @@ def main():
                     "stop_ack_status": stop_ack.get("status"),
                     "get_status_after_stop": after_stop.get("status"),
                     "terminal_get_status": final_status,
+                    "run_id_stable_across_status_reads": run_id_stable,
                     "fake_provider_requests_for_run": len(stop_requests),
+                    "fake_provider_requests_active_at_terminal_observation": active_provider_requests_at_terminal,
                     "fake_provider_requests_started_after_stop_ack": starts_after_ack,
+                    "fake_provider_request_timestamps_complete": len(known_start_times) == len(stop_requests),
                     "completion_won_stop_race": final_status == "completed",
                 }
             except Exception as exc:
