@@ -39,3 +39,12 @@ Accepted previous W1 build: **1,616,983 / 3,342,336 bytes Flash** and **76,996 /
 2. PlatformIO `sticks3` build succeeds and resulting firmware fits the existing 3,342,336-byte app slot; measure before/after Flash and RAM (no partition change).
 3. **Owner-supervised physical test, not run by CI:** Chinese caption, Chinese card title, Chinese/English mixed text, punctuation/newlines, long caption wrap and scroll, Jellii six states, audio/PTT, Wi-Fi recovery, deep sleep/wake and free-heap after repeated responses.
 4. If font coverage is incomplete or performance unacceptable, retain the accepted previous firmware; do not upload partial patches to a real StickS3.
+
+
+### Issue #74: pinned glyph coverage and width regression
+
+The CI now reads the actual PlatformIO-resolved M5GFX 0.2.30 efontTW_14 array. Its host check follows the pinned U8g2font::getGlyph, updateFontMetric, and glyph bitmap run-decoder logic, then generates the real glyph advances used by the C++ test of the production jellii_text::wrap function.
+
+The current corpus covers common Traditional Chinese, including 會 U+6703, 您 U+60A8, 鬱 U+9B31, and Chinese punctuation. At the pinned baseline all corpus glyphs are present; 會 has a nonempty 13×14 bitmap and a 14-pixel advance. The fixture reports supplementary-plane emoji separately because M5GFX routes them through its emoji callback/fallback path, and reports controls separately from font coverage.
+
+This is a font-data and layout regression gate. It does not reproduce the owner’s photographed runtime square or claim physical acceptance; the two unconfirmed squares still need their original code points identified, and #67 remains open for owner-run LCD validation.
