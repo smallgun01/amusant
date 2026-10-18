@@ -22,6 +22,51 @@ CORPUS_LINES = (
 EMOJI = "🙂🧪"
 CONTROLS = "\t\r\n"
 
+# A diagnostic matrix for mixed-script captions and renderer edge cases.
+# The glyph labels are informational; lookup is always keyed by the numeric scalar.
+DIAGNOSTIC_MATRIX = (
+    (0x6703, "traditional-hui"),
+    (0x4F1A, "simplified-hui"),
+    (0x5F8C, "traditional-hou"),
+    (0x540E, "simplified-hou"),
+    (0x88E1, "traditional-li"),
+    (0x91CC, "simplified-li"),
+    (0x767C, "traditional-fa"),
+    (0x53D1, "simplified-fa"),
+    (0x60A8, "nin"),
+    (0x653E, "fang"),
+    (0x5FC3, "xin"),
+    (0xFF0C, "comma"),
+    (0x3002, "ideographic-full-stop"),
+    (0xFF1F, "question-mark"),
+    (0x3001, "enumeration-comma"),
+    (0xFF01, "exclamation-mark"),
+    (0xFFFD, "replacement"),
+    (0xFE0F, "variation selector"),
+    (0x200D, "zero-width joiner"),
+)
+EXPECTED_DIAGNOSTIC_COVERAGE = {
+    0x6703: True,
+    0x4F1A: False,
+    0x5F8C: True,
+    0x540E: True,
+    0x88E1: True,
+    0x91CC: True,
+    0x767C: True,
+    0x53D1: False,
+    0x60A8: True,
+    0x653E: True,
+    0x5FC3: True,
+    0xFF0C: True,
+    0x3002: True,
+    0xFF1F: True,
+    0x3001: True,
+    0xFF01: True,
+    0xFFFD: False,
+    0xFE0F: False,
+    0x200D: False,
+}
+
 
 def c_string_bytes(token):
     """Decode one C string literal to bytes (the font uses octal escapes)."""
@@ -258,6 +303,30 @@ def extract_font(root):
     payload.append(0)
     return payload
 
+def print_diagnostic_matrix(font):
+    print("Pinned M5GFX %s caption diagnostic matrix:" % VERSION)
+    for codepoint, label in DIAGNOSTIC_MATRIX:
+        offset = glyph_offset(font, codepoint)
+        present = offset is not None
+        expected = EXPECTED_DIAGNOSTIC_COVERAGE[codepoint]
+        if present != expected:
+            raise SystemExit(
+                "unexpected efontTW_14 matrix for U+%04X: expected %s, found %s" %
+                (codepoint, "PRESENT" if expected else "MISSING",
+                 "PRESENT" if present else "MISSING")
+            )
+        if not present:
+            print("U+%04X %s: MISSING" % (codepoint, label))
+            continue
+        metrics, _ = metrics_and_reader(font, offset)
+        print("U+%04X %s: PRESENT width=%d advance=%d" %
+              (codepoint, label, metrics["width"], metrics["x_advance"]))
+    for character in EMOJI:
+        codepoint = ord(character)
+        print("U+%06X emoji: supplementary scalar; outside U8g2 16-bit glyph lookup, "
+              "M5GFX emoji callback/fallback path" % codepoint)
+
+
 def write_metrics_header(path, metrics_by_cp):
     lines = [
         "#pragma once",
@@ -313,6 +382,8 @@ def main():
             "efontTW_14 is missing representative corpus glyphs: " +
             ", ".join("U+%04X" % cp for cp in missing)
         )
+
+    print_diagnostic_matrix(font)
 
     hui = metrics_by_cp[0x6703]
     hui_offset = glyph_offset(font, 0x6703)
