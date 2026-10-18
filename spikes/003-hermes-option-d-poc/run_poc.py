@@ -286,6 +286,21 @@ def hermes_readiness_probe() -> dict:
     return parse_json_stdout(result, "hermes_readiness")
 
 
+def hermes_plugin_registration_probe() -> dict:
+    result = compose("logs", "--no-color", "--no-log-prefix", "--tail", "3000", "hermes", timeout=30)
+    logs = result.stdout + result.stderr if result.returncode == 0 else ""
+    failure = re.search(r"Failed to load plugin 'amusant-option-d-poc': ([A-Za-z][A-Za-z0-9_.]{0,50})", logs)
+    return {
+        "log_read_succeeded": result.returncode == 0,
+        "manifest_seen": "Parsed manifest: key=amusant-option-d-poc" in logs,
+        "tool_registered": "Plugin amusant-option-d-poc registered tool: poc_save_report" in logs,
+        "hook_registered": "Plugin amusant-option-d-poc registered hook: transform_llm_output" in logs,
+        "plugin_load_failed": failure is not None,
+        "plugin_load_error_type": failure.group(1) if failure else None,
+        "plugin_not_enabled": "Skipping 'amusant-option-d-poc' (not in plugins.enabled)" in logs,
+    }
+
+
 def inspect_fake_provider() -> dict:
     script = "import json,urllib.request; r=urllib.request.urlopen('http://fake-provider:8000/_poc/stats',timeout=5); print(json.dumps(json.load(r),separators=(',',':')))"
     result = compose("exec", "-T", "hermes", "python3", "-c", script, timeout=20)
@@ -336,6 +351,14 @@ def scan_logs() -> dict:
             "tool_marker_present": ("POC_TOOL_SECRET_" + ENV["POC_RUN_TAG"] + "_") in logs,
             "captured_log_bytes": len(logs.encode("utf-8", errors="ignore")),
         }
+        if service == "hermes":
+            state = hermes_plugin_registration_probe()
+            found[service]["plugin_manifest_seen"] = state.get("manifest_seen") is True
+            found[service]["plugin_tool_registered"] = state.get("tool_registered") is True
+            found[service]["plugin_hook_registered"] = state.get("hook_registered") is True
+            found[service]["plugin_load_failed"] = state.get("plugin_load_failed") is True
+            found[service]["plugin_load_error_type"] = state.get("plugin_load_error_type")
+            found[service]["plugin_not_enabled"] = state.get("plugin_not_enabled") is True
     return found
 
 
@@ -574,6 +597,32 @@ def main() -> int:
         if not readiness:
             raise RunnerError("infrastructure", "hermes_readiness_timeout")
         evidence["checks"]["hermes_readiness"] = {"pass": True}
+
+        current_step = "hermes_plugin_registration"
+        plugin_state = None
+        for _ in range(90):
+            candidate = hermes_plugin_registration_probe()
+            if candidate.get("tool_registered") and candidate.get("hook_registered"):
+                plugin_state = candidate
+                break
+            if candidate.get("plugin_load_failed") or candidate.get("plugin_not_enabled"):
+                plugin_state = candidate
+                break
+            time.sleep(1)
+        if plugin_state is None:
+            plugin_state = {"log_read_succeeded": False}
+        plugin_pass = plugin_state.get("tool_registered") is True and plugin_state.get("hook_registered") is True
+        evidence["checks"]["hermes_plugin_registration"] = {
+            "pass": plugin_pass,
+            "manifest_seen": plugin_state.get("manifest_seen") is True,
+            "tool_registered": plugin_state.get("tool_registered") is True,
+            "hook_registered": plugin_state.get("hook_registered") is True,
+            "plugin_load_failed": plugin_state.get("plugin_load_failed") is True,
+            "plugin_load_error_type": plugin_state.get("plugin_load_error_type"),
+            "plugin_not_enabled": plugin_state.get("plugin_not_enabled") is True,
+        }
+        if not plugin_pass:
+            raise RunnerError("infrastructure", "plugin_registration_not_confirmed")
 
         current_step = "facade_health"
         health = None
@@ -816,6 +865,16 @@ def main() -> int:
                     "writer_report_byte_counts": row.get("writer_report_byte_counts"),
                     "artifact_statuses": row.get("artifact_statuses"),
                 }
+    plugin_check = evidence.get("checks", {}).get("hermes_plugin_registration")
+    if isinstance(plugin_check, dict):
+        diagnostic_summary["hermes_plugin_registration"] = {
+            "manifest_seen": plugin_check.get("manifest_seen") is True,
+            "tool_registered": plugin_check.get("tool_registered") is True,
+            "hook_registered": plugin_check.get("hook_registered") is True,
+            "plugin_load_failed": plugin_check.get("plugin_load_failed") is True,
+            "plugin_load_error_type": plugin_check.get("plugin_load_error_type"),
+            "plugin_not_enabled": plugin_check.get("plugin_not_enabled") is True,
+        }
     safe_output = {
         "phase": "option_d_poc",
         "verdict": evidence["verdict"],
