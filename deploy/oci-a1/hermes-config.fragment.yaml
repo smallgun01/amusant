@@ -1,0 +1,8 @@
+# Merge this fragment manually into the operator-owned Hermes config.
+# Do not replace or rewrite an existing config automatically.
+plugins:
+  enabled:
+    - amusant-option-d
+platform_toolsets:
+  api_server:
+    - amusant_option_d

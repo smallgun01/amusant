@@ -24,7 +24,7 @@ services:
       AMUSANT_TASK_STORE: sqlite
       AMUSANT_TASK_DB: /var/lib/amusant/task-ledger.sqlite3
       AMUSANT_SLOW_EXECUTOR: hermes_runs
-      AMUSANT_HERMES_RUNS_URL: http://${HERMES_API_BIND_IP:?set the static Hermes API IP}:8642
+      AMUSANT_HERMES_RUNS_URL: http://facade:8643
       AMUSANT_HERMES_ALLOW_PLAINTEXT: "1"
       AMUSANT_HERMES_RUN_DEADLINE_SECONDS: ${AMUSANT_HERMES_RUN_DEADLINE_SECONDS:?set an owner-approved Run deadline}
       AMUSANT_HERMES_POLL_CYCLE_SECONDS: ${AMUSANT_HERMES_POLL_CYCLE_SECONDS:?set a product poll-cycle value}
@@ -36,17 +36,17 @@ services:
       AMUSANT_HERMES_STOP_RETRY_MAX_SECONDS: ${AMUSANT_HERMES_STOP_RETRY_MAX_SECONDS:?set a stop-retry maximum}
       AMUSANT_RELAY_SHUTDOWN_GRACE_SECONDS: ${AMUSANT_RELAY_SHUTDOWN_GRACE_SECONDS:?set a bounded dispatcher drain grace}
       AMUSANT_TASK_DB_DIR: /var/lib/amusant
-      HTTPS_PROXY: http://${EGRESS_PROXY_BIND_IP:?set the proxy IP}:3128
-      HTTP_PROXY: http://${EGRESS_PROXY_BIND_IP:?set the proxy IP}:3128
-      NO_PROXY: ${HERMES_API_BIND_IP},localhost,127.0.0.1
-      https_proxy: http://${EGRESS_PROXY_BIND_IP:?set the proxy IP}:3128
-      http_proxy: http://${EGRESS_PROXY_BIND_IP:?set the proxy IP}:3128
-      wss_proxy: http://${EGRESS_PROXY_BIND_IP:?set the proxy IP}:3128
-      no_proxy: ${HERMES_API_BIND_IP},localhost,127.0.0.1
+      HTTPS_PROXY: http://${EGRESS_PROXY_RELAY_BIND_IP:?set the Relay-side proxy IP}:3128
+      HTTP_PROXY: http://${EGRESS_PROXY_RELAY_BIND_IP:?set the Relay-side proxy IP}:3128
+      NO_PROXY: ${FACADE_RELAY_BIND_IP:?set the facade Relay-side IP},facade,localhost,127.0.0.1
+      https_proxy: http://${EGRESS_PROXY_RELAY_BIND_IP:?}:3128
+      http_proxy: http://${EGRESS_PROXY_RELAY_BIND_IP:?}:3128
+      wss_proxy: http://${EGRESS_PROXY_RELAY_BIND_IP:?}:3128
+      no_proxy: ${FACADE_RELAY_BIND_IP:?},facade,localhost,127.0.0.1
       GEMINI_API_KEY_FILE: /run/secrets/gemini_api_key
       AMUSANT_DEVICE_TOKEN_FILE: /run/secrets/device_token
       AMUSANT_DEVICE_PSKS_FILE: /run/secrets/device_psks
-      AMUSANT_HERMES_API_KEY_FILE: /run/secrets/hermes_api_key
+      AMUSANT_FACADE_API_KEY_FILE: /run/secrets/facade_api_key
     secrets:
       - source: gemini_api_key
         target: gemini_api_key
@@ -54,8 +54,8 @@ services:
         target: device_token
       - source: device_psks
         target: device_psks
-      - source: hermes_api_key
-        target: hermes_api_key
+      - source: facade_api_key
+        target: facade_api_key
     volumes:
       - relay_state:/var/lib/amusant
     ports:
@@ -66,10 +66,10 @@ services:
     networks:
       relay_api:
         ipv4_address: ${RELAY_BIND_IP:?}
-      controlled_egress:
+      relay_egress:
         ipv4_address: ${RELAY_EGRESS_IP:?set the static Relay egress IP}
     depends_on:
-      hermes:
+      facade:
         condition: service_healthy
       egress_proxy:
         condition: service_healthy
@@ -84,6 +84,55 @@ services:
         limits:
           cpus: ${RELAY_CPU_LIMIT:?set a measured Relay CPU ceiling}
           memory: ${RELAY_MEMORY_LIMIT:?set a measured Relay memory ceiling}
+
+  facade:
+    image: ${FACADE_IMAGE:?set an immutable ARM64 facade image reference}
+    platform: linux/arm64
+    user: "10003:10003"
+    group_add: ["20000"]
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    stop_grace_period: ${FACADE_STOP_GRACE_PERIOD:?set a bounded facade shutdown grace}
+    environment:
+      AMUSANT_FACADE_BIND_IP: ${FACADE_RELAY_BIND_IP:?set the static facade IP on relay_api}
+      AMUSANT_RESULT_STATE_DIR: /var/lib/amusant-results
+      AMUSANT_FACADE_API_KEY_FILE: /run/secrets/facade_api_key
+      AMUSANT_HERMES_API_KEY_FILE: /run/secrets/hermes_api_key
+    secrets:
+      - source: facade_api_key
+        target: facade_api_key
+      - source: hermes_api_key
+        target: hermes_api_key
+    volumes:
+      - result_state:/var/lib/amusant-results
+    networks:
+      relay_api:
+        ipv4_address: ${FACADE_RELAY_BIND_IP:?}
+      hermes_api:
+        ipv4_address: ${FACADE_HERMES_BIND_IP:?set the static facade IP on hermes_api}
+    depends_on:
+      hermes:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - /usr/local/bin/python
+        - -c
+        - "import os,urllib.request; urllib.request.urlopen('http://' + os.environ['AMUSANT_FACADE_BIND_IP'] + ':8643/health', timeout=2).read(64)"
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: ${FACADE_CPU_LIMIT:?set a measured facade CPU ceiling}
+          memory: ${FACADE_MEMORY_LIMIT:?set a measured facade memory ceiling}
 
   hermes:
     image: ${HERMES_IMAGE:?set the tested immutable Hermes ARM64 image digest}
@@ -104,28 +153,31 @@ services:
       HERMES_HOME: /opt/data
       HERMES_UID: "10000"
       HERMES_GID: "10000"
+      AMUSANT_RESULT_STATE_DIR: /var/lib/amusant-results
       API_SERVER_ENABLED: "true"
       API_SERVER_HOST: ${HERMES_API_BIND_IP:?}
       API_SERVER_PORT: "8642"
       API_SERVER_KEY_FILE: /run/secrets/hermes_api_key
-      EGRESS_PROXY_BIND_IP: ${EGRESS_PROXY_BIND_IP:?}
-      HTTPS_PROXY: http://${EGRESS_PROXY_BIND_IP:?}:3128
-      HTTP_PROXY: http://${EGRESS_PROXY_BIND_IP:?}:3128
-      NO_PROXY: ${HERMES_API_BIND_IP},localhost,127.0.0.1
-      https_proxy: http://${EGRESS_PROXY_BIND_IP:?}:3128
-      http_proxy: http://${EGRESS_PROXY_BIND_IP:?}:3128
-      wss_proxy: http://${EGRESS_PROXY_BIND_IP:?}:3128
-      no_proxy: ${HERMES_API_BIND_IP},localhost,127.0.0.1
+      HTTPS_PROXY: http://${EGRESS_PROXY_HERMES_BIND_IP:?set the Hermes-side proxy IP}:3128
+      HTTP_PROXY: http://${EGRESS_PROXY_HERMES_BIND_IP:?}:3128
+      NO_PROXY: ${HERMES_API_BIND_IP},hermes,localhost,127.0.0.1
+      https_proxy: http://${EGRESS_PROXY_HERMES_BIND_IP:?}:3128
+      http_proxy: http://${EGRESS_PROXY_HERMES_BIND_IP:?}:3128
+      wss_proxy: http://${EGRESS_PROXY_HERMES_BIND_IP:?}:3128
+      no_proxy: ${HERMES_API_BIND_IP},hermes,localhost,127.0.0.1
     secrets:
       - source: hermes_api_key
         target: hermes_api_key
     volumes:
       - hermes_home:/opt/data
+      - result_state:/var/lib/amusant-results
+      - ${HERMES_CONFIG_FILE:?mount the manually reviewed Hermes config}:/opt/data/config.yaml:ro
+      - ./hermes_plugin:/opt/data/plugins/amusant-option-d:ro
       - ./hermes_entrypoint.py:/usr/local/bin/amusant-hermes-entrypoint.py:ro
     networks:
-      relay_api:
+      hermes_api:
         ipv4_address: ${HERMES_API_BIND_IP:?}
-      controlled_egress:
+      hermes_egress:
         ipv4_address: ${HERMES_EGRESS_IP:?set the static Hermes egress IP}
     depends_on:
       egress_proxy:
@@ -158,11 +210,13 @@ services:
     security_opt: [no-new-privileges:true]
     restart: unless-stopped
     environment:
-      EGRESS_PROXY_BIND_IP: ${EGRESS_PROXY_BIND_IP:?}
-      EGRESS_PROXY_ALLOWED_CLIENTS: ${HERMES_EGRESS_IP:?},${RELAY_EGRESS_IP:?}
+      EGRESS_PROXY_BIND_IPS: ${EGRESS_PROXY_RELAY_BIND_IP:?},${EGRESS_PROXY_HERMES_BIND_IP:?}
+      EGRESS_PROXY_ALLOWED_CLIENTS: ${RELAY_EGRESS_IP:?},${HERMES_EGRESS_IP:?}
     networks:
-      controlled_egress:
-        ipv4_address: ${EGRESS_PROXY_BIND_IP:?}
+      relay_egress:
+        ipv4_address: ${EGRESS_PROXY_RELAY_BIND_IP:?}
+      hermes_egress:
+        ipv4_address: ${EGRESS_PROXY_HERMES_BIND_IP:?}
       proxy_outbound: {}
     healthcheck:
       test:
@@ -185,12 +239,22 @@ networks:
     internal: true
     ipam:
       config:
-        - subnet: ${RELAY_API_CIDR:?set a non-overlapping private Docker subnet}
-  controlled_egress:
+        - subnet: ${RELAY_API_CIDR:?set an isolated private subnet}
+  hermes_api:
     internal: true
     ipam:
       config:
-        - subnet: ${CONTROLLED_EGRESS_CIDR:?set a non-overlapping private Docker subnet}
+        - subnet: ${HERMES_API_CIDR:?set an isolated private subnet}
+  relay_egress:
+    internal: true
+    ipam:
+      config:
+        - subnet: ${RELAY_EGRESS_CIDR:?set an isolated private subnet}
+  hermes_egress:
+    internal: true
+    ipam:
+      config:
+        - subnet: ${HERMES_EGRESS_CIDR:?set an isolated private subnet}
   proxy_outbound: {}
 
 volumes:
@@ -206,6 +270,12 @@ volumes:
       type: none
       o: bind
       device: ${OCI_DATA_DIR:?mount and prepare the OCI block volume first}/hermes
+  result_state:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${OCI_DATA_DIR:?mount and prepare the OCI block volume first}/results
 
 secrets:
   gemini_api_key:
@@ -214,5 +284,7 @@ secrets:
     file: ${DEVICE_TOKEN_FILE:?set an owner-only secret file path}
   device_psks:
     file: ${DEVICE_PSKS_FILE:?set an owner-only secret file path}
+  facade_api_key:
+    file: ${FACADE_API_KEY_FILE:?set a root group-readable facade-only key file path}
   hermes_api_key:
-    file: ${HERMES_API_KEY_FILE:?set a group-readable secret file path}
+    file: ${HERMES_API_KEY_FILE:?set a root group-readable Hermes API key file path}

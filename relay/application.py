@@ -290,7 +290,7 @@ def build_supported_relay_runtime(
     }
     selected_executor = configured_executors[config.slow_executor_kind]
     if config.slow_executor_kind == "hermes_runs" and selected_executor is None:
-        raise ValueError("Hermes selection requires AMUSANT_HERMES_RUNS_URL and AMUSANT_HERMES_API_KEY")
+        raise ValueError("Hermes selection requires AMUSANT_HERMES_RUNS_URL and AMUSANT_FACADE_API_KEY")
     if selected_executor is None and any(configured_executors.values()):
         raise ValueError(f"{SLOW_EXECUTOR_ENV} selects an executor without complete server configuration")
     active_executors = {kind: executor for kind, executor in configured_executors.items() if executor is not None}

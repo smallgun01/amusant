@@ -91,7 +91,7 @@ class HermesRunsExecutor:
     ) -> None:
         self._endpoint = self._parse_endpoint(url, allow_plaintext=allow_plaintext)
         if not isinstance(api_key, str) or len(api_key.strip()) < 12:
-            raise HermesConfigError("AMUSANT_HERMES_API_KEY must contain at least 12 characters")
+            raise HermesConfigError("AMUSANT_FACADE_API_KEY must contain at least 12 characters")
         if not all(callable(callback) for callback in (save_backend_run_id, update_poll_state, update_stop_state)):
             raise HermesConfigError("task store must support durable Run, poll-state, and stop-state mapping")
         if clock is not None and not callable(clock):
@@ -557,12 +557,12 @@ def load_hermes_runs_executor(
     update_stop_state,
 ) -> HermesRunsExecutor | None:
     url = environ.get("AMUSANT_HERMES_RUNS_URL")
-    key = environ.get("AMUSANT_HERMES_API_KEY")
+    key = environ.get("AMUSANT_FACADE_API_KEY")
     present = [value for value in (url, key) if isinstance(value, str) and value.strip()]
     if not present:
         return None
     if len(present) != 2:
-        raise HermesConfigError("Hermes executor requires AMUSANT_HERMES_RUNS_URL and AMUSANT_HERMES_API_KEY")
+        raise HermesConfigError("Hermes executor requires AMUSANT_HERMES_RUNS_URL and AMUSANT_FACADE_API_KEY")
     if "AMUSANT_HERMES_TIMEOUT_SECONDS" in environ:
         raise HermesConfigError(
             "AMUSANT_HERMES_TIMEOUT_SECONDS is ambiguous; use separate HTTP, poll-cycle, and Run-deadline settings"

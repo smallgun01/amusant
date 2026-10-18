@@ -43,13 +43,13 @@ class SecretLoaderTests(unittest.TestCase):
             "GEMINI_API_KEY_FILE": "gemini",
             "AMUSANT_DEVICE_TOKEN_FILE": "token",
             "AMUSANT_DEVICE_PSKS_FILE": "psks",
-            "AMUSANT_HERMES_API_KEY_FILE": "hermes",
+            "AMUSANT_FACADE_API_KEY_FILE": "facade",
         }
         expected = {
             "GEMINI_API_KEY": "offline-gemini-secret",
             "AMUSANT_DEVICE_TOKEN": "offline-device-secret",
             "AMUSANT_DEVICE_PSKS": "stick-a:" + "ab" * 32,
-            "AMUSANT_HERMES_API_KEY": "offline-hermes-secret",
+            "AMUSANT_FACADE_API_KEY": "offline-facade-secret",
         }
         for name in values:
             target = name.removesuffix("_FILE")
