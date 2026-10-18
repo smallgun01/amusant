@@ -1,6 +1,7 @@
 import asyncio
 import json
 import secrets
+import signal
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -19,15 +20,25 @@ from relay.application import (
     build_supported_relay_runtime,
     load_relay_process_config,
 )
-from relay.dispatcher import ExecutionOutcome
+from relay.dispatcher import AsyncDispatcher, ExecutionOutcome
 from relay.device_opus import DeviceProtocolError
 from relay.device_protocol import DeviceWebSocketAdapter, adapt_device_handler
-from relay.live_bridge import MIN_UTTERANCE_BYTES, make_handler, run as run_live_bridge
-from relay.dispatcher import AsyncDispatcher, ExecutionOutcome
+from relay.live_bridge import (
+    MIN_UTTERANCE_BYTES,
+    install_shutdown_handlers,
+    make_handler,
+    remove_shutdown_handlers,
+    run as run_live_bridge,
+)
 from relay.slow_path import CANCEL_TOOL_NAME, INBOX_TOOL_NAME, TOOL_NAME, SlowPathToolRouter
 from relay.task_store import BoundedTaskResult, SQLiteTaskStore, TaskAdmissionRequest
 
 TOKEN = secrets.token_urlsafe(24)
+
+
+def install_immediate_shutdown(stop_event, _loop):
+    stop_event.set()
+    return ()
 
 
 class FakeProvider:
@@ -142,6 +153,35 @@ class ImmediateFakeDeviceCodec(BufferingFakeDeviceCodec):
 
 
 class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
+    def test_shutdown_handlers_close_listener_and_are_removed(self):
+        class FakeEvent:
+            def __init__(self):
+                self.set_calls = 0
+
+            def set(self):
+                self.set_calls += 1
+
+        class FakeLoop:
+            def __init__(self):
+                self.handlers = {}
+                self.removed = []
+
+            def add_signal_handler(self, signum, callback):
+                self.handlers[signum] = callback
+
+            def remove_signal_handler(self, signum):
+                self.removed.append(signum)
+                return self.handlers.pop(signum, None) is not None
+
+        stop_event = FakeEvent()
+        loop = FakeLoop()
+        installed = install_shutdown_handlers(stop_event, loop)
+        self.assertEqual(set(installed), {signal.SIGINT, signal.SIGTERM})
+        loop.handlers[signal.SIGTERM]()
+        self.assertEqual(stop_event.set_calls, 1)
+        remove_shutdown_handlers(loop, installed)
+        self.assertEqual(set(loop.removed), {signal.SIGINT, signal.SIGTERM})
+
     async def _open(self, factory, max_size=64 * 1024, **handler_kwargs):
         server = await serve(make_handler(TOKEN, factory, **handler_kwargs), "127.0.0.1", 0, max_size=max_size)
         port = server.sockets[0].getsockname()[1]
@@ -1340,6 +1380,9 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
         sentinel = object()
 
         class FakeServer:
+            def close(self):
+                return None
+
             async def __aenter__(self):
                 return self
 
@@ -1357,6 +1400,7 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
 
         token = "device-token-12"
         with (
+            patch("relay.live_bridge.install_shutdown_handlers", side_effect=install_immediate_shutdown),
             patch("relay.live_bridge.build_process_runtime", return_value=(sentinel, None)) as builder,
             patch("relay.live_bridge.serve", side_effect=fake_serve),
             patch.dict(
@@ -1377,6 +1421,7 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
         tls_context = object()
 
         class FakeServer:
+            def close(self): return None
             async def __aenter__(self): return self
             async def __aexit__(self, exc_type, exc, tb): return False
             async def serve_forever(self): return None
@@ -1386,6 +1431,7 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
             return FakeServer()
 
         with (
+            patch("relay.live_bridge.install_shutdown_handlers", side_effect=install_immediate_shutdown),
             patch("relay.live_bridge.build_process_runtime", return_value=(sentinel, None)) as builder,
             patch("relay.live_bridge.server_context_from_environ", return_value=tls_context),
             patch("relay.live_bridge.DeviceOpusCodec", return_value=object()),

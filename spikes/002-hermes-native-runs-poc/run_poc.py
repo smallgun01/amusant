@@ -2,6 +2,7 @@
 """Run G1-G4 using disposable clients on the internal Compose network."""
 import json
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -13,12 +14,25 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 REPO_ROOT = ROOT.parents[1]
 COMPOSE = ROOT / "compose.yaml"
-PROJECT = "amusant-hermes-runs-h1-v1"
-IMAGE = "docker.io/nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7"
-HERMES_SOURCE_TAG = "v2026.9.24"
-HERMES_SOURCE_COMMIT = "f97608f178d1ffeca59860195ab7da295f7c8e5f"
+DEFAULT_IMAGE = "docker.io/nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7"
+IMAGE = os.environ.get("POC_HERMES_IMAGE", DEFAULT_IMAGE)
+PLATFORM = os.environ.get("POC_HERMES_PLATFORM", "linux/amd64")
+if PLATFORM not in {"linux/amd64", "linux/arm64"}:
+    raise ValueError("POC_HERMES_PLATFORM must be linux/amd64 or linux/arm64")
+PROJECT = (
+    "amusant-hermes-runs-h1-v1"
+    if IMAGE == DEFAULT_IMAGE and PLATFORM == "linux/amd64"
+    else f"amusant-hermes-{PLATFORM.rsplit('/', 1)[-1]}-{IMAGE.rsplit('sha256:', 1)[-1][:12]}"
+)
+VOLUME_PREFIX = PROJECT
+HERMES_VOLUME_NAME = VOLUME_PREFIX + "-home"
+HERMES_SOURCE_TAG = "v2026.9.24" if IMAGE == DEFAULT_IMAGE else "unverified-candidate"
+HERMES_SOURCE_COMMIT = "f97608f178d1ffeca59860195ab7da295f7c8e5f" if IMAGE == DEFAULT_IMAGE else "unverified-candidate"
 _DOCKER_ENV_KEYS = ("PATH", "HOME", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_CERT_PATH", "DOCKER_TLS_VERIFY", "XDG_RUNTIME_DIR")
 COMPOSE_ENV = {key: os.environ[key] for key in _DOCKER_ENV_KEYS if key in os.environ}
+COMPOSE_ENV["POC_HERMES_IMAGE"] = IMAGE
+COMPOSE_ENV["POC_HERMES_PLATFORM"] = PLATFORM
+COMPOSE_ENV["POC_VOLUME_PREFIX"] = VOLUME_PREFIX
 COMPOSE_ENV["POC_API_KEY"] = "poc-" + secrets.token_urlsafe(24)
 COMPOSE_ENV["POC_FAKE_MODEL_KEY"] = "fake-" + secrets.token_urlsafe(24)
 # Compose validates the shared Relay service interpolation even during Phase 2A.
@@ -78,6 +92,30 @@ def compose(*args, check=True):
     if check and result.returncode != 0:
         raise RuntimeError("docker compose failed: " + " ".join(args) + "; " + result.stderr[-1200:])
     return result
+
+
+def verify_hermes_image():
+    if not re.fullmatch(r"\S+@sha256:[0-9a-f]{64}", IMAGE):
+        raise RuntimeError("Hermes verification requires an immutable sha256 image reference")
+    if PLATFORM != "linux/arm64":
+        return
+    compose("pull", "hermes")
+    inspected = subprocess.run(
+        ["docker", "image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", IMAGE],
+        capture_output=True, text=True, timeout=30,
+    )
+    if inspected.returncode != 0 or inspected.stdout.strip() != "linux/arm64":
+        raise RuntimeError("the pinned Hermes image did not resolve to linux/arm64")
+    native_imports = compose(
+        "run", "--rm", "--no-deps", "--entrypoint", "python3", "hermes", "-c",
+        "import aiohttp, cryptography, nacl, pydantic_core, websockets, yaml",
+        check=False,
+    )
+    if native_imports.returncode != 0:
+        raise RuntimeError("native Hermes dependencies failed to import on linux/arm64")
+    version = compose("run", "--rm", "--no-deps", "--entrypoint", "hermes", "hermes", "--version", check=False)
+    if version.returncode != 0:
+        raise RuntimeError("hermes --version failed on linux/arm64")
 
 
 def client(*args):
@@ -171,11 +209,14 @@ def main():
     resources_before = resource_snapshot()
     docker_before = docker_resource_snapshot()
     try:
+        verify_hermes_image()
         compose("--profile", "bootstrap", "run", "--rm", "--no-deps", "seed")
         compose("up", "-d", "fake-provider")
         wait_fake(timeout=30)
         compose("up", "-d", "hermes")
         wait_health(timeout=120)
+        if PLATFORM == "linux/arm64":
+            compose("run", "--rm", "--no-deps", "--entrypoint", "hermes", "hermes", "doctor")
         started = True
     except Exception as exc:
         setup_error = type(exc).__name__ + ": " + str(exc)[:800]
@@ -243,7 +284,7 @@ def main():
             require(complete.get("status") == "completed" and complete.get("result_marker_seen") is True, "setup run for restart test did not complete")
             completed_run_id = complete.get("run_id")
             volume_before = hermes_volume_name()
-            require(volume_before == "amusant-hermes-runs-h1-v1-home", "expected named persistent Hermes volume not mounted")
+            require(volume_before == HERMES_VOLUME_NAME, "expected candidate-specific persistent Hermes volume not mounted")
             compose("restart", "--timeout", "3", "hermes")
             wait_health(timeout=60)
             recovered = client("get", "--run-id", completed_run_id, "--wait", "--timeout", "20")
@@ -284,6 +325,7 @@ def main():
         "repo_head": subprocess.run(["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip(),
         "branch": subprocess.run(["git", "-C", str(REPO_ROOT), "branch", "--show-current"], capture_output=True, text=True).stdout.strip(),
         "hermes_image": IMAGE,
+        "hermes_platform": PLATFORM,
         "hermes_source_tag": HERMES_SOURCE_TAG,
         "hermes_source_commit": HERMES_SOURCE_COMMIT,
         "host_resources_before": resources_before,
@@ -322,6 +364,7 @@ def main():
             "command": evidence["command"],
             "repo_head": evidence["repo_head"],
             "hermes_image": IMAGE,
+            "hermes_platform": PLATFORM,
             "hermes_source_tag": HERMES_SOURCE_TAG,
             "hermes_source_commit": HERMES_SOURCE_COMMIT,
             "mode": evidence["mode"],

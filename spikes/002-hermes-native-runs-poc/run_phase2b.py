@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -15,13 +16,25 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 REPO_ROOT = ROOT.parents[1]
 COMPOSE = ROOT / "compose.yaml"
-PROJECT = "amusant-hermes-runs-h1-v1"
-IMAGE = "docker.io/nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7"
-HERMES_SOURCE_TAG = "v2026.9.24"
-HERMES_SOURCE_COMMIT = "f97608f178d1ffeca59860195ab7da295f7c8e5f"
+DEFAULT_IMAGE = "docker.io/nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7"
+IMAGE = os.environ.get("POC_HERMES_IMAGE", DEFAULT_IMAGE)
+PLATFORM = os.environ.get("POC_HERMES_PLATFORM", "linux/amd64")
+if PLATFORM not in {"linux/amd64", "linux/arm64"}:
+    raise ValueError("POC_HERMES_PLATFORM must be linux/amd64 or linux/arm64")
+PROJECT = (
+    "amusant-hermes-runs-h1-v1"
+    if IMAGE == DEFAULT_IMAGE and PLATFORM == "linux/amd64"
+    else f"amusant-hermes-{PLATFORM.rsplit('/', 1)[-1]}-{IMAGE.rsplit('sha256:', 1)[-1][:12]}"
+)
+VOLUME_PREFIX = PROJECT
+HERMES_SOURCE_TAG = "v2026.9.24" if IMAGE == DEFAULT_IMAGE else "unverified-candidate"
+HERMES_SOURCE_COMMIT = "f97608f178d1ffeca59860195ab7da295f7c8e5f" if IMAGE == DEFAULT_IMAGE else "unverified-candidate"
 STOP_ROUTE_SOURCE = "gateway/platforms/api_server_runs.py"
 _DOCKER_ENV_KEYS = ("PATH", "HOME", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_CERT_PATH", "DOCKER_TLS_VERIFY", "XDG_RUNTIME_DIR")
 COMPOSE_ENV = {key: os.environ[key] for key in _DOCKER_ENV_KEYS if key in os.environ}
+COMPOSE_ENV["POC_HERMES_IMAGE"] = IMAGE
+COMPOSE_ENV["POC_HERMES_PLATFORM"] = PLATFORM
+COMPOSE_ENV["POC_VOLUME_PREFIX"] = VOLUME_PREFIX
 COMPOSE_ENV["POC_API_KEY"] = "poc-" + secrets.token_urlsafe(24)
 COMPOSE_ENV["POC_FAKE_MODEL_KEY"] = "fake-" + secrets.token_urlsafe(24)
 COMPOSE_ENV["POC_RUN_TAG"] = uuid.uuid4().hex[:12]
@@ -42,6 +55,30 @@ def compose(*args, check=True):
     if check and result.returncode != 0:
         raise RuntimeError("compose " + args[0] + " failed")
     return result
+
+
+def verify_hermes_image():
+    if not re.fullmatch(r"\S+@sha256:[0-9a-f]{64}", IMAGE):
+        raise RuntimeError("Hermes verification requires an immutable sha256 image reference")
+    if PLATFORM != "linux/arm64":
+        return
+    compose("pull", "hermes")
+    inspected = subprocess.run(
+        ["docker", "image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", IMAGE],
+        capture_output=True, text=True, timeout=30,
+    )
+    if inspected.returncode != 0 or inspected.stdout.strip() != "linux/arm64":
+        raise RuntimeError("the pinned Hermes image did not resolve to linux/arm64")
+    native_imports = compose(
+        "run", "--rm", "--no-deps", "--entrypoint", "python3", "hermes", "-c",
+        "import aiohttp, cryptography, nacl, pydantic_core, websockets, yaml",
+        check=False,
+    )
+    if native_imports.returncode != 0:
+        raise RuntimeError("native Hermes dependencies failed to import on linux/arm64")
+    version = compose("run", "--rm", "--no-deps", "--entrypoint", "hermes", "hermes", "--version", check=False)
+    if version.returncode != 0:
+        raise RuntimeError("hermes --version failed on linux/arm64")
 
 
 def run_client(*args):
@@ -154,11 +191,14 @@ def main():
     resources_before = resource_snapshot()
     docker_before = docker_resource_snapshot()
     try:
+        verify_hermes_image()
         compose("--profile", "bootstrap", "run", "--rm", "--no-deps", "seed")
         compose("run", "--rm", "--no-deps", "phase2b-state-init")
         compose("up", "-d", "fake-provider")
         compose("up", "-d", "hermes")
         wait_stack()
+        if PLATFORM == "linux/arm64":
+            compose("run", "--rm", "--no-deps", "--entrypoint", "hermes", "hermes", "doctor")
         started = True
     except Exception as exc:
         setup_error = type(exc).__name__
@@ -224,16 +264,31 @@ def main():
                 before_stop = client("get", "--run-id", stop_run_id)
                 stop_stage = "post_stop"
                 stop_ack = client("stop", "--run-id", stop_run_id)
+                stop_ack_received_at = time.time()
                 stop_stage = "get_after_stop"
                 after_stop = client("get", "--run-id", stop_run_id)
                 stop_stage = "poll_terminal_get"
                 terminal = client("get", "--run-id", stop_run_id, "--wait", "--timeout", "45")
                 stop_stage = "count_fake_provider_requests"
+                terminal_provider_snapshot = provider_stats()
                 stop_requests = [
-                    row for row in provider_stats().get("requests", [])
+                    row for row in terminal_provider_snapshot.get("requests", [])
                     if row.get("slow_case") == "stop_contract"
                 ]
+                known_start_times = [
+                    row["started_at"]
+                    for row in stop_requests
+                    if isinstance(row.get("started_at"), (int, float))
+                ]
+                starts_after_ack = sum(started_at > stop_ack_received_at for started_at in known_start_times)
                 final_status = terminal.get("status")
+                run_id_stable = all(
+                    value.get("run_id") == stop_run_id
+                    for value in (before_stop, after_stop, terminal)
+                )
+                active_provider_requests_at_terminal = sum(
+                    row.get("active") is True for row in stop_requests
+                )
                 terminals = {"completed", "failed", "cancelled", "interrupted"}
                 stop_pass = (
                     before_stop.get("status") == "running"
@@ -241,9 +296,10 @@ def main():
                     and stop_ack.get("status") == "stopping"
                     and after_stop.get("status") in {"running", "stopping", *terminals}
                     and final_status in terminals
-                    and len(stop_requests) == 1
+                    and run_id_stable
+                    and len(stop_requests) > 0
                 )
-                gates["pinned_stop_contract"] = {
+                gates["pinned_stop_run_state_machine"] = {
                     "status": "PASS" if stop_pass else "FAIL",
                     "source_tag": HERMES_SOURCE_TAG,
                     "source_commit": HERMES_SOURCE_COMMIT,
@@ -253,16 +309,44 @@ def main():
                     "stop_ack_status": stop_ack.get("status"),
                     "get_status_after_stop": after_stop.get("status"),
                     "terminal_get_status": final_status,
-                    "fake_provider_requests_for_run": len(stop_requests),
+                    "run_id_stable_across_status_reads": run_id_stable,
                     "completion_won_stop_race": final_status == "completed",
                 }
+                offline_provider_observation = (
+                    "FAIL"
+                    if starts_after_ack > 0 or active_provider_requests_at_terminal > 0
+                    else "PASS"
+                )
+                gates["provider_work_settle_cost"] = {
+                    "status": "NOT_PROVEN",
+                    "offline_observation": offline_provider_observation,
+                    "investigation_status": "PENDING",
+                    "provider_work_settlement_from_stop_ack": "NOT_PROVEN",
+                    "no_active_fake_provider_request_observed_at_terminal": (
+                        active_provider_requests_at_terminal == 0
+                    ),
+                    "fake_provider_requests_for_run": len(stop_requests),
+                    "fake_provider_requests_active_at_terminal_observation": active_provider_requests_at_terminal,
+                    "fake_provider_requests_started_after_stop_ack": starts_after_ack,
+                    "fake_provider_request_timestamps_complete": len(known_start_times) == len(stop_requests),
+                    "paid_provider_calls": 0,
+                    "provider_billing_or_cost_settlement": "NOT_PROVEN",
+                    "reason": "Local fake-provider request observations cannot establish remote provider cancellation or billing settlement.",
+                }
             except Exception as exc:
-                gates["pinned_stop_contract"] = {
+                gates["pinned_stop_run_state_machine"] = {
                     "status": "FAIL",
                     "source_tag": HERMES_SOURCE_TAG,
                     "source_commit": HERMES_SOURCE_COMMIT,
                     "stage": stop_stage,
                     "error_type": type(exc).__name__,
+                }
+                gates["provider_work_settle_cost"] = {
+                    "status": "NOT_PROVEN",
+                    "offline_observation": "NOT_OBSERVED",
+                    "investigation_status": "PENDING",
+                    "provider_billing_or_cost_settlement": "NOT_PROVEN",
+                    "reason": "The fake-provider stop observation did not complete.",
                 }
         except Exception as exc:
             gates.setdefault("adapter_and_recovery", {"status": "FAIL", "error_type": type(exc).__name__, "reason": str(exc)[:200]})
@@ -282,6 +366,7 @@ def main():
         "repo_head": subprocess.run(["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip(),
         "branch": subprocess.run(["git", "-C", str(REPO_ROOT), "branch", "--show-current"], capture_output=True, text=True).stdout.strip(),
         "hermes_image": IMAGE,
+        "hermes_platform": PLATFORM,
         "hermes_source_tag": HERMES_SOURCE_TAG,
         "hermes_source_commit": HERMES_SOURCE_COMMIT,
         "stop_route_source": STOP_ROUTE_SOURCE,
@@ -301,13 +386,31 @@ def main():
     evidence_dir.mkdir(parents=True, exist_ok=True)
     attempt = evidence_dir / ("phase2b-" + run_tag + ".json")
     attempt.write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
-    all_pass = started and bool(gates) and all(gate.get("status") == "PASS" for gate in gates.values())
+    provider_cost_evidence = gates.get("provider_work_settle_cost", {})
+    offline_gate_statuses = [
+        gate.get("status")
+        for name, gate in gates.items()
+        if name != "provider_work_settle_cost"
+    ]
+    all_pass = (
+        started
+        and bool(offline_gate_statuses)
+        and all(status == "PASS" for status in offline_gate_statuses)
+        and provider_cost_evidence.get("status") == "NOT_PROVEN"
+        and isinstance(provider_cost_evidence.get("fake_provider_requests_for_run"), int)
+    )
     if all_pass:
         sanitized = {key: value for key, value in evidence.items() if key not in {"repo_head", "branch"}}
         sanitized["repo_head"] = evidence["repo_head"]
         sanitized["gates"] = gates
         (evidence_dir / "phase2b-gates-sanitized.json").write_text(json.dumps(sanitized, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps({"evidence": str(attempt), "gates": {name: item.get("status") for name, item in gates.items()}, "setup_status": evidence["setup_status"], "external_model_calls": 0}, indent=2))
+    print(json.dumps({
+        "evidence": str(attempt),
+        "gates": {name: item.get("status") for name, item in gates.items()},
+        "gate_evidence": gates,
+        "setup_status": evidence["setup_status"],
+        "external_model_calls": 0,
+    }, indent=2))
     return 0 if all_pass else 1
 
 

@@ -1,0 +1,36 @@
+# OCI A1 Relay runtime. Build from the repository root.
+# The multi-platform index is pinned; BuildKit selects linux/arm64 for A1.
+FROM --platform=$TARGETPLATFORM python:3.13.15-slim-bookworm@sha256:2325bb286ec344af3e5898cc224b5844e2707ac6e26b1632516fd3edc84a5e26
+
+WORKDIR /app
+ENV PYTHONPATH=/app \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy
+
+RUN pip install --no-cache-dir uv==0.11.25
+COPY pyproject.toml uv.lock ./
+COPY fast_voice ./fast_voice
+COPY relay ./relay
+ARG TARGETARCH
+RUN case "$TARGETARCH" in \
+      arm64) uv_platform=aarch64-unknown-linux-gnu ;; \
+      amd64) uv_platform=x86_64-unknown-linux-gnu ;; \
+      *) echo "unsupported target architecture: $TARGETARCH" >&2; exit 1 ;; \
+    esac \
+    && UV_CACHE_DIR="/tmp/uv-cache-$TARGETARCH" uv sync --locked --python /usr/local/bin/python \
+      --python-platform "$uv_platform" --no-dev --extra hardware-opus \
+    && /app/.venv/bin/python -c "import av, numpy, ssl; assert callable(getattr(ssl.SSLContext, 'set_psk_server_callback', None)); from relay.device_opus import DeviceOpusCodec; DeviceOpusCodec()"
+
+RUN groupadd --gid 10001 amusant \
+    && groupadd --gid 20000 amusant-secret-share \
+    && useradd --uid 10001 --gid 10001 --home-dir /var/lib/amusant --no-create-home --shell /usr/sbin/nologin amusant \
+    && install -d -o 10001 -g 10001 -m 0700 /var/lib/amusant
+
+COPY --chown=root:root deploy/oci-a1/relay_entrypoint.py /opt/amusant/relay_entrypoint.py
+COPY --chown=root:root deploy/oci-a1/healthcheck.py /opt/amusant/healthcheck.py
+RUN chmod 0555 /opt/amusant/relay_entrypoint.py /opt/amusant/healthcheck.py
+
+USER 10001:10001
+ENTRYPOINT ["/usr/local/bin/python", "/opt/amusant/relay_entrypoint.py"]
