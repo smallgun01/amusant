@@ -5,6 +5,7 @@ requires-python = ">=3.11"
 dependencies = [
     "boto3>=1.43.111",
     "google-genai>=2.0",
+    "opencc==1.4.2",
     "websockets>=14,<17",
 ]
 
