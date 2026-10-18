@@ -124,8 +124,17 @@ def compose_run_client(action: str, *, timeout: int = 120) -> dict:
         raise RunnerError("infrastructure", "relay_" + action.replace("-", "_") + "_invalid_output") from None
     if not isinstance(value, dict):
         raise RunnerError("infrastructure", "relay_" + action.replace("-", "_") + "_invalid_shape")
+    if value.get("failed_case"):
+        case = str(value.get("failed_case"))
+        error_type = str(value.get("error_type", "Unknown"))
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,40}", error_type):
+            error_type = "Unknown"
+        raise RunnerError("infrastructure", "relay_case_exception_" + case + "_" + error_type)
     if value.get("error_type"):
-        raise RunnerError("infrastructure", "relay_client_exception_" + action.replace("-", "_"))
+        error_type = str(value.get("error_type"))
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,40}", error_type):
+            error_type = "Unknown"
+        raise RunnerError("infrastructure", "relay_client_exception_" + action.replace("-", "_") + "_" + error_type)
     value["_process_exit_code"] = result.returncode
     return value
 
@@ -552,6 +561,16 @@ def main() -> int:
         evidence["verdict"] = "INCONCLUSIVE"
     finally:
         evidence["logs"].setdefault("relay_client_output", CLIENT_OUTPUT_SCANS)
+        if project_created and not any(name in evidence["resources"] for name in ("container_states",)):
+            try:
+                evidence["resources"]["container_states"] = inspect_container_states()
+            except RunnerError as exc:
+                evidence["resources"]["container_inspection_error"] = exc.step
+        if project_created and not any(name in evidence["logs"] for name in ("facade", "fake-provider", "hermes")):
+            try:
+                evidence["logs"].update(scan_logs())
+            except RunnerError as exc:
+                evidence["logs"]["log_scan_error"] = exc.step
         if monitor is not None:
             evidence["resources"].update(monitor.finish())
         if project_created:

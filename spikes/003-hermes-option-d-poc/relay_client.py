@@ -272,7 +272,11 @@ async def run_all_cases():
     ]
     results = []
     for case in cases:
-        result = await run_case(case, lose_terminal_once=(case == "lost_envelope_10k"))
+        try:
+            result = await run_case(case, lose_terminal_once=(case == "lost_envelope_10k"))
+        except Exception as exc:
+            print(json.dumps({"phase": "run_cases", "failed_case": case, "error_type": type(exc).__name__}, separators=(",", ":")))
+            return 2
         results.append(result)
     print(json.dumps({"phase": "run_cases", "cases": results}, separators=(",", ":")))
     return 0
