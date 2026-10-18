@@ -582,7 +582,7 @@ def main() -> int:
         evidence["phases"]["ambiguous"] = compose_run_client("ambiguous", timeout=60)
 
         evidence["checks"]["provider_tool_trace"] = {"pass": True}
-        evidence["provider_tool_trace"]["cases"] = inspect_fake_provider()
+        evidence["provider_tool_trace"] = {"cases": inspect_fake_provider()}
         evidence["checks"]["artifact_database_and_files"] = {"pass": True}
         evidence["checks"]["artifact_database_and_files"].update(inspect_facade_state())
         evidence["logs"] = scan_logs()
@@ -675,6 +675,24 @@ def main() -> int:
             "provider_turns": provider.get("provider_turns"),
             "tool_calls_requested": provider.get("tool_calls_requested"),
             "report_tool_call_count": provider.get("report_tool_call_count"),
+        }
+    start_phase = evidence.get("phases", {}).get("restart_start")
+    if isinstance(start_phase, dict):
+        diagnostic_summary["restart_start"] = {
+            "task_status": start_phase.get("task_status"),
+            "run_id_persisted": start_phase.get("run_id_persisted"),
+            "relay_methods_before_restart": start_phase.get("relay_methods_before_restart"),
+        }
+    resume_phase = evidence.get("phases", {}).get("restart_resume")
+    if isinstance(resume_phase, dict):
+        diagnostic_summary["restart_resume"] = {
+            "task_status": resume_phase.get("task_status"),
+            "same_run_id": resume_phase.get("same_run_id"),
+            "get_only_after_restart": resume_phase.get("get_only_after_restart"),
+            "presentation_status": resume_phase.get("presentation_status"),
+            "report_marker_in_relay_response": resume_phase.get("report_marker_in_relay_response"),
+            "final_marker_in_relay_response": resume_phase.get("final_marker_in_relay_response"),
+            "tool_marker_in_relay_response": resume_phase.get("tool_marker_in_relay_response"),
         }
     db_summaries = evidence.get("artifact_database_and_files", {}).get("request_case_summaries", [])
     restart_rows = [row for row in db_summaries if isinstance(row, dict) and row.get("case") == "restart_10k"]
