@@ -1,8 +1,11 @@
 # OCI A1 offline deployment package
 
-This is an **offline-only Phase 1 candidate** for review. It is not a deploy instruction or evidence that OCI, Hermes ARM64, device ingress, or 1 OCPU capacity works. The Compose file refuses missing image digests, network addresses, secret-file paths, timing choices, and resource ceilings. Do not run `docker compose up` without a separately approved canary envelope.
+This is an **offline-only Phase 1A build/readiness candidate** for review, not a deploy instruction. It does not prove OCI, Hermes ARM64 runtime, device ingress, or 1 OCPU capacity. The current Compose sketch predates the accepted Option D boundary and still gives Relay a direct Hermes Runs route; treat that as a Phase 1B packaging blocker and do not promote this Compose file to a canary. It refuses missing image digests, network addresses, secret-file paths, timing choices, and resource ceilings. No cloud host or infrastructure was accessed or changed for this gate.
 
-## Topology
+## Existing Compose candidate topology (pre-Option D)
+
+This diagram shows the current pre-Option-D Compose sketch, not the accepted production boundary. Phase 1B must insert the private facade between Relay and Hermes and remove the raw Hermes route from Relay.
+
 
 ```text
 StickS3 --TLS-PSK--> OCI private address:8443 --> Relay (172.30.62.2)
@@ -46,6 +49,14 @@ On SIGTERM or SIGINT, Relay stops waiting for new WebSocket work, closes active 
 The CONNECT proxy allows at most 32 tunnels, split into 16 slots per configured client address, so Hermes cannot consume Relay's reserved capacity. DNS uses at most four outstanding lookups per client and eight overall; each request returns within two seconds, while a timed-out resolver continues to hold its slot until the OS lookup actually finishes. DNS answers are still rejected if any result is private, loopback, link-local, or otherwise not globally routable. The existing destination allowlist remains public TCP/443 only.
 
 The Compose resource values are ceilings, not reservations. The sample 0.35/0.55/0.05 OCPU split and 1536m/3584m/128m memory limits leave little headroom on a 1 OCPU / 6 GB host and are only test inputs. Do not call them sufficient until one representative Hermes tool task runs while FAST audio is measured. Record FAST p50/p95, RSS/OOM, CPU throttling, and restart/recovery. Keep health checks scoped: Relay's TCP probe and Hermes `/health` check prove listeners only, not provider, admission, or persisted Run health.
+
+## Phase 1A native ARM64 gate (#82)
+
+Run `python3 deploy/oci-a1/arm64_gate.py` on a native Linux ARM64 host with Docker and Buildx. CI uses GitHub-hosted `ubuntu-24.04-arm` and verifies both the runner and Docker daemon architecture; this job does not install QEMU. It inspects and pulls the exact pinned Hermes digest with `--platform linux/arm64`, checks Python/native extension ELF architecture and CLI startup, builds the locked Python 3.13 Relay image, and starts the real StickS3 entrypoint with synthetic secret files on an internal Docker network. No provider request is made.
+
+The gate then runs the merged Option D proof on the same exact Hermes digest. `spikes/003-hermes-option-d-poc/compose.yaml` defaults to `linux/amd64`; CI sets `POC_HERMES_PLATFORM=linux/arm64` for every proof service, and the runner verifies the resolved image platform. Run the proof directly with `POC_HERMES_PLATFORM=linux/arm64 python3 spikes/003-hermes-option-d-poc/run_poc.py` on a native ARM64 host.
+
+Each claim is PASS, FAIL, or UNKNOWN. A registry manifest without runtime and fake-provider checks cannot produce GO. CI uploads sanitized `arm64-gate.json` and Option D `phase2.json` evidence. OCI A1 resource performance, ingress, persistence restore, and deployment remain later gates.
 
 ## Required offline and live gates
 

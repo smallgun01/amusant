@@ -708,7 +708,12 @@ def main() -> int:
     evidence = {
         "schema_version": 1,
         "verdict": "INCONCLUSIVE",
-        "server": {"version": "v2026.9.24", "source_commit": SOURCE_COMMIT, "image": IMAGE},
+        "server": {
+            "version": "v2026.9.24",
+            "source_commit": SOURCE_COMMIT,
+            "image": IMAGE,
+            "platform": os.environ.get("POC_HERMES_PLATFORM", "linux/amd64"),
+        },
         "host": {"runner_os": os.environ.get("RUNNER_OS", "local"), "github_actions": os.environ.get("GITHUB_ACTIONS") == "true"},
         "checks": {}, "phases": {}, "logs": {}, "resources": {},
         "limitations": [
@@ -739,9 +744,12 @@ def main() -> int:
         networks = config.get("networks", {})
         if not isinstance(services, dict) or not isinstance(networks, dict):
             raise RunnerError("failure", "compose_config_shape")
+        expected_platform = os.environ.get("POC_HERMES_PLATFORM", "linux/amd64")
         for service_name, service in services.items():
             if service.get("image") != IMAGE:
                 raise RunnerError("failure", "image_not_exactly_pinned")
+            if service.get("platform") != expected_platform:
+                raise RunnerError("failure", "image_platform_not_exactly_configured")
             if service.get("ports"):
                 raise RunnerError("failure", "host_port_published")
             if service.get("network_mode") not in {None, "none"}:
