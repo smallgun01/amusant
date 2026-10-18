@@ -105,7 +105,7 @@ def _load_committed_artifact(row):
 
         root = ARTIFACT_DIR.resolve(strict=True)
         expected = ARTIFACT_DIR / (reference + ".report")
-        if artifact.get("path") != str(expected):
+        if artifact.get("path") != str(expected) or expected.is_symlink():
             return None, "artifact_binding_invalid"
         resolved = expected.resolve(strict=True)
         if resolved.parent != root:
