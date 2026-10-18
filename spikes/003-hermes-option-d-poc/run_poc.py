@@ -292,6 +292,10 @@ if repair_table:
             "single_mapping": len(matches) == 1,
             "mapping_completed": bool(matches and matches[0]["submit_state"] == "accepted" and matches[0]["hermes_run_status"] == "completed" and matches[0]["artifact_status"] == "committed"),
             "artifact_ref_hash_matches": reference_hash_matches,
+            "binding_digest_matches": (
+                len(matches) == 1
+                and hashlib.sha256(chr(0).join((matches[0]["owner_scope"], matches[0]["task_id"], matches[0]["session_id"], matches[0]["run_id"])).encode("utf-8")).hexdigest() == repair["binding_sha256"]
+            ),
             "source_digest_valid": bool(__import__("re").fullmatch(r"[0-9a-f]{64}", repair["source_sha256"])),
             "output_digest_valid": bool(__import__("re").fullmatch(r"[0-9a-f]{64}", repair["output_sha256"])),
             "replay_count": int(repair["replay_count"]),
@@ -582,6 +586,7 @@ def validate_run_outputs(results: dict, db: dict, provider: dict, evidence: dict
         or not repairs[0].get("single_mapping")
         or not repairs[0].get("mapping_completed")
         or not repairs[0].get("artifact_ref_hash_matches")
+        or not repairs[0].get("binding_digest_matches")
         or not repairs[0].get("source_digest_valid")
         or not repairs[0].get("output_digest_valid")
         or repairs[0].get("replay_count", 0) < 1
