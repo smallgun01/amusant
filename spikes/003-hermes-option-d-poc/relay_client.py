@@ -7,6 +7,7 @@ from dataclasses import replace
 import hashlib
 import json
 import os
+import re
 import secrets
 import socket
 import sqlite3
