@@ -36,6 +36,11 @@ from relay.task_store import BoundedTaskResult, SQLiteTaskStore, TaskAdmissionRe
 TOKEN = secrets.token_urlsafe(24)
 
 
+def install_immediate_shutdown(stop_event, _loop):
+    stop_event.set()
+    return ()
+
+
 class FakeProvider:
     provider_id = "gemini"
     capabilities = ProviderCapabilities(True, True, True, True, False, True)
@@ -1395,6 +1400,7 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
 
         token = "device-token-12"
         with (
+            patch("relay.live_bridge.install_shutdown_handlers", side_effect=install_immediate_shutdown),
             patch("relay.live_bridge.build_process_runtime", return_value=(sentinel, None)) as builder,
             patch("relay.live_bridge.serve", side_effect=fake_serve),
             patch.dict(
@@ -1425,6 +1431,7 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
             return FakeServer()
 
         with (
+            patch("relay.live_bridge.install_shutdown_handlers", side_effect=install_immediate_shutdown),
             patch("relay.live_bridge.build_process_runtime", return_value=(sentinel, None)) as builder,
             patch("relay.live_bridge.server_context_from_environ", return_value=tls_context),
             patch("relay.live_bridge.DeviceOpusCodec", return_value=object()),
