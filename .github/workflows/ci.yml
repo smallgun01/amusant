@@ -113,6 +113,7 @@ jobs:
               "AMUSANT_HERMES_STOP_MAX_ATTEMPTS": "3",
               "AMUSANT_HERMES_STOP_RETRY_BASE_SECONDS": "0.05",
               "AMUSANT_HERMES_STOP_RETRY_MAX_SECONDS": "0.2",
+              "AMUSANT_RELAY_SHUTDOWN_GRACE_SECONDS": "10",
               "RELAY_STOP_GRACE_PERIOD": "90s",
               "HERMES_STOP_GRACE_PERIOD": "30s",
           }
@@ -154,3 +155,34 @@ jobs:
 
       - name: Relay and Hermes offline fake-provider E2E
         run: python spikes/002-hermes-native-runs-poc/run_phase2b.py
+
+  issue-79-option-d-recovery:
+    name: Pinned Hermes Option D recovery proof
+    if: github.event_name == 'pull_request' && (startsWith(github.head_ref, 'codex/issue-73-') || startsWith(github.head_ref, 'codex/issue-79-'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Verify Docker Compose is available
+        run: |
+          docker version --format '{{.Server.Version}}'
+          docker compose version
+
+      - name: Run pinned Hermes Option D proof
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: python3 spikes/003-hermes-option-d-poc/run_poc.py
+
+      - name: Upload sanitized proof evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-79-option-d-recovery-evidence-${{ github.run_id }}
+          path: spikes/003-hermes-option-d-poc/evidence/phase2.json
+          if-no-files-found: warn
+          retention-days: 14
+

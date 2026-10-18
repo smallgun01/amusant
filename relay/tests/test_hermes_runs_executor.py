@@ -413,7 +413,10 @@ class HermesRunsExecutorTests(unittest.TestCase):
         self.assertNotIn("amusant-hermes-runs-p2a-v4-home", compose)
         self.assertIn("POC_STOP_CONTRACT", fake_provider)
         self.assertIn('stop = sub.add_parser("stop")', poc_client)
-        self.assertIn('gates["pinned_stop_contract"]', run_phase2b)
+        self.assertIn('gates["pinned_stop_run_state_machine"]', run_phase2b)
+        self.assertIn('gates["provider_work_settle_cost"]', run_phase2b)
+        self.assertIn('"status": "NOT_PROVEN"', run_phase2b)
+        self.assertIn('"fake_provider_requests_started_after_stop_ack"', run_phase2b)
         self.assertIn("def require(condition, message)", run_phase2b)
         self.assertIn("v2026.9.24", run_phase2b)
         for timing_env in (
@@ -523,3 +526,4 @@ class HermesRunsExecutorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

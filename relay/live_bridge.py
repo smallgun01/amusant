@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 12023)
+Total output lines: 990
+
 #!/usr/bin/env python3
 """Private-LAN Kai-sim PTT bridge to the Gemini Live adapter.
 Audio buffers exist only in RAM for the current utterance; never persist PCM or credentials.
@@ -38,18 +41,22 @@ MIN_UTTERANCE_BYTES = INPUT_RATE * 2 * 300 // 1000
 POST_TOOL_ACK_TIMEOUT_SECONDS = 3.0
 POST_TOOL_ACK_MAX_DURATION_SECONDS = 15.0
 LOG = logging.getLogger("amusant.p2.live_bridge")
+RELAY_SHUTDOWN_GRACE_ENV = "AMUSANT_RELAY_SHUTDOWN_GRACE_SECONDS"
+DEFAULT_RELAY_SHUTDOWN_GRACE_SECONDS = 10.0
+MAX_RELAY_SHUTDOWN_GRACE_SECONDS = 120.0
+WEBSOCKET_CLOSE_TIMEOUT_SECONDS = 2.0
 ProviderFactory = Callable[[], LiveProvider]
 SlowPathToolHandler = Callable[[ToolCallEvent, int], Awaitable[Mapping[str, JSONValue]]]
 SlowPathToolHandlerFactory = Callable[[str, str], SlowPathToolHandler]
 ConversationIdFactory = Callable[[], str]
 
 
-def install_shutdown_handlers(server: Any, loop: asyncio.AbstractEventLoop) -> tuple[signal.Signals, ...]:
-    """Stop accepting WebSockets on SIGTERM/SIGINT so durable dispatch can wind down."""
+def install_shutdown_handlers(stop_event: asyncio.Event, loop: asyncio.AbstractEventLoop) -> tuple[signal.Signals, ...]:
+    """Wake the serving coroutine on SIGTERM/SIGINT so it can close gracefully."""
     installed: list[signal.Signals] = []
     for signum in (signal.SIGTERM, signal.SIGINT):
         try:
-            loop.add_signal_handler(signum, server.close)
+            loop.add_signal_handler(signum, stop_event.set)
         except (NotImplementedError, RuntimeError, ValueError):
             continue
         installed.append(signum)
@@ -62,6 +69,31 @@ def remove_shutdown_handlers(loop: asyncio.AbstractEventLoop, installed: tuple[s
             loop.remove_signal_handler(signum)
         except (NotImplementedError, RuntimeError, ValueError):
             continue
+
+
+def _relay_shutdown_grace_seconds(environ: Mapping[str, str]) -> float:
+    raw = environ.get(RELAY_SHUTDOWN_GRACE_ENV)
+    if raw is None or raw == "":
+        return DEFAULT_RELAY_SHUTDOWN_GRACE_SECONDS
+    try:
+        seconds = float(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"{RELAY_SHUTDOWN_GRACE_ENV} must be a finite positive number") from None
+    if not math.isfinite(seconds) or seconds <= 0 or seconds > MAX_RELAY_SHUTDOWN_GRACE_SECONDS:
+        raise ValueError(
+            f"{RELAY_SHUTDOWN_GRACE_ENV} must be finite, positive, and at most "
+            f"{MAX_RELAY_SHUTDOWN_GRACE_SECONDS:g} seconds"
+        )
+    return seconds
+
+
+async def _stop_dispatcher_bounded(dispatcher: Any, grace_seconds: float) -> None:
+    try:
+        await asyncio.wait_for(dispatcher.stop(), timeout=grace_seconds)
+    except TimeoutError:
+        # The SQLite/remote Run state is durable. A known Run resumes GET-only;
+        # an ambiguous submission recovers as uncertain and is never replayed.
+        LOG.error("dispatcher did not drain within %.3f seconds; stopping with durable recovery state", grace_seconds)
 
 
 class TurnState(str, Enum):
@@ -489,10 +521,7 @@ def make_handler(
                     )
                     turn.tool_action_kind = tool_kind
                     if session_slow_path_tool_handler is None:
-                        result = {"status": "unavailable", "code": "slow_path_not_configured"}
-                    else:
-                        try:
-                            result = await session_slow_path_tool_handler(event, turn.turn_id)
+                        result = {"status": "unavailable", "code": "slow_path_not…23 tokens truncated…        result = await session_slow_path_tool_handler(event, turn.turn_id)
                             if not isinstance(result, Mapping):
                                 result = {"status": "unknown", "code": "invalid_tool_result"}
                             else:
@@ -896,6 +925,7 @@ async def run(host: str, port: int, token: str, *, device_mode: str = "pcm") -> 
         raise ValueError("AMUSANT_DEVICE_TOKEN must contain at least 12 characters")
     if os.environ.get("AMUSANT_LIVE_PROVIDER") != "gemini" or not os.environ.get("GEMINI_API_KEY"):
         raise ValueError("Set AMUSANT_LIVE_PROVIDER=gemini and inject GEMINI_API_KEY at runtime")
+    shutdown_grace_seconds = _relay_shutdown_grace_seconds(os.environ)
     ssl_context = None
     if device_mode == "sticks3":
         validate_hardware_bind_host(host)
@@ -913,20 +943,26 @@ async def run(host: str, port: int, token: str, *, device_mode: str = "pcm") -> 
     else:
         LOG.info("starting private Live bridge host=%s port=%d admission=on acp=%s", host, port,
                  "on" if dispatcher is not None else "off")
-    serve_options = {"max_size": MAX_FRAME_BYTES, "ping_interval": 20, "ping_timeout": 20}
+    serve_options = {
+        "max_size": MAX_FRAME_BYTES,
+        "ping_interval": 20,
+        "ping_timeout": 20,
+        "close_timeout": WEBSOCKET_CLOSE_TIMEOUT_SECONDS,
+    }
     if ssl_context is not None:
         serve_options["ssl"] = ssl_context
     try:
-        async with serve(handler, host, port, **serve_options) as server:
-            loop = asyncio.get_running_loop()
-            installed_signals = install_shutdown_handlers(server, loop)
-            try:
-                await server.serve_forever()
-            finally:
-                remove_shutdown_handlers(loop, installed_signals)
+        loop = asyncio.get_running_loop()
+        stop_event = asyncio.Event()
+        installed_signals = install_shutdown_handlers(stop_event, loop)
+        try:
+            async with serve(handler, host, port, **serve_options):
+                await stop_event.wait()
+        finally:
+            remove_shutdown_handlers(loop, installed_signals)
     finally:
         if dispatcher is not None:
-            await dispatcher.stop()
+            await _stop_dispatcher_bounded(dispatcher, shutdown_grace_seconds)
 
 
 def main() -> None:
@@ -951,3 +987,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

@@ -1,0 +1,7 @@
+name: amusant-option-d-poc
+version: 0.1.0
+description: Offline Option D artifact write and result projection proof
+provides_tools:
+  - poc_save_report
+provides_hooks:
+  - transform_llm_output

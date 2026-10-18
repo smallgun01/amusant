@@ -1,3 +1,5 @@
+> **Supersession note (2026-10-18):** [ADR-0003](0003-oci-a1-hermes-sqlite.md) supersedes AWS ECS placement and OpenAB default **for the new OCI implementation target only**. This document remains an accepted historical AWS/OpenAB architecture and bounded test record; it is not a current instruction to deploy two ECS services, nor is OCI production verified.
+
 # ADR-0001 — Two-Service Relay + OpenAB ACP Architecture
 
 - **Status:** Accepted architecture amendment (PR #9; supersedes the earlier three-ECS topology; not a deployment approval)

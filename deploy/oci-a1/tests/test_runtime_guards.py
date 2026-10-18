@@ -6,8 +6,9 @@ import os
 from pathlib import Path
 import socket
 import tempfile
+import threading
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -100,18 +101,237 @@ class EgressProxyTests(unittest.TestCase):
 
     def test_dns_results_must_all_be_public_and_use_supported_socket_family(self):
         public = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("142.250.72.14", 443))]
-        with patch.object(self.proxy.asyncio, "to_thread", new=AsyncMock(return_value=public)):
-            addresses = asyncio.run(self.proxy.resolve_public_addresses("api.example.com", 443))
+        addresses = asyncio.run(self.proxy.resolve_public_addresses(
+            "api.example.com", 443, resolver=lambda *_args: public
+        ))
         self.assertEqual(addresses, (self.proxy.ipaddress.ip_address("142.250.72.14"),))
 
         mixed = [
             (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("142.250.72.14", 443)),
             (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", 443)),
         ]
-        with patch.object(self.proxy.asyncio, "to_thread", new=AsyncMock(return_value=mixed)):
-            with self.assertRaisesRegex(self.proxy.ProxyRequestError, "not public"):
-                asyncio.run(self.proxy.resolve_public_addresses("rebound.example.com", 443))
+        with self.assertRaisesRegex(self.proxy.ProxyRequestError, "not public"):
+            asyncio.run(self.proxy.resolve_public_addresses(
+                "rebound.example.com", 443, resolver=lambda *_args: mixed
+            ))
+
+    def test_proxy_capacity_requires_two_or_fewer_isolated_client_addresses(self):
+        with self.assertRaisesRegex(ValueError, "at most 2"):
+            self.proxy.ProxyCapacity(frozenset(map(
+                self.proxy.ipaddress.ip_address, ("10.0.0.1", "10.0.0.2", "10.0.0.3")
+            )))
+
+
+class EgressProxyAsyncTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.proxy = load_module("oci_a1_egress_proxy_async", PACKAGE / "egress_proxy.py")
+
+    async def test_hermes_capacity_cannot_consume_relays_reserved_tunnels(self):
+        hermes = self.proxy.ipaddress.ip_address("10.0.0.2")
+        relay = self.proxy.ipaddress.ip_address("10.0.0.3")
+        capacities = self.proxy.ProxyCapacity(frozenset({hermes, relay}))
+        for _ in range(self.proxy.MAX_TUNNELS_PER_CLIENT):
+            self.assertTrue(await capacities.acquire_tunnel(hermes))
+        self.assertFalse(await capacities.acquire_tunnel(hermes))
+        self.assertTrue(await capacities.acquire_tunnel(relay))
+        self.assertEqual(
+            self.proxy.MAX_TUNNELS_PER_CLIENT * 2,
+            self.proxy.MAX_TUNNELS,
+        )
+
+    async def test_dns_timeout_keeps_slot_until_resolver_finishes_then_releases_it(self):
+        peer = self.proxy.ipaddress.ip_address("10.0.0.3")
+        capacities = self.proxy.ProxyCapacity(frozenset({peer}))
+        resolver_started = threading.Event()
+        resolver_release = threading.Event()
+        public = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("142.250.72.14", 443))]
+
+        def slow_resolver(*_args):
+            resolver_started.set()
+            resolver_release.wait(3)
+            return public
+
+        with patch.object(self.proxy, "DNS_TIMEOUT_SECONDS", 0.05):
+            lookup = asyncio.create_task(self.proxy.resolve_public_addresses(
+                "slow.example", 443, capacities=capacities, peer_ip=peer, resolver=slow_resolver
+            ))
+            deadline = asyncio.get_running_loop().time() + 2
+            while not resolver_started.is_set() and asyncio.get_running_loop().time() < deadline:
+                await asyncio.sleep(0.01)
+            self.assertTrue(resolver_started.is_set())
+            with self.assertRaises(self.proxy.ProxyRequestError) as raised:
+                await lookup
+            self.assertEqual(raised.exception.status, 504)
+            claimed = []
+            for _ in range(self.proxy.MAX_DNS_WORKERS_PER_CLIENT - 1):
+                self.assertTrue(await capacities.acquire_dns(peer))
+                claimed.append(peer)
+            self.assertFalse(await capacities.acquire_dns(peer), "the timed-out lookup must keep one DNS slot")
+            for claimed_peer in claimed:
+                capacities.release_dns(claimed_peer)
+
+            resolver_release.set()
+            deadline = asyncio.get_running_loop().time() + 2
+            acquired = 0
+            while acquired < self.proxy.MAX_DNS_WORKERS_PER_CLIENT and asyncio.get_running_loop().time() < deadline:
+                if await capacities.acquire_dns(peer):
+                    acquired += 1
+                else:
+                    await asyncio.sleep(0.01)
+            self.assertEqual(
+                acquired,
+                self.proxy.MAX_DNS_WORKERS_PER_CLIENT,
+                "DNS capacity should return after the resolver thread exits",
+            )
+            for _ in range(acquired):
+                capacities.release_dns(peer)
+
+    async def test_dns_rejects_metadata_and_mixed_public_private_answers(self):
+        peer = self.proxy.ipaddress.ip_address("10.0.0.3")
+        capacities = self.proxy.ProxyCapacity(frozenset({peer}))
+        answers = (
+            [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", 443))],
+            [
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("142.250.72.14", 443)),
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443)),
+            ],
+        )
+        for result in answers:
+            with self.subTest(result=result), self.assertRaises(self.proxy.ProxyRequestError) as raised:
+                await self.proxy.resolve_public_addresses(
+                    "metadata.example", 443,
+                    capacities=capacities,
+                    peer_ip=peer,
+                    resolver=lambda *_args, result=result: result,
+                )
+            self.assertEqual(raised.exception.status, 403)
+
+    async def test_bogus_dns_name_fails_closed(self):
+        peer = self.proxy.ipaddress.ip_address("10.0.0.3")
+        capacities = self.proxy.ProxyCapacity(frozenset({peer}))
+
+        def bogus_resolver(*_args):
+            raise socket.gaierror("name does not resolve")
+
+        with self.assertRaises(self.proxy.ProxyRequestError) as raised:
+            await self.proxy.resolve_public_addresses(
+                "does-not-exist.invalid", 443,
+                capacities=capacities,
+                peer_ip=peer,
+                resolver=bogus_resolver,
+            )
+        self.assertEqual(raised.exception.status, 502)
+
+    async def test_synthetic_wss_connect_forwards_upgrade_and_data_through_loopback(self):
+        peer = self.proxy.ipaddress.ip_address("127.0.0.1")
+        allowed = frozenset({peer})
+        capacities = self.proxy.ProxyCapacity(allowed)
+        origin_requests = []
+        origin_port = None
+
+        async def origin(reader, writer):
+            request = await reader.readuntil(b"\r\n\r\n")
+            origin_requests.append(request)
+            writer.write(
+                b"HTTP/1.1 101 Switching Protocols\r\n"
+                b"Connection: Upgrade\r\nUpgrade: websocket\r\n\r\n"
+            )
+            await writer.drain()
+            payload = await reader.readexactly(4)
+            if payload == b"PING":
+                writer.write(b"PONG")
+                await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+
+        origin_server = await asyncio.start_server(origin, "127.0.0.1", 0)
+        origin_port = origin_server.sockets[0].getsockname()[1]
+        public_answer = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("142.250.72.14", 443))]
+
+        async def local_connector(_address, _port, *, family):
+            self.assertEqual(family, socket.AF_INET)
+            return await asyncio.open_connection("127.0.0.1", origin_port)
+
+        async def proxy_handler(reader, writer):
+            await self.proxy.handle_connect(
+                reader,
+                writer,
+                allowed_peers=allowed,
+                capacities=capacities,
+                resolver=lambda *_args: public_answer,
+                connect_upstream=local_connector,
+            )
+
+        proxy_server = await asyncio.start_server(proxy_handler, "127.0.0.1", 0, limit=self.proxy.MAX_HEADER_BYTES)
+        proxy_port = proxy_server.sockets[0].getsockname()[1]
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", proxy_port)
+            writer.write(b"CONNECT api.example.test:443 HTTP/1.1\r\nHost: api.example.test:443\r\n\r\n")
+            await writer.drain()
+            self.assertIn(b"200 Connection Established", await reader.readuntil(b"\r\n\r\n"))
+            writer.write(
+                b"GET /live HTTP/1.1\r\nHost: api.example.test\r\n"
+                b"Connection: Upgrade\r\nUpgrade: websocket\r\n"
+                b"Sec-WebSocket-Key: c3ludGhldGlj\r\nSec-WebSocket-Version: 13\r\n\r\n"
+            )
+            await writer.drain()
+            self.assertIn(b"101 Switching Protocols", await reader.readuntil(b"\r\n\r\n"))
+            writer.write(b"PING")
+            await writer.drain()
+            self.assertEqual(await asyncio.wait_for(reader.readexactly(4), timeout=2), b"PONG")
+            self.assertEqual(len(origin_requests), 1)
+            self.assertIn(b"GET /live HTTP/1.1", origin_requests[0])
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            proxy_server.close()
+            origin_server.close()
+            await proxy_server.wait_closed()
+            await origin_server.wait_closed()
+
+    async def test_connect_timeout_returns_502_and_releases_the_clients_tunnel_slot(self):
+        peer = self.proxy.ipaddress.ip_address("127.0.0.1")
+        allowed = frozenset({peer})
+        capacities = self.proxy.ProxyCapacity(allowed)
+        public_answer = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("142.250.72.14", 443))]
+        public_answers = public_answer + [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("1.1.1.1", 443))
+        ]
+        connect_calls = []
+
+        async def timeout_connector(*_args, **_kwargs):
+            connect_calls.append(1)
+            await asyncio.sleep(1)
+
+        async def proxy_handler(reader, writer):
+            await self.proxy.handle_connect(
+                reader, writer,
+                allowed_peers=allowed,
+                capacities=capacities,
+                resolver=lambda *_args: public_answers,
+                connect_upstream=timeout_connector,
+            )
+
+        with patch.object(self.proxy, "CONNECT_TIMEOUT_SECONDS", 0.05):
+            server = await asyncio.start_server(proxy_handler, "127.0.0.1", 0)
+            port = server.sockets[0].getsockname()[1]
+            try:
+                reader, writer = await asyncio.open_connection("127.0.0.1", port)
+                started = asyncio.get_running_loop().time()
+                writer.write(b"CONNECT api.example.test:443 HTTP/1.1\r\n\r\n")
+                await writer.drain()
+                self.assertIn(b"502 Bad Gateway", await reader.readuntil(b"\r\n\r\n"))
+                self.assertLess(asyncio.get_running_loop().time() - started, 0.5)
+                self.assertEqual(connect_calls, [1], "one deadline bounds all resolved addresses")
+                writer.close()
+                await writer.wait_closed()
+                self.assertTrue(await capacities.acquire_tunnel(peer), "failed CONNECT must release its reserved slot")
+                capacities.release_tunnel(peer)
+            finally:
+                server.close()
+                await server.wait_closed()
 
 
 if __name__ == "__main__":
     unittest.main()
+
