@@ -215,7 +215,9 @@ def result_summary(db, task_id):
 
 async def run_case(case, *, lose_terminal_once=False):
     db = store()
-    task_id, owner = make_task(db, case)
+    # Each adversarial case is a separate owner so an intentionally uncertain Run
+    # cannot trigger the production single-flight gate for the next fixture.
+    task_id, owner = make_task(db, case, owner=owner_for_tag(case.replace("_", "-")))
     audit_holder = {}
     transport = HermesRunsExecutor(
         url=FACADE_URL,
