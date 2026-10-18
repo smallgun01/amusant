@@ -345,9 +345,12 @@ def inspect_fake_provider() -> dict:
         case = row.get("case")
         if not isinstance(case, str):
             continue
-        item = summary.setdefault(case, {"provider_turns": 0, "tool_calls_requested": [], "report_tool_call_count": 0, "report_tool_result_codes": [], "write_file_requested": False, "spoofed_identity_fields_included": False, "tools_field_types": [], "tools_field_counts": [], "functions_field_types": [], "functions_field_counts": []})
+        item = summary.setdefault(case, {"provider_turns": 0, "observed_tool_names": [], "tool_calls_requested": [], "report_tool_call_count": 0, "report_tool_result_codes": [], "write_file_requested": False, "spoofed_identity_fields_included": False, "tools_field_types": [], "tools_field_counts": [], "functions_field_types": [], "functions_field_counts": []})
         item["provider_turns"] += 1
         item["poc_tool_offered"] = item.get("poc_tool_offered", False) or row.get("poc_tool_offered") is True or "poc_save_report" in row.get("tool_names", [])
+        names = row.get("tool_names", [])
+        if isinstance(names, list):
+            item["observed_tool_names"].extend(name for name in names if isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,96}", name))
         for field in ("tools", "functions"):
             field_type = row.get(field + "_field_type")
             field_count = row.get(field + "_field_count")
@@ -368,6 +371,8 @@ def inspect_fake_provider() -> dict:
                 item["report_tool_call_count"] += 1
             if action == "write_file":
                 item["write_file_requested"] = True
+    for item in summary.values():
+        item["observed_tool_names"] = sorted(set(item["observed_tool_names"]))[:32]
     return summary
 
 
@@ -825,6 +830,7 @@ def main() -> int:
             "report_tool_call_count": provider.get("report_tool_call_count"),
             "report_tool_result_codes": provider.get("report_tool_result_codes"),
             "poc_tool_offered": provider.get("poc_tool_offered"),
+            "observed_tool_names": provider.get("observed_tool_names"),
             "tools_field_types": provider.get("tools_field_types"),
             "tools_field_counts": provider.get("tools_field_counts"),
             "functions_field_types": provider.get("functions_field_types"),
