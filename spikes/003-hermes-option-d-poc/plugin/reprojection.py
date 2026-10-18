@@ -160,6 +160,70 @@ def _record_event(conn, session_hash, outcome):
     )
 
 
+
+def check_existing_reprojection(response_text, session_id):
+    """Compare a later GET with the exact source/output already repaired.
+
+    Returns only a small state code; raw presentation data and stored digests
+    never leave this module.
+    """
+    if not isinstance(session_id, str) or not session_id:
+        return "unavailable", "session_missing"
+    session_hash = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+    try:
+        with _connect() as conn:
+            table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='presentation_repairs'"
+            ).fetchone()
+            if not table:
+                return "none", None
+            repair = conn.execute(
+                "SELECT * FROM presentation_repairs WHERE session_hash=?",
+                (session_hash,),
+            ).fetchone()
+            if not repair:
+                return "none", None
+            request = conn.execute(
+                "SELECT * FROM requests WHERE session_id=?", (session_id,)
+            ).fetchone()
+        repair = dict(repair)
+        row = dict(request) if request else None
+        if not row:
+            return "unavailable", "session_unmapped"
+        if row.get("hermes_run_status") != "completed":
+            return "unavailable", "run_not_completed"
+        artifact, artifact_status = _load_committed_artifact(row)
+        if not artifact:
+            return "unavailable", artifact_status
+
+        reference_hash = hashlib.sha256(artifact["artifact_ref"].encode("utf-8")).hexdigest()
+        binding_material = chr(0).join(
+            (row["owner_scope"], row["task_id"], row["session_id"], row["run_id"])
+        )
+        binding_hash = hashlib.sha256(binding_material.encode("utf-8")).hexdigest()
+        if (
+            repair.get("artifact_ref_hash") != reference_hash
+            or repair.get("binding_sha256") != binding_hash
+            or not isinstance(repair.get("source_sha256"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", repair["source_sha256"])
+            or not isinstance(repair.get("output_sha256"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", repair["output_sha256"])
+        ):
+            return "conflict", "reprojection_binding_conflict"
+        if not isinstance(response_text, str):
+            return "conflict", "reprojection_conflict"
+        try:
+            response_hash = hashlib.sha256(response_text.encode("utf-8")).hexdigest()
+        except UnicodeError:
+            return "conflict", "reprojection_conflict"
+        if response_hash == repair["source_sha256"]:
+            return "source", "source_match"
+        if response_hash == repair["output_sha256"]:
+            return "projection", "projection_match"
+        return "conflict", "reprojection_conflict"
+    except (sqlite3.Error, OSError, TypeError, ValueError):
+        return "unavailable", "reprojection_unavailable"
+
 def reproject_missing_hook(response_text, session_id):
     """Rebuild a bounded envelope only when no output-hook event was recorded.
 
