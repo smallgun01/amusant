@@ -301,6 +301,62 @@ if repair_table:
             "replay_count": int(repair["replay_count"]),
             "hook_events": hook_outcomes.get(session_hash, []),
         })
+reprojection_guard = {
+    "source_state": "unavailable",
+    "projection_state": "unavailable",
+    "changed_state": "unavailable",
+    "changed_envelope_valid": False,
+}
+try:
+    from plugin.reprojection import check_existing_reprojection, project_presentation
+    lost_requests = [r for r in requests if r["poc_case"] == "lost_envelope_10k"]
+    if len(lost_requests) == 1:
+        lost = lost_requests[0]
+        bound_artifacts = [
+            a for a in artifacts
+            if a["owner_scope"] == lost["owner_scope"] and a["task_id"] == lost["task_id"]
+            and a["session_id"] == lost["session_id"] and a["run_id"] == lost["run_id"]
+        ]
+        if len(bound_artifacts) == 1:
+            artifact = bound_artifacts[0]
+            raw = json.dumps({
+                "schema_version": 1,
+                "speak": "The report is ready for review.",
+                "card": {"title": "Report ready", "lines": ["Synthetic report saved.", "Review the recorded findings."]},
+                "details_md": "A deterministic synthetic report was saved for this proof.",
+            }, ensure_ascii=False, separators=(",", ":"))
+            projected, projected_status = project_presentation(raw, artifact["artifact_ref"])
+            changed_raw = json.dumps({
+                "schema_version": 1,
+                "speak": "The updated report is ready for review.",
+                "card": {"title": "Report ready", "lines": ["Synthetic report saved.", "Review the recorded findings."]},
+                "details_md": "A deterministic synthetic report was saved for this proof.",
+            }, ensure_ascii=False, separators=(",", ":"))
+            changed_output, changed_status = project_presentation(changed_raw, artifact["artifact_ref"])
+            source_state, _ = check_existing_reprojection(raw, lost["session_id"])
+            projection_state, _ = check_existing_reprojection(projected, lost["session_id"])
+            changed_state, _ = check_existing_reprojection(changed_output, lost["session_id"])
+            changed_value = json.loads(changed_output) if changed_output else {}
+            changed_valid = (
+                changed_status == "ready"
+                and isinstance(changed_value, dict)
+                and set(changed_value) == {
+                    "schema_version", "speak", "card", "details_md",
+                    "execution_status", "artifact_status", "presentation_status", "artifact_ref",
+                }
+                and changed_value.get("execution_status") == "completed"
+                and changed_value.get("artifact_status") == "committed"
+                and changed_value.get("presentation_status") == "ready"
+                and changed_value.get("artifact_ref") == artifact["artifact_ref"]
+            )
+            reprojection_guard = {
+                "source_state": source_state,
+                "projection_state": projection_state,
+                "changed_state": changed_state,
+                "changed_envelope_valid": changed_valid,
+            }
+except Exception:
+    pass
 idem = conn.execute("SELECT upstream_post_count, submit_state, run_id FROM requests WHERE task_id=?", (''' + repr(idem_task) + r''',)).fetchone()
 print(json.dumps({
     "request_case_summaries": case_summaries,
@@ -309,6 +365,7 @@ print(json.dumps({
     "unregistered_artifact_file_count": len(all_files),
     "output_hook_event_counts": hook_event_counts,
     "presentation_repairs": presentation_repairs,
+    "reprojection_guard": reprojection_guard,
 }, separators=(",", ":")))
 '''
 
@@ -595,6 +652,14 @@ def validate_run_outputs(results: dict, db: dict, provider: dict, evidence: dict
         raise RunnerError("failure", "idempotent_reprojection_not_proven")
     if lost_row.get("presentation_errors") != ["none"]:
         raise RunnerError("failure", "reprojection_not_recorded_as_recovered")
+    guard = db.get("reprojection_guard", {})
+    if (
+        guard.get("source_state") != "source"
+        or guard.get("projection_state") != "projection"
+        or guard.get("changed_state") != "conflict"
+        or guard.get("changed_envelope_valid") is not True
+    ):
+        raise RunnerError("failure", "changed_valid_envelope_not_rejected")
     if summaries.get("late_mutation", {}).get("presentation_errors", ["none"]) == ["none"]:
         raise RunnerError("failure", "late_finalizer_mutation_not_rejected")
     for name in ("no_writer", "writer_fail", "writer_slow", "wrong_binding"):
