@@ -8,9 +8,13 @@ A single cached OpenCC converter is initialized when the Relay handler is built,
 
 **Important streaming limitation:** Live transcript deltas are processed independently to avoid delaying audio or waiting for complete sentences. When a multi-character term straddles adjacent deltas, phrase-sensitive Taiwanese lexical choices may be imperfect. We prioritize preventing missing Simplified glyph boxes without blocking live audio. Emoji, missing Traditional glyphs and non-BMP symbols remain outside scope.
 
-## Required review gates before merge
+## Validation performed in PR #86
 
-- After updating `pyproject.toml`, regenerate and commit `uv.lock` using the trusted dependency toolchain: `uv lock`, then verify `uv sync --locked`; no manual invented hashes.
-- Run offline Fast Voice and Relay tests; verify Linux ARM64 OCI Relay image builds and can import and initialize OpenCC `s2twp.json` on target runtime.
-- Preserve PCM/Opus bytes, response completion, fencing of interrupted turns and Slow Task/Inbox payloads.
-- No automatic deployment, cloud cost, or physical flash. Local Relay restart is required before owner-side PTT visual acceptance.
+- `uv.lock` was generated from the declared `opencc==1.4.2` dependency with uv 0.13.1; CI verifies `uv sync --locked`. No hashes were hand-written.
+- [GitHub Actions CI run](https://github.com/smallgun01/amusant/actions/runs/39144883041) passed the Python 3.13 offline test suites, TLS-PSK/Opus loopback, and Hermes fake-provider E2E.
+- The Linux ARM64 Relay image built successfully. Its runtime check initialized `OpenCC("s2twp.json")` and verified the expected Traditional Chinese conversion; ARM64 Opus, TLS-PSK, and egress-proxy smoke checks passed.
+
+## Remaining owner acceptance before merge
+
+- Confirm LCD output with PTT under normal voice load. The independent-delta phrase-boundary limitation described above still applies.
+- No service deployment or firmware changes were performed. A local Relay restart is needed before owner-side visual acceptance.
