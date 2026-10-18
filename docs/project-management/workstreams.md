@@ -1,3 +1,5 @@
+> **Current execution overlay (2026-10-18):** Owner selected [ADR-0003 OCI A1 + Hermes + SQLite](../adr/0003-oci-a1-hermes-sqlite.md) as the **implementation target, not a validated live service**. WS2 Hermes Native Runs code is merged (#45/#60/#65), with #73 small-envelope trust boundary offline PoC pending. WS3 owns #62 / PR #70 OCI image/Compose and ingress #27; WS4 owns SQLite backup/restore/retention, security, E3/E4 evidence. For OCI, the earlier AWS-specific A2/#35/DynamoDB and OpenAB B0 tasks below are historical/legacy-only; reinterpret, don't silently mark them PASS. The v1 Slow product policy is one outstanding task and **immediate busy rejection**, not FIFO/8 pending. Later OCI cloud/device/paid E2E requires separate owner approval.
+
 # Amusant Project Execution — Four Workstreams (WS1–WS4)
 
 > Owner-approved PM restructuring: 2026-10-16. **Planning and tracking only; no runtime changes or execution authorization.**
@@ -8,7 +10,7 @@
 
 - **M1 — Cloud Voice-Agent Alpha:** a reliable Relay, real Fast answer, durable Slow admission/execution, owner-authorized next-session Inbox retrieval and **tool-disabled spoken result**, meaningful failure/recovery, monitored cost and rollback. A software-client E2E (S1) precedes physical-device G3a; one known 2.4 GHz SSID is adequate for G2.
 - **M2 — Personal Companion Beta:** practical mobility/provisioning, safe/unobtrusive task completion notice, opt-in notes/reminders/memory with defined retention, power/latency and operational UX. These features do **not** block M1.
-- Do not infer one-to-one means zero concurrency: simultaneous Fast conversations and queued Slow work must be explicitly product-defined. Current single in-process Dispatcher, default pending cap 8 and OpenAB ACP 120-second attempt limit remain the *implemented baseline*, not a promise of multi-hour tasks.
+- **Current implementation (PRs #60/#65):** One-to-one does not mean FAST stops while SLOW runs: an owner can continue FAST interaction, but only **one outstanding SLOW task** may hold the owner-scoped single-flight slot. A further `delegate_task` returns `slow_busy` rather than entering an eight-task FIFO queue. The in-process Dispatcher uses Hermes Native Runs with **explicitly configured** request/poll, Run-deadline, stop and retry timing; OpenAB's old 120-second ACP attempt is a legacy-path limit, not the Hermes default. Offline implementation does not establish sustained real-provider/physical acceptance.
 - **Product contract before B0**: expected Slow task length, progress/query/cancel semantics, concurrent Fast/Slow behavior, active/sleeping completion notification, result delivery vs audio actually heard, ownership/privacy/retention and error language. Propose changes to SPEC/ADR for approval; this PM restructure does **not** amend the accepted OpenAB/two-ECS baseline.
 
 ## Work Breakdown Structure

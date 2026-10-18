@@ -6,6 +6,7 @@ Retention is intentionally READ ONLY until a separately reviewed deletion policy
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import os
@@ -35,6 +36,7 @@ def _assert_integrity(connection: sqlite3.Connection) -> None:
 
 
 def backup(source: Path, destination: Path) -> None:
+    source = _existing_db(str(source))
     if not destination.is_absolute() or destination.is_symlink() or destination.exists():
         raise ValueError("destination must be a new absolute path, not an existing file/symlink")
     if not destination.parent.is_dir():
@@ -45,7 +47,7 @@ def backup(source: Path, destination: Path) -> None:
     fd = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0), 0o600)
     os.close(fd)
     try:
-        with _connect_readonly(source) as src, sqlite3.connect(destination) as dst:
+        with closing(_connect_readonly(source)) as src, closing(sqlite3.connect(destination)) as dst:
             src.backup(dst, pages=128, sleep=0.05)
             _assert_integrity(dst)
             dst.commit()
@@ -56,34 +58,39 @@ def backup(source: Path, destination: Path) -> None:
 
 
 def verify(source: Path) -> None:
-    with _connect_readonly(source) as connection:
+    source = _existing_db(str(source))
+    with closing(_connect_readonly(source)) as connection:
         _assert_integrity(connection)
 
 
 def retention_report(source: Path, *, days: int, now: datetime) -> dict[str, int]:
     if days <= 0 or days > 3650:
         raise ValueError("retention days must be 1..3650")
-    cutoff = (now - timedelta(days=days)).isoformat()
-    with _connect_readonly(source) as connection:
-        # Count only; keep all unresolved work. Do not use expires_at as deletion authority.
-        potential = connection.execute(
-            """SELECT COUNT(*) FROM slow_tasks AS t
-               JOIN dispatch_outbox AS o ON o.task_id=t.task_id
-               LEFT JOIN task_inbox AS i ON i.task_id=t.task_id
-               WHERE t.status IN ('completed','failed')
-                 AND o.state IN ('sent','failed')
-                 AND t.created_at < ?
-                 AND (i.task_id IS NULL OR i.delivery_state IN ('spoken','read'))
-                 AND t.manual_reconciled_at IS NULL
-                 AND t.stop_requested_at IS NULL""", (cutoff,)
-        ).fetchone()[0]
-        protected = connection.execute(
-            """SELECT COUNT(*) FROM slow_tasks
-               WHERE status IN ('queued','running','uncertain')
-                  OR stop_requested_at IS NOT NULL
-                  OR manual_reconciled_at IS NOT NULL"""
-        ).fetchone()[0]
-        return {"potential_terminal_rows": int(potential), "protected_rows": int(protected)}
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("now must be timezone-aware")
+    source = _existing_db(str(source))
+    cutoff = (now.astimezone(timezone.utc) - timedelta(days=days)).isoformat()
+    with closing(_connect_readonly(source)) as connection:
+        # One read statement gives both counts the same WAL snapshot. Only acknowledged
+        # terminal rows are candidates; every other ledger row is reported as protected.
+        total, potential = connection.execute(
+            """SELECT COUNT(*), COALESCE(SUM(CASE WHEN
+                   t.status IN ('completed','failed')
+                   AND o.state IN ('sent','failed')
+                   AND t.created_at < ?
+                   AND i.delivery_state IN ('spoken','read')
+                   AND t.manual_reconciled_at IS NULL
+                   AND t.stop_requested_at IS NULL
+                   THEN 1 ELSE 0 END), 0)
+               FROM slow_tasks AS t
+               LEFT JOIN dispatch_outbox AS o ON o.task_id=t.task_id
+               LEFT JOIN task_inbox AS i ON i.task_id=t.task_id""",
+            (cutoff,),
+        ).fetchone()
+        return {
+            "potential_terminal_rows": int(potential),
+            "protected_rows": int(total) - int(potential),
+        }
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -36,6 +36,11 @@ from relay.task_store import BoundedTaskResult, SQLiteTaskStore, TaskAdmissionRe
 TOKEN = secrets.token_urlsafe(24)
 
 
+def install_immediate_shutdown(stop_event, _loop):
+    stop_event.set()
+    return ()
+
+
 class FakeProvider:
     provider_id = "gemini"
     capabilities = ProviderCapabilities(True, True, True, True, False, True)
@@ -149,11 +154,12 @@ class ImmediateFakeDeviceCodec(BufferingFakeDeviceCodec):
 
 class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
     def test_shutdown_handlers_close_listener_and_are_removed(self):
-        class FakeServer:
-            closed = False
+        class FakeEvent:
+            def __init__(self):
+                self.set_calls = 0
 
-            def close(self):
-                self.closed = True
+            def set(self):
+                self.set_calls += 1
 
         class FakeLoop:
             def __init__(self):
@@ -167,12 +173,12 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
                 self.removed.append(signum)
                 return self.handlers.pop(signum, None) is not None
 
-        server = FakeServer()
+        stop_event = FakeEvent()
         loop = FakeLoop()
-        installed = install_shutdown_handlers(server, loop)
+        installed = install_shutdown_handlers(stop_event, loop)
         self.assertEqual(set(installed), {signal.SIGINT, signal.SIGTERM})
         loop.handlers[signal.SIGTERM]()
-        self.assertTrue(server.closed)
+        self.assertEqual(stop_event.set_calls, 1)
         remove_shutdown_handlers(loop, installed)
         self.assertEqual(set(loop.removed), {signal.SIGINT, signal.SIGTERM})
 
@@ -1394,6 +1400,7 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
 
         token = "device-token-12"
         with (
+            patch("relay.live_bridge.install_shutdown_handlers", side_effect=install_immediate_shutdown),
             patch("relay.live_bridge.build_process_runtime", return_value=(sentinel, None)) as builder,
             patch("relay.live_bridge.serve", side_effect=fake_serve),
             patch.dict(
@@ -1424,6 +1431,7 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
             return FakeServer()
 
         with (
+            patch("relay.live_bridge.install_shutdown_handlers", side_effect=install_immediate_shutdown),
             patch("relay.live_bridge.build_process_runtime", return_value=(sentinel, None)) as builder,
             patch("relay.live_bridge.server_context_from_environ", return_value=tls_context),
             patch("relay.live_bridge.DeviceOpusCodec", return_value=object()),

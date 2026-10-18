@@ -299,7 +299,7 @@ def main():
                     and run_id_stable
                     and len(stop_requests) > 0
                 )
-                gates["pinned_stop_contract"] = {
+                gates["pinned_stop_run_state_machine"] = {
                     "status": "PASS" if stop_pass else "FAIL",
                     "source_tag": HERMES_SOURCE_TAG,
                     "source_commit": HERMES_SOURCE_COMMIT,
@@ -310,19 +310,43 @@ def main():
                     "get_status_after_stop": after_stop.get("status"),
                     "terminal_get_status": final_status,
                     "run_id_stable_across_status_reads": run_id_stable,
+                    "completion_won_stop_race": final_status == "completed",
+                }
+                offline_provider_observation = (
+                    "FAIL"
+                    if starts_after_ack > 0 or active_provider_requests_at_terminal > 0
+                    else "PASS"
+                )
+                gates["provider_work_settle_cost"] = {
+                    "status": "NOT_PROVEN",
+                    "offline_observation": offline_provider_observation,
+                    "investigation_status": "PENDING",
+                    "provider_work_settlement_from_stop_ack": "NOT_PROVEN",
+                    "no_active_fake_provider_request_observed_at_terminal": (
+                        active_provider_requests_at_terminal == 0
+                    ),
                     "fake_provider_requests_for_run": len(stop_requests),
                     "fake_provider_requests_active_at_terminal_observation": active_provider_requests_at_terminal,
                     "fake_provider_requests_started_after_stop_ack": starts_after_ack,
                     "fake_provider_request_timestamps_complete": len(known_start_times) == len(stop_requests),
-                    "completion_won_stop_race": final_status == "completed",
+                    "paid_provider_calls": 0,
+                    "provider_billing_or_cost_settlement": "NOT_PROVEN",
+                    "reason": "Local fake-provider request observations cannot establish remote provider cancellation or billing settlement.",
                 }
             except Exception as exc:
-                gates["pinned_stop_contract"] = {
+                gates["pinned_stop_run_state_machine"] = {
                     "status": "FAIL",
                     "source_tag": HERMES_SOURCE_TAG,
                     "source_commit": HERMES_SOURCE_COMMIT,
                     "stage": stop_stage,
                     "error_type": type(exc).__name__,
+                }
+                gates["provider_work_settle_cost"] = {
+                    "status": "NOT_PROVEN",
+                    "offline_observation": "NOT_OBSERVED",
+                    "investigation_status": "PENDING",
+                    "provider_billing_or_cost_settlement": "NOT_PROVEN",
+                    "reason": "The fake-provider stop observation did not complete.",
                 }
         except Exception as exc:
             gates.setdefault("adapter_and_recovery", {"status": "FAIL", "error_type": type(exc).__name__, "reason": str(exc)[:200]})
@@ -362,7 +386,19 @@ def main():
     evidence_dir.mkdir(parents=True, exist_ok=True)
     attempt = evidence_dir / ("phase2b-" + run_tag + ".json")
     attempt.write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
-    all_pass = started and bool(gates) and all(gate.get("status") == "PASS" for gate in gates.values())
+    provider_cost_evidence = gates.get("provider_work_settle_cost", {})
+    offline_gate_statuses = [
+        gate.get("status")
+        for name, gate in gates.items()
+        if name != "provider_work_settle_cost"
+    ]
+    all_pass = (
+        started
+        and bool(offline_gate_statuses)
+        and all(status == "PASS" for status in offline_gate_statuses)
+        and provider_cost_evidence.get("status") == "NOT_PROVEN"
+        and isinstance(provider_cost_evidence.get("fake_provider_requests_for_run"), int)
+    )
     if all_pass:
         sanitized = {key: value for key, value in evidence.items() if key not in {"repo_head", "branch"}}
         sanitized["repo_head"] = evidence["repo_head"]
