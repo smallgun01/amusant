@@ -21,7 +21,7 @@ python3 spikes/003-hermes-option-d-poc/run_poc.py
 
 Requirements: Docker Engine and Docker Compose v2. The runner uses a fresh Compose project name, isolated internal networks, no host-published ports, and per-service memory limits. It stops only the proof services when finished. It never runs `docker compose down`, removes volumes, prunes Docker state, or restarts other containers. The three proof volumes remain under the unique project name for inspection.
 
-The same command runs automatically in the `issue-73-option-d-poc` GitHub Actions job for this Draft PR branch. The job uploads the sanitized `phase1.json` as a workflow artifact. It does not upload Docker logs or report bodies.
+The same command runs automatically in the `issue-79-option-d-recovery` GitHub Actions job for this Draft PR branch. The job uploads the sanitized `phase2.json` as a workflow artifact. It does not upload Docker logs or report bodies.
 
 ## Proof cases
 
