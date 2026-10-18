@@ -534,13 +534,15 @@ def main() -> int:
             raise RunnerError("infrastructure", "facade_health_timeout")
         evidence["phases"]["health"] = health
 
-        evidence["phases"]["cases"] = compose_run_client("cases", timeout=600)
-        evidence["phases"]["access"] = compose_run_client("access", timeout=60)
-        evidence["phases"]["ambiguous"] = compose_run_client("ambiguous", timeout=60)
+        # Isolate restart recovery before other fixtures leave any intentionally active Runs.
         evidence["phases"]["restart_start"] = compose_run_client("restart-start", timeout=60)
         time.sleep(0.5)
         evidence["phases"]["restart_resume"] = compose_run_client("restart-resume", timeout=120)
+        evidence["phases"]["cases"] = compose_run_client("cases", timeout=600)
+        evidence["phases"]["access"] = compose_run_client("access", timeout=60)
         evidence["phases"]["stop"] = compose_run_client("stop", timeout=60)
+        # This fixture intentionally loses the Run ID; leave it last so it cannot occupy server capacity.
+        evidence["phases"]["ambiguous"] = compose_run_client("ambiguous", timeout=60)
 
         evidence["checks"]["provider_tool_trace"] = {"pass": True}
         evidence["provider_tool_trace"]["cases"] = inspect_fake_provider()
