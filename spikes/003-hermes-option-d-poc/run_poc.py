@@ -981,7 +981,10 @@ def main() -> int:
         }
     facade_case_rows = evidence.get("artifact_database_and_files", {}).get("request_case_summaries", [])
     if isinstance(facade_case_rows, list):
-        for case_name in ("success_10k", "restart_10k", "lost_envelope_10k"):
+        for case_name in (
+            "success_10k", "restart_10k", "lost_envelope_10k",
+            "no_writer", "writer_fail", "writer_slow", "wrong_binding",
+        ):
             rows = [row for row in facade_case_rows if isinstance(row, dict) and row.get("case") == case_name]
             if rows:
                 row = rows[0]
