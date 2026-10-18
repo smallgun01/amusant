@@ -97,6 +97,11 @@ def initialize():
             stored_at REAL NOT NULL,
             PRIMARY KEY(owner_scope, task_id)
         );
+        CREATE TABLE IF NOT EXISTS output_hook_events (
+            session_hash TEXT NOT NULL,
+            outcome_code TEXT NOT NULL,
+            created_at REAL NOT NULL
+        );
         """)
 
 

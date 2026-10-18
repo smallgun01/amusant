@@ -195,26 +195,68 @@ def _valid_presentation(value):
     )
 
 
+def _record_output_hook_event(session_id, outcome_code):
+    if not isinstance(outcome_code, str) or outcome_code not in {
+        "session_unmapped", "hook_exception", "hook_empty", "timeout_injected",
+        "input_invalid", "presentation_invalid", "artifact_missing",
+        "artifact_not_committed", "artifact_binding_invalid", "ready",
+        "request_lookup_error", "artifact_lookup_error",
+    }:
+        return
+    session_text = session_id if isinstance(session_id, str) else ""
+    session_hash = hashlib.sha256(session_text.encode("utf-8", errors="replace")).hexdigest()
+    try:
+        with _db() as conn:
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS output_hook_events (
+                   session_hash TEXT NOT NULL, outcome_code TEXT NOT NULL, created_at REAL NOT NULL)"""
+            )
+            conn.execute(
+                "INSERT INTO output_hook_events(session_hash, outcome_code, created_at) VALUES (?, ?, ?)",
+                (session_hash, outcome_code, time.time()),
+            )
+    except Exception:
+        pass
+
+
 def transform_llm_output(response_text, session_id="", **_kwargs):
     """Return an envelope only after joining the model presentation to a committed artifact."""
-    row = _request_for_session(session_id)
+    try:
+        row = _request_for_session(session_id)
+    except Exception:
+        _record_output_hook_event(session_id, "request_lookup_error")
+        raise
     if not row:
+        _record_output_hook_event(session_id, "session_unmapped")
         return None
     mode = row["poc_case"]
     if mode == "hook_exception":
+        _record_output_hook_event(session_id, "hook_exception")
         raise RuntimeError("synthetic hook exception")
     if mode == "hook_empty":
+        _record_output_hook_event(session_id, "hook_empty")
         return ""
     if mode == "hook_timeout":
+        _record_output_hook_event(session_id, "timeout_injected")
         time.sleep(1.0)
     try:
         value = json.loads(response_text) if isinstance(response_text, str) else None
     except (ValueError, TypeError):
+        _record_output_hook_event(session_id, "input_invalid")
         return None
     if not _valid_presentation(value):
+        _record_output_hook_event(session_id, "presentation_invalid")
         return None
-    artifact = _artifact_for_request(row)
-    if not artifact or row.get("artifact_status") != "committed":
+    try:
+        artifact = _artifact_for_request(row)
+    except Exception:
+        _record_output_hook_event(session_id, "artifact_lookup_error")
+        raise
+    if not artifact:
+        _record_output_hook_event(session_id, "artifact_missing")
+        return None
+    if row.get("artifact_status") != "committed":
+        _record_output_hook_event(session_id, "artifact_not_committed")
         return None
     if (
         artifact["artifact_ref"] != row.get("artifact_ref")
@@ -223,6 +265,7 @@ def transform_llm_output(response_text, session_id="", **_kwargs):
         or artifact["run_id"] != row["run_id"]
         or artifact["session_id"] != row["session_id"]
     ):
+        _record_output_hook_event(session_id, "artifact_binding_invalid")
         return None
 
     envelope = {
@@ -235,6 +278,7 @@ def transform_llm_output(response_text, session_id="", **_kwargs):
         "presentation_status": "ready",
         "artifact_ref": artifact["artifact_ref"],
     }
+    _record_output_hook_event(session_id, "ready")
     return _json(envelope)
 
 

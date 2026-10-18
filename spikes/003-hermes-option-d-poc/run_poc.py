@@ -213,6 +213,15 @@ presentation_hits = {
     (r["owner_scope"], r["task_id"]): int(r["hit_count"])
     for r in conn.execute("SELECT owner_scope, task_id, hit_count FROM presentations")
 }
+hook_outcomes = {}
+for event in conn.execute("SELECT session_hash, outcome_code FROM output_hook_events"):
+    if event["outcome_code"] in {
+        "session_unmapped", "hook_exception", "hook_empty", "timeout_injected",
+        "input_invalid", "presentation_invalid", "artifact_missing",
+        "artifact_not_committed", "artifact_binding_invalid", "ready",
+        "request_lookup_error", "artifact_lookup_error",
+    }:
+        hook_outcomes.setdefault(event["session_hash"], []).append(event["outcome_code"])
 by_case = {}
 all_files = set()
 for path in (state / "artifacts").glob("*"):
@@ -258,6 +267,11 @@ for name in sorted({r["poc_case"] for r in requests} | set(by_case)):
         "writer_report_byte_counts": sorted(int(r["writer_report_bytes"] or 0) for r in rows),
         "raw_output_byte_counts": sorted(int(r["raw_output_bytes"] or 0) for r in rows),
         "presentation_cache_hit_counts": sorted(presentation_hits.get((r["owner_scope"], r["task_id"]), 0) for r in rows),
+        "output_hook_outcomes": sorted(
+            code
+            for r in rows
+            for code in hook_outcomes.get(hashlib.sha256(r["session_id"].encode("utf-8", errors="replace")).hexdigest(), [])
+        ),
         "artifacts": by_case.get(name, []),
     })
 idem = conn.execute("SELECT upstream_post_count, submit_state, run_id FROM requests WHERE task_id=?", (''' + repr(idem_task) + r''',)).fetchone()
@@ -986,6 +1000,7 @@ def main() -> int:
                     "presentation_errors": row.get("presentation_errors"),
                     "raw_output_byte_counts": row.get("raw_output_byte_counts"),
                     "presentation_cache_hit_counts": row.get("presentation_cache_hit_counts"),
+                    "output_hook_outcomes": row.get("output_hook_outcomes"),
                 }
     toolset_check = evidence.get("checks", {}).get("hermes_api_toolset")
     if isinstance(toolset_check, dict):
