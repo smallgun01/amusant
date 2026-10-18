@@ -22,6 +22,7 @@ SOURCE_COMMIT = "f97608f178d1ffeca59860195ab7da295f7c8e5f"
 REPORT_CAP = 4096
 PROJECT = "amusant-issue-73-" + uuid.uuid4().hex[:12]
 CLIENT_OUTPUT_SCANS = []
+CLIENT_FAILURES = []
 ENV = os.environ.copy()
 ENV.update({
     "POC_RUN_TAG": secrets.token_hex(8),
@@ -124,16 +125,32 @@ def compose_run_client(action: str, *, timeout: int = 120) -> dict:
         raise RunnerError("infrastructure", "relay_" + action.replace("-", "_") + "_invalid_output") from None
     if not isinstance(value, dict):
         raise RunnerError("infrastructure", "relay_" + action.replace("-", "_") + "_invalid_shape")
-    if value.get("failed_case"):
-        case = str(value.get("failed_case"))
+    if value.get("failed_case") or value.get("error_type"):
+        case = str(value.get("failed_case", ""))
         error_type = str(value.get("error_type", "Unknown"))
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", case):
+            case = "unknown"
         if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,40}", error_type):
             error_type = "Unknown"
-        raise RunnerError("infrastructure", "relay_case_exception_" + case + "_" + error_type)
-    if value.get("error_type"):
-        error_type = str(value.get("error_type"))
-        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,40}", error_type):
-            error_type = "Unknown"
+        diagnostic = {"action": action, "case": case, "error_type": error_type}
+        code = value.get("error_code")
+        if isinstance(code, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,40}", code):
+            diagnostic["error_code"] = code
+        if value.get("run_id_persisted") is True or value.get("run_id_persisted") is False:
+            diagnostic["run_id_persisted"] = value["run_id_persisted"]
+        task_status = value.get("task_status")
+        if task_status in {"queued", "running", "completed", "failed", "uncertain"}:
+            diagnostic["task_status"] = task_status
+        methods = value.get("relay_http_methods")
+        if isinstance(methods, list) and all(method in {"GET", "POST"} for method in methods):
+            diagnostic["relay_http_methods"] = methods
+        statuses = value.get("relay_http_statuses")
+        if isinstance(statuses, list) and all(type(status) is int and 100 <= status <= 599 for status in statuses):
+            diagnostic["relay_http_statuses"] = statuses
+        CLIENT_FAILURES.append(diagnostic)
+        CLIENT_OUTPUT_SCANS[-1]["failure_diagnostic"] = diagnostic
+        if value.get("failed_case"):
+            raise RunnerError("infrastructure", "relay_case_exception_" + case + "_" + error_type)
         raise RunnerError("infrastructure", "relay_client_exception_" + action.replace("-", "_") + "_" + error_type)
     value["_process_exit_code"] = result.returncode
     return value
@@ -219,6 +236,8 @@ for name in sorted({r["poc_case"] for r in requests} | set(by_case)):
     case_summaries.append({
         "case": name,
         "request_count": len(rows),
+        "submit_states": sorted(r["submit_state"] for r in rows),
+        "run_id_persisted_count": sum(bool(r["run_id"]) for r in rows),
         "artifact_statuses": sorted(r["artifact_status"] for r in rows),
         "presentation_errors": sorted(r["presentation_error"] or "none" for r in rows),
         "upstream_post_counts": sorted(int(r["upstream_post_count"]) for r in rows),
@@ -553,6 +572,8 @@ def main() -> int:
         evidence["verdict"] = "PASS"
     except RunnerError as exc:
         error = {"kind": exc.kind, "step": exc.step}
+        if CLIENT_FAILURES:
+            error["client_diagnostic"] = CLIENT_FAILURES[-1]
         evidence["failure"] = error
         evidence["verdict"] = "FAIL" if exc.kind == "failure" else "INCONCLUSIVE"
     except Exception as exc:
@@ -566,11 +587,16 @@ def main() -> int:
                 evidence["resources"]["container_states"] = inspect_container_states()
             except RunnerError as exc:
                 evidence["resources"]["container_inspection_error"] = exc.step
-        if project_created and not any(name in evidence["logs"] for name in ("facade", "fake-provider", "hermes")):
+        if project_created and "provider_tool_trace" not in evidence:
             try:
-                evidence["logs"].update(scan_logs())
+                evidence["provider_tool_trace"] = {"pass": False, "cases": inspect_fake_provider()}
             except RunnerError as exc:
-                evidence["logs"]["log_scan_error"] = exc.step
+                evidence["provider_tool_trace_error"] = exc.step
+        if project_created and "artifact_database_and_files" not in evidence:
+            try:
+                evidence["artifact_database_and_files"] = {"pass": False, **inspect_facade_state()}
+            except RunnerError as exc:
+                evidence["artifact_database_error"] = exc.step
         if monitor is not None:
             evidence["resources"].update(monitor.finish())
         if project_created:
@@ -602,6 +628,26 @@ def main() -> int:
         EVIDENCE_FILE.parent.mkdir(parents=True, exist_ok=True)
         EVIDENCE_FILE.write_text(json.dumps(evidence, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
+    diagnostic_summary = {}
+    provider_cases = evidence.get("provider_tool_trace", {}).get("cases", {})
+    if isinstance(provider_cases, dict) and "restart_10k" in provider_cases:
+        provider = provider_cases["restart_10k"]
+        diagnostic_summary["restart_provider"] = {
+            "provider_turns": provider.get("provider_turns"),
+            "tool_calls_requested": provider.get("tool_calls_requested"),
+            "report_tool_call_count": provider.get("report_tool_call_count"),
+        }
+    db_summaries = evidence.get("artifact_database_and_files", {}).get("request_case_summaries", [])
+    restart_rows = [row for row in db_summaries if isinstance(row, dict) and row.get("case") == "restart_10k"]
+    if restart_rows:
+        row = restart_rows[0]
+        diagnostic_summary["restart_facade"] = {
+            "request_count": row.get("request_count"),
+            "submit_states": row.get("submit_states"),
+            "run_id_persisted_count": row.get("run_id_persisted_count"),
+            "upstream_post_counts": row.get("upstream_post_counts"),
+            "artifact_statuses": row.get("artifact_statuses"),
+        }
     safe_output = {
         "phase": "option_d_poc",
         "verdict": evidence["verdict"],
@@ -609,6 +655,7 @@ def main() -> int:
         "image_digest": IMAGE.rsplit("@sha256:", 1)[-1],
         "checks": {name: row.get("pass") for name, row in evidence.get("checks", {}).items()},
         "failure": error,
+        "diagnostics": diagnostic_summary,
         "evidence_file": str(EVIDENCE_FILE.relative_to(ROOT)),
     }
     print(json.dumps(safe_output, separators=(",", ":")))

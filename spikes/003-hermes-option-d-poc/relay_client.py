@@ -320,7 +320,23 @@ async def start_restart_case():
             }, separators=(",", ":")))
             return 0
         if running.done():
-            result = running.result()
+            try:
+                result = running.result()
+            except Exception as exc:
+                error_code = getattr(exc, "code", "unknown")
+                if not isinstance(error_code, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,40}", error_code):
+                    error_code = "unknown"
+                print(json.dumps({
+                    "phase": "restart_start",
+                    "failed_case": "restart_start",
+                    "error_type": type(exc).__name__,
+                    "error_code": error_code,
+                    "task_status": row.get("status"),
+                    "run_id_persisted": bool(row.get("backend_run_id")),
+                    "relay_http_methods": [item["method"] for item in audit.requests],
+                    "relay_http_statuses": [item["http_status"] for item in audit.requests],
+                }, separators=(",", ":")))
+                return 2
             raise RuntimeError("Run settled before simulated Relay restart: " + str(result.status))
         await asyncio.sleep(0.02)
     running.cancel()
