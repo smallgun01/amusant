@@ -85,6 +85,30 @@ def called_tool_count(messages, wanted):
     return count
 
 
+def report_tool_result_codes(messages):
+    allowed = {
+        "committed", "invalid_arguments", "report_invalid", "report_over_cap",
+        "trusted_request_context_unavailable", "artifact_write_failed",
+        "artifact_write_timeout", "artifact_conflict", "artifact_commit_failed",
+    }
+    results = []
+    for message in messages if isinstance(messages, list) else []:
+        if not isinstance(message, dict) or message.get("role") != "tool" or message.get("name") != "poc_save_report":
+            continue
+        try:
+            value = json.loads(text_parts(message.get("content", "")))
+        except (ValueError, TypeError):
+            results.append("invalid_tool_result")
+            continue
+        if isinstance(value, dict) and value.get("committed") is True and set(value) == {"committed"}:
+            results.append("committed")
+        elif isinstance(value, dict) and value.get("error") in allowed:
+            results.append(value["error"])
+        else:
+            results.append("other_tool_result")
+    return results
+
+
 def report_body(case):
     if case == "success_30k":
         size = 30000
@@ -190,6 +214,7 @@ class Handler(BaseHTTPRequestHandler):
                 "active": True,
                 "tool_names": tools,
                 "called_tools": sorted(called),
+                "report_tool_result_codes": report_tool_result_codes(messages),
                 "next_tool": next_tool,
                 "spoofed_identity_fields_included": bool(case == "wrong_binding" and next_tool == "poc_save_report" and isinstance(arguments, dict) and set(arguments) > {"report"}),
                 "delay_seconds": delay,

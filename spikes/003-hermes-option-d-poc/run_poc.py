@@ -291,8 +291,12 @@ def inspect_fake_provider() -> dict:
         case = row.get("case")
         if not isinstance(case, str):
             continue
-        item = summary.setdefault(case, {"provider_turns": 0, "tool_calls_requested": [], "report_tool_call_count": 0, "write_file_requested": False, "spoofed_identity_fields_included": False})
+        item = summary.setdefault(case, {"provider_turns": 0, "tool_calls_requested": [], "report_tool_call_count": 0, "report_tool_result_codes": [], "write_file_requested": False, "spoofed_identity_fields_included": False})
         item["provider_turns"] += 1
+        result_codes = row.get("report_tool_result_codes", [])
+        allowed_codes = {"committed", "invalid_arguments", "report_invalid", "report_over_cap", "trusted_request_context_unavailable", "artifact_write_failed", "artifact_write_timeout", "artifact_conflict", "artifact_commit_failed", "invalid_tool_result", "other_tool_result"}
+        if isinstance(result_codes, list):
+            item["report_tool_result_codes"].extend(code for code in result_codes if code in allowed_codes)
         item["spoofed_identity_fields_included"] = item["spoofed_identity_fields_included"] or row.get("spoofed_identity_fields_included") is True
         item["write_file_observed"] = item.get("write_file_observed", False) or "write_file" in row.get("called_tools", [])
         action = row.get("next_tool")
@@ -679,6 +683,7 @@ def main() -> int:
             "provider_turns": provider.get("provider_turns"),
             "tool_calls_requested": provider.get("tool_calls_requested"),
             "report_tool_call_count": provider.get("report_tool_call_count"),
+            "report_tool_result_codes": provider.get("report_tool_result_codes"),
         }
     start_phase = evidence.get("phases", {}).get("restart_start")
     if isinstance(start_phase, dict):
