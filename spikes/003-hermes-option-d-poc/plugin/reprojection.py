@@ -220,11 +220,12 @@ def reproject_missing_hook(response_text, session_id):
                 ):
                     conn.rollback()
                     return None, "reprojection_conflict"
-                conn.execute(
-                    "UPDATE presentation_repairs SET replay_count=replay_count+1 WHERE session_hash=?",
-                    (session_hash,),
-                )
-                _record_event(conn, session_hash, "reprojection_replayed")
+                if int(existing["replay_count"]) == 0:
+                    conn.execute(
+                        "UPDATE presentation_repairs SET replay_count=1 WHERE session_hash=?",
+                        (session_hash,),
+                    )
+                    _record_event(conn, session_hash, "reprojection_replayed")
                 conn.commit()
                 return projected, "replayed"
 
