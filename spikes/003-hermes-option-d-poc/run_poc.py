@@ -308,6 +308,8 @@ reprojection_guard = {
     "changed_envelope_valid": False,
 }
 try:
+    import sys
+    sys.path.insert(0, "/poc")
     from plugin.reprojection import check_existing_reprojection, project_presentation
     lost_requests = [r for r in requests if r["poc_case"] == "lost_envelope_10k"]
     if len(lost_requests) == 1:
