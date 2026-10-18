@@ -7,6 +7,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -188,7 +189,7 @@ jobs:
   issue-82-arm64-go-no-go:
     name: Native ARM64 Hermes and Relay offline gates
     if: >-
-      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' && startsWith(github.head_ref, 'codex/issue-82-'))
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
