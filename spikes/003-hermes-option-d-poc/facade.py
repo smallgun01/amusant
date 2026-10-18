@@ -431,12 +431,29 @@ class Handler(BaseHTTPRequestHandler):
             )
         artifact = valid_artifact_for_request(owner_scope, row)
         if not artifact:
+            prior_artifact_status = row.get("artifact_status")
+            if prior_artifact_status == "failed":
+                artifact_status = "failed"
+                writer_code = row.get("writer_result_code")
+                error_code = writer_code if writer_code in {
+                    "artifact_write_failed", "artifact_write_timeout",
+                    "artifact_conflict", "artifact_commit_failed",
+                } else "artifact_write_failed"
+                presentation_error = error_code
+            elif prior_artifact_status == "pending":
+                artifact_status = "pending"
+                error_code = "artifact_not_written"
+                presentation_error = error_code
+            else:
+                artifact_status = "missing"
+                error_code = "artifact_missing"
+                presentation_error = error_code
             with connect() as conn:
                 conn.execute(
-                    "UPDATE requests SET artifact_status='missing', presentation_error='artifact_missing' WHERE owner_scope=? AND task_id=?",
-                    (owner_scope, row["task_id"]),
+                    "UPDATE requests SET artifact_status=?, presentation_error=? WHERE owner_scope=? AND task_id=?",
+                    (artifact_status, presentation_error, owner_scope, row["task_id"]),
                 )
-            self.send_json(200, bounded_failure(run_id, "artifact_missing", "missing"))
+            self.send_json(200, bounded_failure(run_id, error_code, artifact_status))
             return
         good, reason = validate_envelope(output, artifact)
         if not good:
