@@ -1,0 +1,135 @@
+name: amusant-option-d-poc
+
+x-hermes-image: &hermes-image docker.io/nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7
+
+services:
+  state-init:
+    mem_limit: 256m
+    cpus: 0.5
+    network_mode: none
+    image: *hermes-image
+    user: "0:0"
+    entrypoint: ["python3", "-c"]
+    command:
+      - "import os; [os.chown(p, 10000, 10000) for p in ('/opt/data', '/state', '/relay-state')]; [os.chmod(p, 0o700) for p in ('/opt/data', '/state', '/relay-state')]"
+    volumes:
+      - hermes_home:/opt/data
+      - poc_state:/state
+      - relay_state:/relay-state
+
+  seed:
+    mem_limit: 256m
+    cpus: 0.5
+    network_mode: none
+    image: *hermes-image
+    user: "10000:10000"
+    entrypoint: ["python3", "/poc/seed_config.py"]
+    command: []
+    environment:
+      HERMES_HOME: /opt/data
+    volumes:
+      - hermes_home:/opt/data
+      - ./hermes-config.yaml:/poc/hermes-config.yaml:ro
+      - ./seed_config.py:/poc/seed_config.py:ro
+    depends_on:
+      state-init:
+        condition: service_completed_successfully
+
+  fake-provider:
+    image: *hermes-image
+    user: "10000:10000"
+    entrypoint: ["python3", "/poc/fake_provider.py"]
+    command: []
+    environment:
+      POC_RUN_TAG: "${POC_RUN_TAG:?runner must set a unique tag}"
+      FAKE_SLOW_DELAY_SECONDS: "8"
+    volumes:
+      - ./fake_provider.py:/poc/fake_provider.py:ro
+    networks:
+      - hermes_private
+
+  hermes:
+    image: *hermes-image
+    command: ["gateway", "run"]
+    environment:
+      HERMES_HOME: /opt/data
+      HERMES_UID: "10000"
+      HERMES_GID: "10000"
+      API_SERVER_ENABLED: "true"
+      API_SERVER_HOST: "0.0.0.0"
+      API_SERVER_PORT: "8642"
+      API_SERVER_KEY: "${POC_HERMES_KEY:?runner must set a Hermes-only API key}"
+      POC_FAKE_MODEL_KEY: "${POC_FAKE_MODEL_KEY:?runner must set a fake provider key}"
+      POC_STATE_DIR: /state
+      HERMES_FILE_MUTATION_VERIFIER: "1"
+    volumes:
+      - hermes_home:/opt/data
+      - poc_state:/state
+      - ./plugin:/opt/data/plugins/amusant-option-d-poc:ro
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+      fake-provider:
+        condition: service_started
+    networks:
+      - hermes_private
+
+  facade:
+    image: *hermes-image
+    user: "10000:10000"
+    entrypoint: ["python3", "/poc/facade.py"]
+    command: []
+    environment:
+      POC_STATE_DIR: /state
+      POC_FACADE_KEY: "${POC_FACADE_KEY:?runner must set a facade-only API key}"
+      POC_HERMES_KEY: "${POC_HERMES_KEY:?runner must set a Hermes-only API key}"
+      POC_RUN_TAG: "${POC_RUN_TAG:?runner must set a unique tag}"
+    volumes:
+      - poc_state:/state
+      - ./facade.py:/poc/facade.py:ro
+    depends_on:
+      - hermes
+    networks:
+      - hermes_private
+      - relay_front
+
+  relay-client:
+    image: *hermes-image
+    user: "10000:10000"
+    entrypoint: ["python3", "/poc/relay_client.py"]
+    command: []
+    environment:
+      AMUSANT_HERMES_RUNS_URL: http://facade:8643
+      AMUSANT_HERMES_API_KEY: "${POC_FACADE_KEY:?runner must set a facade-only API key}"
+      AMUSANT_HERMES_ALLOW_PLAINTEXT: "1"
+      AMUSANT_HERMES_RUN_DEADLINE_SECONDS: "60"
+      AMUSANT_HERMES_POLL_CYCLE_SECONDS: "30"
+      AMUSANT_HERMES_HTTP_TIMEOUT_SECONDS: "5"
+      AMUSANT_HERMES_POLL_INTERVAL_SECONDS: "0.05"
+      AMUSANT_HERMES_STOP_GRACE_SECONDS: "8"
+      AMUSANT_HERMES_STOP_MAX_ATTEMPTS: "3"
+      AMUSANT_HERMES_STOP_RETRY_BASE_SECONDS: "0.05"
+      AMUSANT_HERMES_STOP_RETRY_MAX_SECONDS: "0.2"
+      POC_RUN_TAG: "${POC_RUN_TAG:?runner must set a unique tag}"
+      POC_FACADE_KEY: "${POC_FACADE_KEY:?runner must set a facade-only API key}"
+      POC_STATE_DIR: /relay-state
+      PYTHONPATH: /repo
+    volumes:
+      - ./relay_client.py:/poc/relay_client.py:ro
+      - ../../relay:/repo/relay:ro
+      - relay_state:/relay-state
+    depends_on:
+      - facade
+    networks:
+      - relay_front
+
+networks:
+  hermes_private:
+    internal: true
+  relay_front:
+    internal: true
+
+volumes:
+  hermes_home:
+  poc_state:
+  relay_state:

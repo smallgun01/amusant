@@ -53,3 +53,33 @@ jobs:
         env:
           PYTHONPATH: .
         run: uv run --locked --python 3.13 --extra hardware-opus --group dev python relay/tests/psk_wss_integration.py
+
+  issue-73-option-d-poc:
+    name: Pinned Hermes Option D offline proof
+    if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'codex/issue-73-')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Verify Docker Compose is available
+        run: |
+          docker version --format '{{.Server.Version}}'
+          docker compose version
+
+      - name: Run pinned Hermes Option D proof
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: python3 spikes/003-hermes-option-d-poc/run_poc.py
+
+      - name: Upload sanitized proof evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-73-option-d-evidence-${{ github.run_id }}
+          path: spikes/003-hermes-option-d-poc/evidence/phase1.json
+          if-no-files-found: warn
+          retention-days: 14
