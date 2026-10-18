@@ -57,6 +57,8 @@ def initialize():
             raw_output_bytes INTEGER,
             terminal_seen_at REAL,
             upstream_post_count INTEGER NOT NULL DEFAULT 0,
+            submit_upstream_status INTEGER,
+            submit_upstream_error TEXT,
             created_at REAL NOT NULL,
             PRIMARY KEY(owner_scope, task_id)
         );
@@ -464,6 +466,13 @@ class Handler(BaseHTTPRequestHandler):
             "POST", "/v1/runs", upstream_body, session_key=session_key, idem=task_id,
         )
         run_id = payload.get("run_id") if isinstance(payload, dict) else None
+        safe_error = error if isinstance(error, str) and re.fullmatch(r"upstream_[A-Za-z][A-Za-z0-9]{0,40}", error) else None
+        safe_status = status if type(status) is int and 100 <= status <= 599 else None
+        with connect() as conn:
+            conn.execute(
+                "UPDATE requests SET submit_upstream_status=?, submit_upstream_error=? WHERE owner_scope=? AND task_id=?",
+                (safe_status, safe_error, owner_scope, task_id),
+            )
         if error or status >= 400 or not isinstance(run_id, str) or not run_id.startswith("run_") or len(run_id) > 256:
             with connect() as conn:
                 conn.execute(

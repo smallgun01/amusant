@@ -241,6 +241,8 @@ for name in sorted({r["poc_case"] for r in requests} | set(by_case)):
         "artifact_statuses": sorted(r["artifact_status"] for r in rows),
         "presentation_errors": sorted(r["presentation_error"] or "none" for r in rows),
         "upstream_post_counts": sorted(int(r["upstream_post_count"]) for r in rows),
+        "submit_upstream_statuses": sorted(int(r["submit_upstream_status"] or 0) for r in rows),
+        "submit_upstream_errors": sorted(r["submit_upstream_error"] or "none" for r in rows),
         "raw_output_byte_counts": sorted(int(r["raw_output_bytes"] or 0) for r in rows),
         "artifacts": by_case.get(name, []),
     })
@@ -252,6 +254,27 @@ print(json.dumps({
     "unregistered_artifact_file_count": len(all_files),
 }, separators=(",", ":")))
 '''
+
+
+def hermes_readiness_probe() -> dict:
+    script = (
+        "import json,os,urllib.error,urllib.request\n"
+        "req=urllib.request.Request('http://127.0.0.1:8642/health/detailed',headers={'Authorization':'Bearer '+os.environ.get('API_SERVER_KEY','')})\n"
+        "status=0\n"
+        "ready=False\n"
+        "try:\n"
+        "    with urllib.request.urlopen(req,timeout=3) as response:\n"
+        "        status=response.status\n"
+        "        body=json.loads(response.read(16384))\n"
+        "        ready=isinstance(body,dict) and body.get('status')=='ok'\n"
+        "except urllib.error.HTTPError as exc:\n"
+        "    status=exc.code\n"
+        "except Exception:\n"
+        "    pass\n"
+        "print(json.dumps({'http_status':status,'ready':ready},separators=(',',':')))"
+    )
+    result = compose("exec", "-T", "hermes", "python3", "-c", script, timeout=15)
+    return parse_json_stdout(result, "hermes_readiness")
 
 
 def inspect_fake_provider() -> dict:
@@ -520,6 +543,20 @@ def main() -> int:
         monitor = StatsMonitor()
         monitor.start()
 
+        readiness = None
+        for _ in range(90):
+            try:
+                readiness = hermes_readiness_probe()
+                if readiness.get("http_status") == 200 and readiness.get("ready") is True:
+                    break
+                readiness = None
+            except RunnerError:
+                readiness = None
+            time.sleep(1)
+        if not readiness:
+            raise RunnerError("infrastructure", "hermes_readiness_timeout")
+        evidence["checks"]["hermes_readiness"] = {"pass": True}
+
         health = None
         for _ in range(90):
             try:
@@ -648,6 +685,8 @@ def main() -> int:
             "submit_states": row.get("submit_states"),
             "run_id_persisted_count": row.get("run_id_persisted_count"),
             "upstream_post_counts": row.get("upstream_post_counts"),
+            "submit_upstream_statuses": row.get("submit_upstream_statuses"),
+            "submit_upstream_errors": row.get("submit_upstream_errors"),
             "artifact_statuses": row.get("artifact_statuses"),
         }
     safe_output = {
