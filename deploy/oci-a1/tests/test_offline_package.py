@@ -132,6 +132,8 @@ class OfflinePackageTests(unittest.TestCase):
         self.assertIn("restart", smoke)
         self.assertIn("artifact_ref", smoke)
         self.assertIn("binding_mutation", smoke)
+        self.assertIn("os.chown(secret_dir, 0, 20000)", smoke)
+        self.assertIn("os.chmod(secret_dir, 0o710)", smoke)
 
     def test_preflight_requires_pinned_images_and_four_non_overlapping_networks(self):
         preflight = load_preflight()

@@ -275,6 +275,8 @@ def main():
 
     secret_dir = Path("/tmp/facade-smoke-secrets")
     secret_dir.mkdir(mode=0o700)
+    os.chown(secret_dir, 0, 20000)
+    os.chmod(secret_dir, 0o710)
     _write_secret(secret_dir / "facade.key", OWNER_KEY)
     _write_secret(secret_dir / "hermes.key", HERMES_KEY)
     _write_secret(secret_dir / "writer.key", WRITER_KEY)
