@@ -128,8 +128,15 @@ class LiveBridgeSigtermProcessTests(unittest.TestCase):
                 deadline = time.monotonic() + 10
                 while time.monotonic() < deadline and child.poll() is None:
                     try:
-                        with socket.create_connection(("127.0.0.1", port), timeout=0.1):
-                            return
+                        with socket.create_connection(("127.0.0.1", port), timeout=0.1) as probe:
+                            probe.settimeout(0.5)
+                            probe.sendall(
+                                b"GET / HTTP/1.1\r\n"
+                                b"Host: 127.0.0.1\r\n"
+                                b"Connection: close\r\n\r\n"
+                            )
+                            if probe.recv(128).startswith(b"HTTP/1.1 "):
+                                return
                     except OSError:
                         time.sleep(0.02)
                 self.fail("Relay listener did not start")
