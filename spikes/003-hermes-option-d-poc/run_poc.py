@@ -243,6 +243,8 @@ for name in sorted({r["poc_case"] for r in requests} | set(by_case)):
         "upstream_post_counts": sorted(int(r["upstream_post_count"]) for r in rows),
         "submit_upstream_statuses": sorted(int(r["submit_upstream_status"] or 0) for r in rows),
         "submit_upstream_errors": sorted(r["submit_upstream_error"] or "none" for r in rows),
+        "remote_failure_types": sorted(r["remote_failure_type"] or "none" for r in rows),
+        "remote_failure_categories": sorted(r["remote_failure_category"] or "none" for r in rows),
         "raw_output_byte_counts": sorted(int(r["raw_output_bytes"] or 0) for r in rows),
         "artifacts": by_case.get(name, []),
     })
@@ -490,6 +492,7 @@ def main() -> int:
     monitor = None
     project_created = False
     error = None
+    current_step = "startup"
     try:
         info = command(["docker", "info", "--format", "{{.MemTotal}}"], timeout=30)
         require_success(info, "docker_info")
@@ -500,6 +503,7 @@ def main() -> int:
         baseline_running = docker_ids("ps", "--quiet", "--no-trunc")
         evidence["resources"]["preexisting_running_container_count"] = len(baseline_running)
 
+        current_step = "compose_config"
         config_result = compose("config", "--format", "json", timeout=30)
         config = json.loads(require_success(config_result, "compose_config"))
         services = config.get("services", {})
@@ -537,6 +541,7 @@ def main() -> int:
         if existing_volumes:
             raise RunnerError("infrastructure", "unique_volume_project_collision")
         project_created = True
+        current_step = "compose_up"
         up = compose("up", "--detach", "--pull", "missing", "hermes", "fake-provider", "facade", timeout=900)
         require_success(up, "compose_up")
         new_volumes = project_volumes()
@@ -547,6 +552,7 @@ def main() -> int:
         monitor = StatsMonitor()
         monitor.start()
 
+        current_step = "hermes_readiness"
         readiness = None
         for _ in range(90):
             try:
@@ -561,6 +567,7 @@ def main() -> int:
             raise RunnerError("infrastructure", "hermes_readiness_timeout")
         evidence["checks"]["hermes_readiness"] = {"pass": True}
 
+        current_step = "facade_health"
         health = None
         for _ in range(90):
             try:
@@ -576,24 +583,33 @@ def main() -> int:
         evidence["phases"]["health"] = health
 
         # Isolate restart recovery before other fixtures leave any intentionally active Runs.
+        current_step = "restart_start"
         evidence["phases"]["restart_start"] = compose_run_client("restart-start", timeout=60)
         time.sleep(0.5)
+        current_step = "restart_resume"
         evidence["phases"]["restart_resume"] = compose_run_client("restart-resume", timeout=120)
+        current_step = "case_matrix"
         evidence["phases"]["cases"] = compose_run_client("cases", timeout=600)
+        current_step = "access"
         evidence["phases"]["access"] = compose_run_client("access", timeout=60)
+        current_step = "stop"
         evidence["phases"]["stop"] = compose_run_client("stop", timeout=60)
         # This fixture intentionally loses the Run ID; leave it last so it cannot occupy server capacity.
+        current_step = "ambiguous"
         evidence["phases"]["ambiguous"] = compose_run_client("ambiguous", timeout=60)
 
-        evidence["checks"]["provider_tool_trace"] = {"pass": True}
-        evidence["provider_tool_trace"] = {"cases": inspect_fake_provider()}
+        provider_summary = inspect_fake_provider()
+        evidence["checks"]["provider_tool_trace"] = {"pass": True, "cases": provider_summary}
+        evidence["provider_tool_trace"] = {"cases": provider_summary}
         evidence["checks"]["artifact_database_and_files"] = {"pass": True}
         evidence["checks"]["artifact_database_and_files"].update(inspect_facade_state())
+        current_step = "log_scan"
         evidence["logs"] = scan_logs()
         evidence["logs"]["relay_client_output"] = CLIENT_OUTPUT_SCANS
         for name in ("facade", "fake-provider"):
             if evidence["logs"].get(name, {}).get("report_marker_present") or evidence["logs"].get(name, {}).get("final_marker_present") or evidence["logs"].get(name, {}).get("tool_marker_present"):
                 raise RunnerError("failure", "relay_adjacent_log_contains_payload_marker")
+        current_step = "container_inspection"
         states = inspect_container_states()
         evidence["resources"]["container_states"] = states
         state_by_service = {row["service"]: row for row in states}
@@ -614,6 +630,7 @@ def main() -> int:
             raise RunnerError("failure", "container_reported_oom_killed")
         if any(row["exit_code"] == 137 and not row["oom_killed"] for row in states):
             evidence["resources"]["exit_137_without_oom_evidence"] = True
+        current_step = "contract_validation"
         validate_run_outputs(evidence["phases"]["cases"], evidence["checks"]["artifact_database_and_files"], evidence["checks"]["provider_tool_trace"]["cases"], evidence)
         evidence["checks"]["end_to_end_contract"] = {"pass": True}
         evidence["verdict"] = "PASS"
@@ -624,7 +641,7 @@ def main() -> int:
         evidence["failure"] = error
         evidence["verdict"] = "FAIL" if exc.kind == "failure" else "INCONCLUSIVE"
     except Exception as exc:
-        error = {"kind": "infrastructure", "step": type(exc).__name__}
+        error = {"kind": "infrastructure", "step": current_step + "_" + type(exc).__name__}
         evidence["failure"] = error
         evidence["verdict"] = "INCONCLUSIVE"
     finally:
@@ -715,6 +732,8 @@ def main() -> int:
             "upstream_post_counts": row.get("upstream_post_counts"),
             "submit_upstream_statuses": row.get("submit_upstream_statuses"),
             "submit_upstream_errors": row.get("submit_upstream_errors"),
+            "remote_failure_types": row.get("remote_failure_types"),
+            "remote_failure_categories": row.get("remote_failure_categories"),
             "artifact_statuses": row.get("artifact_statuses"),
         }
     safe_output = {

@@ -59,6 +59,8 @@ def initialize():
             upstream_post_count INTEGER NOT NULL DEFAULT 0,
             submit_upstream_status INTEGER,
             submit_upstream_error TEXT,
+            remote_failure_type TEXT,
+            remote_failure_category TEXT,
             created_at REAL NOT NULL,
             PRIMARY KEY(owner_scope, task_id)
         );
@@ -336,6 +338,43 @@ class Handler(BaseHTTPRequestHandler):
         if run_status not in {"completed", "failed", "cancelled", "interrupted", "expired", "queued", "pending", "running", "waiting_for_approval", "stopping"}:
             self.send_json(502, bounded_failure(run_id, "upstream_status_invalid", row["artifact_status"]))
             return
+        if run_status in {"failed", "cancelled", "interrupted", "expired"}:
+            raw_error = payload.get("error")
+            error_text = ""
+            error_type = None
+            if isinstance(raw_error, str):
+                error_text = raw_error
+            elif isinstance(raw_error, dict):
+                candidate = raw_error.get("type") or raw_error.get("code")
+                if isinstance(candidate, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,40}", candidate):
+                    error_type = candidate
+                detail = raw_error.get("message") or raw_error.get("detail")
+                if isinstance(detail, str):
+                    error_text = detail
+            if error_type is None:
+                match = re.match(r"^([A-Za-z][A-Za-z0-9_.-]{0,40})", error_text)
+                candidate_type = match.group(1) if match else ""
+                error_type = candidate_type if candidate_type.endswith(("Error", "Exception")) else None
+            lowered_error = error_text.lower()
+            if any(token in lowered_error for token in ("timeout", "timed out", "deadline")):
+                error_category = "timeout"
+            elif any(token in lowered_error for token in ("tool", "plugin")):
+                error_category = "tool_or_plugin"
+            elif any(token in lowered_error for token in ("provider", "model")):
+                error_category = "provider"
+            elif any(token in lowered_error for token in ("sqlite", "database", "storage", "filesystem", "file")):
+                error_category = "persistence"
+            elif any(token in lowered_error for token in ("memory", "oom", "resource")):
+                error_category = "resource"
+            elif error_type:
+                error_category = "typed_failure"
+            else:
+                error_category = "other"
+            with connect() as conn:
+                conn.execute(
+                    "UPDATE requests SET remote_failure_type=?, remote_failure_category=? WHERE owner_scope=? AND task_id=?",
+                    (error_type, error_category, owner_scope, row["task_id"]),
+                )
         if run_status not in {"completed", "failed", "cancelled", "interrupted", "expired"}:
             self.send_json(200, {"run_id": run_id, "status": run_status})
             return
