@@ -8,6 +8,7 @@ services:
     cpus: 0.5
     network_mode: none
     image: *hermes-image
+    platform: ${POC_HERMES_PLATFORM:-linux/amd64}
     user: "0:0"
     entrypoint: ["python3", "-c"]
     command:
@@ -22,6 +23,7 @@ services:
     cpus: 0.5
     network_mode: none
     image: *hermes-image
+    platform: ${POC_HERMES_PLATFORM:-linux/amd64}
     user: "10000:10000"
     entrypoint: ["python3", "/poc/seed_config.py"]
     command: []
@@ -39,6 +41,7 @@ services:
     mem_limit: 512m
     cpus: 1.0
     image: *hermes-image
+    platform: ${POC_HERMES_PLATFORM:-linux/amd64}
     user: "10000:10000"
     entrypoint: ["python3", "/poc/fake_provider.py"]
     command: []
@@ -54,6 +57,7 @@ services:
     mem_limit: 1536m
     cpus: 2.0
     image: *hermes-image
+    platform: ${POC_HERMES_PLATFORM:-linux/amd64}
     command: ["gateway", "run"]
     environment:
       HERMES_HOME: /opt/data
@@ -83,6 +87,7 @@ services:
     mem_limit: 512m
     cpus: 1.0
     image: *hermes-image
+    platform: ${POC_HERMES_PLATFORM:-linux/amd64}
     user: "10000:10000"
     entrypoint: ["python3", "/poc/facade.py"]
     command: []
@@ -105,6 +110,7 @@ services:
     mem_limit: 1024m
     cpus: 1.0
     image: *hermes-image
+    platform: ${POC_HERMES_PLATFORM:-linux/amd64}
     user: "10000:10000"
     entrypoint: ["python3", "/poc/relay_client.py"]
     command: []

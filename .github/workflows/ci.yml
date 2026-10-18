@@ -7,6 +7,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -183,5 +184,36 @@ jobs:
         with:
           name: issue-79-option-d-recovery-evidence-${{ github.run_id }}
           path: spikes/003-hermes-option-d-poc/evidence/phase2.json
+          if-no-files-found: warn
+          retention-days: 14
+  issue-82-arm64-go-no-go:
+    name: Native ARM64 Hermes and Relay offline gates
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && github.head_ref == 'codex/issue-82-arm64-gate')
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    env:
+      ARM64_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up native Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Run native ARM64 offline go/no-go gate
+        run: python3 deploy/oci-a1/arm64_gate.py
+
+      - name: Upload sanitized ARM64 gate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-82-arm64-gate-${{ github.run_id }}
+          path: |
+            deploy/oci-a1/evidence/arm64-gate.json
+            spikes/003-hermes-option-d-poc/evidence/phase2.json
           if-no-files-found: warn
           retention-days: 14
