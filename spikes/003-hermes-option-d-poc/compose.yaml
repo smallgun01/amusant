@@ -36,6 +36,8 @@ services:
         condition: service_completed_successfully
 
   fake-provider:
+    mem_limit: 512m
+    cpus: 1.0
     image: *hermes-image
     user: "10000:10000"
     entrypoint: ["python3", "/poc/fake_provider.py"]
@@ -49,6 +51,8 @@ services:
       - hermes_private
 
   hermes:
+    mem_limit: 1536m
+    cpus: 2.0
     image: *hermes-image
     command: ["gateway", "run"]
     environment:
@@ -75,6 +79,8 @@ services:
       - hermes_private
 
   facade:
+    mem_limit: 512m
+    cpus: 1.0
     image: *hermes-image
     user: "10000:10000"
     entrypoint: ["python3", "/poc/facade.py"]
@@ -94,6 +100,8 @@ services:
       - relay_front
 
   relay-client:
+    mem_limit: 1024m
+    cpus: 1.0
     image: *hermes-image
     user: "10000:10000"
     entrypoint: ["python3", "/poc/relay_client.py"]
