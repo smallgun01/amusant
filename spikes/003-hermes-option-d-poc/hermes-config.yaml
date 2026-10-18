@@ -33,3 +33,4 @@ plugins:
 platform_toolsets:
   api_server:
     - amusant_option_d
+    - file

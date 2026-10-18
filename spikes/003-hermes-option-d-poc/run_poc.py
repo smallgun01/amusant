@@ -345,12 +345,15 @@ def inspect_fake_provider() -> dict:
         case = row.get("case")
         if not isinstance(case, str):
             continue
-        item = summary.setdefault(case, {"provider_turns": 0, "observed_tool_names": [], "tool_calls_requested": [], "report_tool_call_count": 0, "report_tool_result_codes": [], "write_file_requested": False, "spoofed_identity_fields_included": False, "tools_field_types": [], "tools_field_counts": [], "functions_field_types": [], "functions_field_counts": []})
+        item = summary.setdefault(case, {"provider_turns": 0, "observed_tool_names": [], "tool_search_bridge_offered": False, "tool_calls_requested": [], "report_tool_call_count": 0, "report_tool_result_codes": [], "write_file_requested": False, "spoofed_identity_fields_included": False, "tools_field_types": [], "tools_field_counts": [], "functions_field_types": [], "functions_field_counts": []})
         item["provider_turns"] += 1
         item["poc_tool_offered"] = item.get("poc_tool_offered", False) or row.get("poc_tool_offered") is True or "poc_save_report" in row.get("tool_names", [])
+        item["tool_search_bridge_offered"] = item["tool_search_bridge_offered"] or row.get("tool_search_bridge_offered") is True
         names = row.get("tool_names", [])
         if isinstance(names, list):
             item["observed_tool_names"].extend(name for name in names if isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,96}", name))
+            if {"tool_call", "tool_describe", "tool_search"} <= set(names):
+                item["tool_search_bridge_offered"] = True
         for field in ("tools", "functions"):
             field_type = row.get(field + "_field_type")
             field_count = row.get(field + "_field_count")
@@ -367,12 +370,13 @@ def inspect_fake_provider() -> dict:
         action = row.get("next_tool")
         if isinstance(action, str):
             item["tool_calls_requested"].append(action)
-            if action == "poc_save_report":
-                item["report_tool_call_count"] += 1
-            if action == "write_file":
-                item["write_file_requested"] = True
+        if row.get("report_tool_requested") is True or action == "poc_save_report":
+            item["report_tool_call_count"] += 1
+        if row.get("write_file_requested") is True or action == "write_file":
+            item["write_file_requested"] = True
     for item in summary.values():
         item["observed_tool_names"] = sorted(set(item["observed_tool_names"]))[:32]
+        item["report_tool_result_codes"] = sorted(set(item["report_tool_result_codes"]))
     return summary
 
 
@@ -476,6 +480,13 @@ def validate_run_outputs(results: dict, db: dict, provider: dict, evidence: dict
             raise RunnerError("failure", "uncommitted_reference_exposed_" + name)
     if cases["lost_envelope_10k"].get("lost_terminal_delivery_retried") is not True or cases["lost_envelope_10k"].get("same_reference_after_redelivery") is not True:
         raise RunnerError("failure", "lost_envelope_recovery_failed")
+    for name in ("success_10k", "success_30k", "writer_redelivery", "writer_fail", "writer_slow", "wrong_binding"):
+        provider_case = provider.get(name, {})
+        if not provider_case.get("poc_tool_offered") and not provider_case.get("tool_search_bridge_offered"):
+            raise RunnerError("failure", "artifact_tool_not_offered_" + name)
+        if (not provider_case.get("poc_tool_offered")
+                and not {"tool_search", "tool_describe", "tool_call"} <= set(provider_case.get("tool_calls_requested", []))):
+            raise RunnerError("failure", "artifact_tool_bridge_not_exercised_" + name)
     if provider.get("no_writer", {}).get("report_tool_call_count") != 0:
         raise RunnerError("failure", "uncalled_writer_was_invoked")
     for name in ("writer_fail", "writer_slow", "wrong_binding"):
@@ -830,6 +841,7 @@ def main() -> int:
             "report_tool_call_count": provider.get("report_tool_call_count"),
             "report_tool_result_codes": provider.get("report_tool_result_codes"),
             "poc_tool_offered": provider.get("poc_tool_offered"),
+            "tool_search_bridge_offered": provider.get("tool_search_bridge_offered"),
             "observed_tool_names": provider.get("observed_tool_names"),
             "tools_field_types": provider.get("tools_field_types"),
             "tools_field_counts": provider.get("tools_field_counts"),
@@ -844,6 +856,8 @@ def main() -> int:
             "report_tool_call_count": provider.get("report_tool_call_count"),
             "report_tool_result_codes": provider.get("report_tool_result_codes"),
             "poc_tool_offered": provider.get("poc_tool_offered"),
+            "tool_search_bridge_offered": provider.get("tool_search_bridge_offered"),
+            "observed_tool_names": provider.get("observed_tool_names"),
             "tools_field_types": provider.get("tools_field_types"),
             "tools_field_counts": provider.get("tools_field_counts"),
             "functions_field_types": provider.get("functions_field_types"),

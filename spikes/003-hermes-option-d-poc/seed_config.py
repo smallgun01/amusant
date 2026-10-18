@@ -24,6 +24,7 @@ required = (
     b"platform_toolsets:",
     b"api_server:",
     b"amusant_option_d",
+    b"    - file",
 )
 if destination.exists():
     current = destination.read_bytes()

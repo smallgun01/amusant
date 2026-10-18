@@ -79,6 +79,67 @@ def field_shape(payload, key):
     return "other", 0
 
 
+def _function_arguments(call):
+    function = call.get("function") if isinstance(call, dict) else None
+    raw = function.get("arguments") if isinstance(function, dict) else None
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            value = json.loads(raw)
+            return value if isinstance(value, dict) else {}
+        except (ValueError, TypeError):
+            return {}
+    return {}
+
+
+def _bridge_calls(messages, bridge_name):
+    result = []
+    for message in messages if isinstance(messages, list) else []:
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        calls = message.get("tool_calls")
+        for call in calls if isinstance(calls, list) else []:
+            function = call.get("function") if isinstance(call, dict) else None
+            if isinstance(function, dict) and function.get("name") == bridge_name:
+                result.append(_function_arguments(call))
+    return result
+
+
+def _bridge_request_seen(messages, bridge_name, key, target):
+    for arguments in _bridge_calls(messages, bridge_name):
+        value = arguments.get(key)
+        values = [value] if isinstance(value, str) else value if isinstance(value, list) else []
+        if target in values:
+            return True
+    return False
+
+
+def request_tool(target, arguments, available_tools, messages):
+    """Use Hermes's native tool-search bridge when a plugin/file tool is deferred."""
+    if target in available_tools:
+        return target, arguments
+    if "tool_call" not in available_tools:
+        return target, arguments
+    if "tool_search" in available_tools and not _bridge_request_seen(messages, "tool_search", "queries", target):
+        return "tool_search", {"queries": [target]}
+    if "tool_describe" in available_tools and not _bridge_request_seen(messages, "tool_describe", "names", target):
+        return "tool_describe", {"names": [target]}
+    return "tool_call", {"calls": [{"name": target, "arguments": arguments}]}
+
+
+def requested_tool_arguments(action, arguments, wanted):
+    if action == wanted and isinstance(arguments, dict):
+        return arguments
+    if action != "tool_call" or not isinstance(arguments, dict):
+        return None
+    calls = arguments.get("calls")
+    for item in calls if isinstance(calls, list) else []:
+        if isinstance(item, dict) and item.get("name") == wanted and isinstance(item.get("arguments"), dict):
+            return item["arguments"]
+    return None
+
+
 def called_tools(messages):
     result = set()
     for message in messages if isinstance(messages, list) else []:
@@ -87,11 +148,15 @@ def called_tools(messages):
         if message.get("role") == "tool" and isinstance(message.get("name"), str):
             result.add(message["name"])
         calls = message.get("tool_calls")
-        if isinstance(calls, list):
-            for call in calls:
-                function = call.get("function") if isinstance(call, dict) else None
-                if isinstance(function, dict) and isinstance(function.get("name"), str):
-                    result.add(function["name"])
+        for call in calls if isinstance(calls, list) else []:
+            function = call.get("function") if isinstance(call, dict) else None
+            name = function.get("name") if isinstance(function, dict) else None
+            if isinstance(name, str):
+                result.add(name)
+            if name == "tool_call":
+                for item in _function_arguments(call).get("calls", []):
+                    if isinstance(item, dict) and isinstance(item.get("name"), str):
+                        result.add(item["name"])
     return result
 
 
@@ -103,8 +168,14 @@ def called_tool_count(messages, wanted):
         calls = message.get("tool_calls")
         for call in calls if isinstance(calls, list) else []:
             function = call.get("function") if isinstance(call, dict) else None
-            if isinstance(function, dict) and function.get("name") == wanted:
+            name = function.get("name") if isinstance(function, dict) else None
+            if name == wanted:
                 count += 1
+            elif name == "tool_call":
+                count += sum(
+                    1 for item in _function_arguments(call).get("calls", [])
+                    if isinstance(item, dict) and item.get("name") == wanted
+                )
     return count
 
 
@@ -114,9 +185,28 @@ def report_tool_result_codes(messages):
         "trusted_request_context_unavailable", "artifact_write_failed",
         "artifact_write_timeout", "artifact_conflict", "artifact_commit_failed",
     }
+    pending = {}
     results = []
     for message in messages if isinstance(messages, list) else []:
-        if not isinstance(message, dict) or message.get("role") != "tool" or message.get("name") != "poc_save_report":
+        if not isinstance(message, dict):
+            continue
+        if message.get("role") == "assistant":
+            for call in message.get("tool_calls", []) if isinstance(message.get("tool_calls"), list) else []:
+                function = call.get("function") if isinstance(call, dict) else None
+                if isinstance(function, dict) and function.get("name") == "tool_call":
+                    names = [
+                        item.get("name") for item in _function_arguments(call).get("calls", [])
+                        if isinstance(item, dict) and isinstance(item.get("name"), str)
+                    ]
+                    pending[call.get("id")] = names
+            continue
+        if message.get("role") != "tool":
+            continue
+        name = message.get("name")
+        is_report_result = name == "poc_save_report" or (
+            name == "tool_call" and "poc_save_report" in pending.get(message.get("tool_call_id"), [])
+        )
+        if not is_report_result:
             continue
         try:
             value = json.loads(text_parts(message.get("content", "")))
@@ -130,8 +220,6 @@ def report_tool_result_codes(messages):
         else:
             results.append("other_tool_result")
     return results
-
-
 def report_body(case):
     if case == "success_30k":
         size = 30000
@@ -212,22 +300,27 @@ class Handler(BaseHTTPRequestHandler):
         writer_calls = called_tool_count(messages, "poc_save_report")
         should_write = case != "no_writer" and (writer_calls == 0 or (case == "writer_redelivery" and writer_calls == 1))
         if should_write:
-            next_tool = "poc_save_report"
             report = report_body(case)
-            arguments = {"report": report}
+            report_arguments = {"report": report}
             if case == "wrong_binding":
-                arguments.update({
+                report_arguments.update({
                     "owner_scope": "model-spoofed-owner",
                     "task_id": "model-spoofed-task",
                     "run_id": "model-spoofed-run",
                     "artifact_ref": "model-spoofed-reference",
                 })
+            next_tool, arguments = request_tool("poc_save_report", report_arguments, tools, messages)
         elif is_late_case and "write_file" not in called:
-            next_tool = "write_file"
-            arguments = {
+            write_arguments = {
                 "path": "/proc/amusant-option-d-poc-denied.txt",
                 "content": f"POC_TOOL_SECRET_{RUN_TAG}_{case}_This deterministic write must fail.",
             }
+            next_tool, arguments = request_tool("write_file", write_arguments, tools, messages)
+
+        report_tool_arguments = requested_tool_arguments(next_tool, arguments, "poc_save_report")
+        write_file_arguments = requested_tool_arguments(next_tool, arguments, "write_file")
+        report_tool_requested = isinstance(report_tool_arguments, dict)
+        write_file_requested = isinstance(write_file_arguments, dict)
 
         delay = SLOW_DELAY if case in {"restart_10k", "ambiguous_10k", "stop_10k"} and not called else 0.0
         with self.server.state.lock:
@@ -239,6 +332,9 @@ class Handler(BaseHTTPRequestHandler):
                 "active": True,
                 "tool_names": tools,
                 "poc_tool_offered": "poc_save_report" in tools,
+                "tool_search_bridge_offered": {"tool_call", "tool_describe", "tool_search"} <= set(tools),
+                "report_tool_requested": report_tool_requested,
+                "write_file_requested": write_file_requested,
                 "tools_field_type": tools_field_type,
                 "tools_field_count": tools_field_count,
                 "functions_field_type": functions_field_type,
@@ -246,7 +342,7 @@ class Handler(BaseHTTPRequestHandler):
                 "called_tools": sorted(called),
                 "report_tool_result_codes": report_tool_result_codes(messages),
                 "next_tool": next_tool,
-                "spoofed_identity_fields_included": bool(case == "wrong_binding" and next_tool == "poc_save_report" and isinstance(arguments, dict) and set(arguments) > {"report"}),
+                "spoofed_identity_fields_included": bool(case == "wrong_binding" and isinstance(report_tool_arguments, dict) and set(report_tool_arguments) > {"report"}),
                 "delay_seconds": delay,
                 "created_at": time.time(),
             })
