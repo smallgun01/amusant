@@ -1,3 +1,5 @@
+> **Current execution overlay (2026-10-18):** Owner selected [ADR-0003 OCI A1 + Hermes + SQLite](../adr/0003-oci-a1-hermes-sqlite.md) as the **implementation target, not a validated live service**. WS2 Hermes Native Runs code is merged (#45/#60/#65), with #73 small-envelope trust boundary offline PoC pending. WS3 owns #62 / PR #70 OCI image/Compose and ingress #27; WS4 owns SQLite backup/restore/retention, security, E3/E4 evidence. For OCI, the earlier AWS-specific A2/#35/DynamoDB and OpenAB B0 tasks below are historical/legacy-only; reinterpret, don't silently mark them PASS. The v1 Slow product policy is one outstanding task and **immediate busy rejection**, not FIFO/8 pending. Later OCI cloud/device/paid E2E requires separate owner approval.
+
 # Amusant Project Execution — Four Workstreams (WS1–WS4)
 
 > Owner-approved PM restructuring: 2026-10-16. **Planning and tracking only; no runtime changes or execution authorization.**
