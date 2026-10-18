@@ -442,6 +442,11 @@ class Handler(BaseHTTPRequestHandler):
                 )
             self.send_json(502, bounded_failure(run_id, "upstream_unavailable", row["artifact_status"]))
             return
+        # The writer may commit while this upstream GET is in flight. Refresh
+        # the trusted mapping before validating the terminal envelope.
+        latest_row = request_by_owner_run(owner_scope, run_id)
+        if latest_row:
+            row = latest_row
         run_status = str(payload.get("status", "")).lower()
         with connect() as conn:
             conn.execute(
