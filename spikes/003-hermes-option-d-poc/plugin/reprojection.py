@@ -178,6 +178,8 @@ def reproject_missing_hook(response_text, session_id):
         output_hash = hashlib.sha256(projected.encode("utf-8")).hexdigest()
         session_hash = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
         reference_hash = hashlib.sha256(artifact["artifact_ref"].encode("utf-8")).hexdigest()
+        binding_material = chr(0).join((row["owner_scope"], row["task_id"], row["session_id"], row["run_id"]))
+        binding_hash = hashlib.sha256(binding_material.encode("utf-8")).hexdigest()
 
         with _connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -185,6 +187,7 @@ def reproject_missing_hook(response_text, session_id):
                 """CREATE TABLE IF NOT EXISTS presentation_repairs (
                     session_hash TEXT PRIMARY KEY,
                     artifact_ref_hash TEXT NOT NULL,
+                    binding_sha256 TEXT NOT NULL,
                     source_sha256 TEXT NOT NULL,
                     output_sha256 TEXT NOT NULL,
                     created_at REAL NOT NULL,
@@ -198,6 +201,7 @@ def reproject_missing_hook(response_text, session_id):
             if existing:
                 if (
                     existing["artifact_ref_hash"] != reference_hash
+                    or existing["binding_sha256"] != binding_hash
                     or existing["source_sha256"] != source_hash
                     or existing["output_sha256"] != output_hash
                 ):
@@ -220,9 +224,9 @@ def reproject_missing_hook(response_text, session_id):
                 return None, "hook_event_present"
             conn.execute(
                 """INSERT INTO presentation_repairs
-                   (session_hash, artifact_ref_hash, source_sha256, output_sha256, created_at)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (session_hash, reference_hash, source_hash, output_hash, time.time()),
+                   (session_hash, artifact_ref_hash, binding_sha256, source_sha256, output_sha256, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (session_hash, reference_hash, binding_hash, source_hash, output_hash, time.time()),
             )
             _record_event(conn, session_hash, "reprojected")
             conn.commit()
