@@ -301,6 +301,36 @@ def hermes_plugin_registration_probe() -> dict:
     }
 
 
+def hermes_api_toolset_probe() -> dict:
+    script = """import json, os, urllib.error, urllib.request
+req = urllib.request.Request(
+    "http://127.0.0.1:8642/v1/toolsets",
+    headers={"Authorization": "Bearer " + os.environ.get("API_SERVER_KEY", "")},
+)
+status = 0
+body = {}
+try:
+    with urllib.request.urlopen(req, timeout=5) as response:
+        status = response.status
+        body = json.loads(response.read(1048576))
+except urllib.error.HTTPError as exc:
+    status = exc.code
+except Exception:
+    pass
+rows = body.get("data", []) if isinstance(body, dict) else []
+row = next((item for item in rows if isinstance(item, dict) and item.get("name") == "amusant_option_d"), {}) if isinstance(rows, list) else {}
+tools = row.get("tools", []) if isinstance(row, dict) else []
+print(json.dumps({
+    "http_status": status,
+    "toolset_seen": bool(row),
+    "toolset_enabled": row.get("enabled") is True if isinstance(row, dict) else False,
+    "tool_registered": "poc_save_report" in tools if isinstance(tools, list) else False,
+}, separators=(",", ":")))
+"""
+    result = compose("exec", "-T", "hermes", "python3", "-c", script, timeout=20)
+    return parse_json_stdout(result, "hermes_api_toolset")
+
+
 def inspect_fake_provider() -> dict:
     script = "import json,urllib.request; r=urllib.request.urlopen('http://fake-provider:8000/_poc/stats',timeout=5); print(json.dumps(json.load(r),separators=(',',':')))"
     result = compose("exec", "-T", "hermes", "python3", "-c", script, timeout=20)
@@ -624,6 +654,35 @@ def main() -> int:
         if not plugin_pass:
             raise RunnerError("infrastructure", "plugin_registration_not_confirmed")
 
+        current_step = "hermes_api_toolset"
+        toolset_state = None
+        for _ in range(10):
+            try:
+                candidate = hermes_api_toolset_probe()
+                if candidate.get("http_status") == 200:
+                    toolset_state = candidate
+                    break
+            except RunnerError:
+                pass
+            time.sleep(1)
+        if toolset_state is None:
+            toolset_state = {"http_status": 0, "toolset_seen": False, "toolset_enabled": False, "tool_registered": False}
+        toolset_pass = (
+            toolset_state.get("http_status") == 200
+            and toolset_state.get("toolset_seen") is True
+            and toolset_state.get("toolset_enabled") is True
+            and toolset_state.get("tool_registered") is True
+        )
+        evidence["checks"]["hermes_api_toolset"] = {
+            "pass": toolset_pass,
+            "http_status": toolset_state.get("http_status") if type(toolset_state.get("http_status")) is int else 0,
+            "toolset_seen": toolset_state.get("toolset_seen") is True,
+            "toolset_enabled": toolset_state.get("toolset_enabled") is True,
+            "tool_registered": toolset_state.get("tool_registered") is True,
+        }
+        if not toolset_pass:
+            raise RunnerError("infrastructure", "api_plugin_toolset_not_enabled")
+
         current_step = "facade_health"
         health = None
         for _ in range(90):
@@ -865,6 +924,14 @@ def main() -> int:
                     "writer_report_byte_counts": row.get("writer_report_byte_counts"),
                     "artifact_statuses": row.get("artifact_statuses"),
                 }
+    toolset_check = evidence.get("checks", {}).get("hermes_api_toolset")
+    if isinstance(toolset_check, dict):
+        diagnostic_summary["hermes_api_toolset"] = {
+            "http_status": toolset_check.get("http_status"),
+            "toolset_seen": toolset_check.get("toolset_seen") is True,
+            "toolset_enabled": toolset_check.get("toolset_enabled") is True,
+            "tool_registered": toolset_check.get("tool_registered") is True,
+        }
     plugin_check = evidence.get("checks", {}).get("hermes_plugin_registration")
     if isinstance(plugin_check, dict):
         diagnostic_summary["hermes_plugin_registration"] = {

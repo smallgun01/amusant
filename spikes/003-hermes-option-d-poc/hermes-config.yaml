@@ -30,3 +30,6 @@ plugins:
   enabled:
     - amusant-option-d-poc
   hook_callback_timeout: 0.15
+platform_toolsets:
+  api_server:
+    - amusant_option_d

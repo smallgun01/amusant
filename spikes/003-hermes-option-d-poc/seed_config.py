@@ -21,6 +21,9 @@ required = (
     b"single_query_mode: deny",
     b"amusant-option-d-poc",
     b"hook_callback_timeout: 0.15",
+    b"platform_toolsets:",
+    b"api_server:",
+    b"amusant_option_d",
 )
 if destination.exists():
     current = destination.read_bytes()

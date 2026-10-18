@@ -7,7 +7,7 @@ This proof answers Issue [#73](https://github.com/smallgun01/amusant/issues/73):
 - Hermes image: `docker.io/nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7`
 - Source revision: `f97608f178d1ffeca59860195ab7da295f7c8e5f`
 - The run script rejects any Compose configuration that does not use the exact image digest.
-- Before the matrix starts, the runner confirms the pinned gateway registered both the artifact tool and output hook. Plugin debug output stays inside the runner; evidence keeps only registration booleans and a bounded exception type.
+- Before the matrix starts, the runner confirms the pinned gateway registered both the artifact tool and output hook, and that the API server exposes the enabled toolset. Plugin debug output stays inside the runner; evidence keeps only registration booleans and a bounded exception type.
 
 The fake provider is a deterministic local OpenAI-compatible server. The proof creates random, throwaway API keys and configures no external model provider. The host must download the pinned image before the run; all proof containers themselves have no external network. The proof does not call a paid provider.
 
