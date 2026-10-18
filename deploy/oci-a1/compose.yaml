@@ -216,4 +216,3 @@ secrets:
     file: ${DEVICE_PSKS_FILE:?set an owner-only secret file path}
   hermes_api_key:
     file: ${HERMES_API_KEY_FILE:?set a group-readable secret file path}
-

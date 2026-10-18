@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 12023)
-Total output lines: 990
-
 #!/usr/bin/env python3
 """Private-LAN Kai-sim PTT bridge to the Gemini Live adapter.
 Audio buffers exist only in RAM for the current utterance; never persist PCM or credentials.
@@ -521,7 +518,10 @@ def make_handler(
                     )
                     turn.tool_action_kind = tool_kind
                     if session_slow_path_tool_handler is None:
-                        result = {"status": "unavailable", "code": "slow_path_not…23 tokens truncated…        result = await session_slow_path_tool_handler(event, turn.turn_id)
+                        result = {"status": "unavailable", "code": "slow_path_not_configured"}
+                    else:
+                        try:
+                            result = await session_slow_path_tool_handler(event, turn.turn_id)
                             if not isinstance(result, Mapping):
                                 result = {"status": "unknown", "code": "invalid_tool_result"}
                             else:
@@ -987,4 +987,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

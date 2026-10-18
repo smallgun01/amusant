@@ -55,4 +55,3 @@ The Compose resource values are ceilings, not reservations. The sample 0.35/0.55
 4. Measure FAST p50/p95 with one representative Hermes tool task; collect per-container RSS/OOM and CPU throttling; stop and restart both services and prove a known Relay Run resumes by GET only and the same Hermes Run state persists. A single-host outage still loses FAST+SLOW availability.
 
 Hermes API timing variables remain mandatory because Issue #58 has no approved product values. Main now contains the owner-approved OCI A1 + Hermes + SQLite target architecture overlay in ADR-0003, merged by PR #77. This candidate does not amend that approved SPEC/ADR baseline; live OCI capacity, provider configuration, networking, restore, and FAST performance checks remain separate acceptance gates.
-
