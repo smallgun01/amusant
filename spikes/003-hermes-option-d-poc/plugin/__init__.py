@@ -197,7 +197,7 @@ def _valid_presentation(value):
 
 def _record_output_hook_event(session_id, outcome_code):
     if not isinstance(outcome_code, str) or outcome_code not in {
-        "session_unmapped", "hook_exception", "hook_empty", "timeout_injected",
+        "session_missing", "session_unmapped", "hook_exception", "hook_empty", "timeout_injected",
         "input_invalid", "presentation_invalid", "artifact_missing",
         "artifact_not_committed", "artifact_binding_invalid", "ready",
         "request_lookup_error", "artifact_lookup_error",
@@ -221,6 +221,9 @@ def _record_output_hook_event(session_id, outcome_code):
 
 def transform_llm_output(response_text, session_id="", **_kwargs):
     """Return an envelope only after joining the model presentation to a committed artifact."""
+    if not isinstance(session_id, str) or not session_id:
+        _record_output_hook_event(session_id, "session_missing")
+        return None
     try:
         row = _request_for_session(session_id)
     except Exception:

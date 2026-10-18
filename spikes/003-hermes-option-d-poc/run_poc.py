@@ -214,13 +214,15 @@ presentation_hits = {
     for r in conn.execute("SELECT owner_scope, task_id, hit_count FROM presentations")
 }
 hook_outcomes = {}
+hook_event_counts = {}
 for event in conn.execute("SELECT session_hash, outcome_code FROM output_hook_events"):
     if event["outcome_code"] in {
-        "session_unmapped", "hook_exception", "hook_empty", "timeout_injected",
+        "session_missing", "session_unmapped", "hook_exception", "hook_empty", "timeout_injected",
         "input_invalid", "presentation_invalid", "artifact_missing",
         "artifact_not_committed", "artifact_binding_invalid", "ready",
         "request_lookup_error", "artifact_lookup_error",
     }:
+        hook_event_counts[event["outcome_code"]] = hook_event_counts.get(event["outcome_code"], 0) + 1
         hook_outcomes.setdefault(event["session_hash"], []).append(event["outcome_code"])
 by_case = {}
 all_files = set()
@@ -280,6 +282,7 @@ print(json.dumps({
     "idempotency_request": None if idem is None else {"upstream_post_count": int(idem[0]), "accepted": idem[1] == "accepted", "run_id_present": bool(idem[2])},
     "registered_artifact_count": len(artifacts),
     "unregistered_artifact_file_count": len(all_files),
+    "output_hook_event_counts": hook_event_counts,
 }, separators=(",", ":")))
 '''
 
@@ -874,6 +877,7 @@ def main() -> int:
             "functions_field_types": provider.get("functions_field_types"),
             "functions_field_counts": provider.get("functions_field_counts"),
         }
+    diagnostic_summary["output_hook_event_counts"] = evidence.get("artifact_database_and_files", {}).get("output_hook_event_counts", {})
     if isinstance(provider_cases, dict) and "lost_envelope_10k" in provider_cases:
         provider = provider_cases["lost_envelope_10k"]
         diagnostic_summary["lost_envelope_10k_provider"] = {
