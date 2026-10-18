@@ -210,7 +210,12 @@ def verify_pinned_sources(root):
         (base_inl, "if (uniCode > 0xFFFF || (!font->updateFontMetric"),
         (base_inl, "uniCode = 0;"),
         (fonts_hpp, "bool utf8 = true;"),
+        (fonts_hpp, "const uint8_t* getGlyph(uint16_t encoding) const;"),
         (base_hpp, "emoji_draw_cb_t _emoji_draw_cb = nullptr;"),
+        (fonts_hpp, "const uint8_t* getGlyph(uint16_t encoding) const;"),
+        (base_inl, "while (uniCode < 0x20 && *(++string));"),
+        (base_inl, "if (utf8 == '\\r') return 1;"),
+        (base_inl, "if (utf8 == '\\n') {"),
     )
     for source, marker in required:
         if marker not in source:
