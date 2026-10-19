@@ -42,7 +42,6 @@ FACADE_KEY = os.environ["POC_FACADE_KEY"]
 RUN_TAG = os.environ["POC_RUN_TAG"]
 EVIDENCE_PATH = Path(os.environ.get("E2E_EVIDENCE_PATH", "/evidence/relay-e2e.json"))
 MIN_PCM_BYTES = 12_000
-STOP_POLL_CYCLE_WAIT_SECONDS = 4.0
 STOP_DISPATCH_TIMEOUT_SECONDS = 20.0
 
 CHECKS: dict[str, str] = {}
@@ -217,7 +216,7 @@ def runtime_environment() -> dict[str, str]:
         "AMUSANT_FACADE_API_KEY": FACADE_KEY,
         "AMUSANT_HERMES_ALLOW_PLAINTEXT": "1",
         "AMUSANT_HERMES_RUN_DEADLINE_SECONDS": "120",
-        "AMUSANT_HERMES_POLL_CYCLE_SECONDS": "3",
+        "AMUSANT_HERMES_POLL_CYCLE_SECONDS": "1",
         "AMUSANT_HERMES_HTTP_TIMEOUT_SECONDS": "3",
         "AMUSANT_HERMES_POLL_INTERVAL_SECONDS": "0.5",
         "AMUSANT_HERMES_STOP_GRACE_SECONDS": "30",
@@ -588,8 +587,6 @@ async def run():
                        timeout=20.0, description="Run ID before stop request")
         await stop_ws.close()
         stop_request_ws, stop_request_provider = await open_turn(server2, providers.instances)
-        # Let the current executor poll cycle yield before testing the persisted stop intent.
-        await asyncio.sleep(STOP_POLL_CYCLE_WAIT_SECONDS)
         pre_cancel_row = store2.get_by_task_id(stop_task_id)
         CHECKS["stop_pre_cancel_status"] = diagnostic_token(
             pre_cancel_row.get("status") if pre_cancel_row else None

@@ -143,7 +143,6 @@ class Issue85E2EContractTests(unittest.TestCase):
         self.assertIn("audit.stop_calls >= 1", stop_phase)
         self.assertIn("Relay did not send a Hermes stop POST before terminal state ", stop_phase)
         self.assertIn('stop_receipt.get("status") == "stopping"', stop_phase)
-        self.assertIn("await asyncio.sleep(STOP_POLL_CYCLE_WAIT_SECONDS)", stop_phase)
 
     def test_stop_fake_request_outlasts_relay_poll_cycle(self):
         provider_service = service_block(self.compose, "fake-provider")
@@ -151,14 +150,12 @@ class Issue85E2EContractTests(unittest.TestCase):
         relay_e2e = (PROJECT / "relay_e2e.py").read_text(encoding="utf-8")
         stop_delay = float(re.search(r'FAKE_STOP_DELAY_SECONDS: "([0-9.]+)"', provider_service).group(1))
         poll_cycle = float(re.search(r'"AMUSANT_HERMES_POLL_CYCLE_SECONDS": "([0-9.]+)"', relay_e2e).group(1))
-        poll_wait = float(re.search(r"STOP_POLL_CYCLE_WAIT_SECONDS = ([0-9.]+)", relay_e2e).group(1))
         dispatch_timeout = float(re.search(r"STOP_DISPATCH_TIMEOUT_SECONDS = ([0-9.]+)", relay_e2e).group(1))
         stop_grace = float(re.search(r'"AMUSANT_HERMES_STOP_GRACE_SECONDS": "([0-9.]+)"', relay_e2e).group(1))
         self.assertGreater(stop_delay, poll_cycle * 2)
-        self.assertGreater(poll_wait, poll_cycle)
-        self.assertLess(poll_cycle + poll_wait, stop_grace)
-        self.assertGreater(dispatch_timeout, poll_cycle)
+        self.assertLessEqual(poll_cycle, 1.0)
         self.assertGreater(stop_grace, poll_cycle)
+        self.assertGreater(dispatch_timeout, poll_cycle)
         self.assertIn('STOP_DELAY = float(os.environ.get("FAKE_STOP_DELAY_SECONDS", "60"))', fake_provider)
         self.assertIn('if case == "stop_10k" and not called:', fake_provider)
 
