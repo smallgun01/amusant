@@ -1,3 +1,73 @@
+# Project Amusant — Voice Companion Specification v0.5 (review candidate)
+
+- **Proposed update:** 2026-10-19, Documentation Alignment PR. This is a proposed consolidation of accepted Owner architecture decisions, **not** a live-deployment or paid-run authorization. No change to cloud, devices or secrets follows from merging this text alone.
+- **Primary source:** this v0.5 requirements section, interpreted with accepted [ADR-0003](docs/adr/0003-oci-a1-hermes-sqlite.md). Earlier v0.4 requirements are preserved below as a **historical appendix only**; where they conflict, they are superseded.
+- **Authority hierarchy:** SPEC sets product requirements and acceptance; ADRs explain accepted architecture decisions; [PLAN.md](PLAN.md) and [WS index](docs/project-management/workstreams.md) sequence work; [STATUS.md](STATUS.md) records evidence; issues/PRs track implementation. A mock or CI PASS is not E3/E4 deployment evidence.
+
+## A. M1 product contract and non-goals
+
+Amusant is a **one-to-one, one-owner, one-active-Relay** companion. The core user experience is **press PTT → speak → release → hear FAST response**, or delegate one SLOW task, receive a truthful acknowledgment, and later **explicitly** request a concise spoken result. There is no automatic spoken interruption when a task completes.
+
+Gemini Live handles real-time speech and short dialogue. Hermes owns SLOW reasoning, tools, report creation, summarization, context and artifact contents. Relay authenticates owner/device, routes and admits requests, enforces bounds, stores delivery state and recovers safely; it is not another Agent or an LLM summarizer. The M1 target does **not** include multi-owner tenancy, SQS, a third Worker/queue, broad Kai feature parity, guaranteed phone provisioning, live sensor/location control, cross-agent scheduling, or a second active SLOW backend. OpenAB ACP remains an explicit legacy fallback, not an automatic retry route.
+
+## B. Selected implementation target — not proof of a deployed service
+
+```text
+StickS3 --[G1 secure transport, pending]--> Relay (TLS-PSK, Opus, Gemini FAST)
+                                           |   +-- SQLite Task Ledger / Inbox
+                                           |
+                                           +-- private authenticated Option D Facade
+                                                  |-- bounded Runs API --> Hermes Native Runs
+                                                  |                       +-- Hermes Home
+                                                  +<-- trusted write ---- Hermes plugin
+                                                  +-- owner/task-bound durable artifacts
+Relay/Hermes -- controlled egress via private proxy --> public HTTPS provider
+```
+
+Target placement is one OCI A1 VM (candidate 1 OCPU / 6 GiB), with isolated Relay, Facade and Hermes boundaries plus an egress proxy. The proxy/Facade are **not** new Agent Workers. Relay must have no direct Hermes Runs access, no Facade artifact write privileges and no direct provider/model report content. Facade must authenticate and authorize each request and issue opaque refs only after durable commit; do not trust model-supplied paths, URLs, task bindings or refs. Device ingress and actual A1 performance remain unproven. The first OCI canary starts with a new empty SQLite Ledger; AWS/DynamoDB proof, data and resources remain untouched unless separately approved.
+
+## C. FAST / device contract
+
+- Real owner/device authentication, transport integrity and per-PTT turn ownership are required; reject oversized, invalid, stale and replayed turns without model leakage. Device transport (**TLS-PSK or an explicitly revised certificate/Noise client**) is decided under [#27](https://github.com/smallgun01/amusant/issues/27), not by the backend WSS/ACP historical test.
+- Gemini Native Live audio/Opus bridge must avoid tool leakage across retired sessions and only expose server-defined, bounded `delegate_task`, `check_task_status` and authorized `cancel_task` tools; no backend URLs, credentials or admin controls in model arguments.
+- Invalid/partial audio and barge-in must fail closed. Latency target is user-audible first sound **p95 ≤ 2.0 s** where measured; prior Relay-first-wire p95 2,265 ms / 12 samples is diagnostic evidence only, not an audible-onset gate.
+- BLE/Wi-Fi and Traditional Chinese LCD features are separate physical acceptance gates. A firmware-build CI PASS is not a successful in-device render/flash or Wi-Fi migration.
+
+## D. SLOW admission, persistence and recovery
+
+- At most **one outstanding SLOW task** per owner; a second request gets immediate explicit `slow_busy`, **not** an eight-item FIFO queue. Admission must durably record task identity and dedup before telling the user it was accepted; only authorized owner may inspect/cancel tasks or read results.
+- One in-process Dispatcher and a durable TaskStore/Inbox; SQLite on persistent block storage for OCI. Store only minimal receipts, status, run ID, deadlines, bounded presentation and verified opaque artifact pointers. Never store raw audio, full reports, transcripts, secrets, Hermes scratchpad or tool logs in Relay.
+- A known Hermes Run ID is resumed by **GET-only** after Relay restart; an unconfirmed/ambiguous POST must stay uncertain, with **no blind re-POST** or duplicate tool effects. A Relay cancellation or STOP acknowledgment does not prove provider computation/billing has stopped. Deadlines, stop grace and retry policy require explicit tested values ([#58](https://github.com/smallgun01/amusant/issues/58)).
+- Terminal Ledger/Inbox target retention is **30 days** subject to reviewed predicates; protect queued/running/uncertain, active reconciliation and recent Inbox activity. SQLite `expires_at` is admission expiry, **not** terminal-history retention. Require online consistent backups, encrypted off-host copies, restore drill of **both** Ledger and Hermes/Facade state before unattended operation.
+
+## E. Result / artifact / spoken contract
+
+- Hermes writes complete reports through a **trusted Facade-side commit**; Gemini and Relay never receive or summarize whole reports, raw tool output or long plain-text fallback. The terminal Runs projection to Relay must be allowlisted and bounded. If upstream Runs exposes full text, Facade sanitizes it **before** Relay reads it.
+- Results distinguish execution status, artifact commitment and presentation availability; store bounded `speak`, `card`, optional verified `artifact_ref` and bounded metadata. The exact v2 envelope/caps are in [#56](https://github.com/smallgun01/amusant/issues/56) and the [proposal](docs/hermes-h1.2-result-delivery-proposal.md); **design/PoC evidence is not full integration acceptance**.
+- `check_task_status` defaults to bounded status, speech/card and verified availability only; it must not send `details_md`, full text or artifact location to Gemini. To speak a result, retire tool-capable Live and start a separate **tool-disabled** Live session reading only the already prepared `speak`. Mark delivery `spoken` only after complete server-observed transmission, which does not claim that a human heard it.
+- Missing/invalid speech fails with truthful status and retryable artifact availability. Artifacts remain owner/task-scoped and reauthenticated on each retrieval; no bearer credentials in reference values. No unsolicited speech or notification is required for M1; any later badge/cue must tolerate device sleep and reconnection.
+
+## F. Acceptance, safety, change control
+
+| Gate | Acceptance evidence needed |
+| --- | --- |
+| **E1 / #85 B1/B2** | Merged Facade wiring, separated credentials/networks, synthetic malicious/failure and recovery tests; pinned Hermes fake-provider full chain & report isolation; no duplicate side effects |
+| **E2 / WS1 H0** | Real StickS3 local FAST + CJK/OpenCC, audio regressions, instrumented audible latency/battery; distinct from offline firmware CI |
+| **E3 / OCI canary** | Separately approved real OCI bounded test: ARM64 native image digest, private ingress, persistent restart readback, backup/restore, CPU/RSS/FAST under concurrent SLOW; recorded rollback and cost |
+| **E3 / S1 #46** | Genuine authorized FAST → delegate → Hermes → bounded Inbox → new tool-disabled spoken response; verify uncertain/cancel/idle and restart; no paid or cloud action without Owner approval |
+| **E3 / G2–G3a** | Authenticated physical StickS3 over approved G1 → OCI FAST, then physical SLOW submit/retrieve/spoken after S1 |
+| **E4** | Sustained monitoring, secret hygiene, bounded shutdown, provider stop/billing observations, off-host recovery and operational acceptance |
+
+**No implied authorization:** Documentation and offline PRs do not permit cloud/VCN/NSG mutations, public ports, production cutover, paid inference, firmware flashing/erase, data migrations or deletion of AWS assets. Each live step requires its own Owner approval and sanitized evidence. Earlier AWS T4b was only bounded OpenAB/ACP/DynamoDB functional acceptance.
+
+---
+
+# Archive — Specification v0.4 (2026-10-16, historical only)
+
+The unmodified v0.4 text below is kept for P0–P4 design rationale and AWS/OpenAB test provenance. **Its two-ECS deployment, OpenAB-as-default, eight-item FIFO, pending B0 selection and DynamoDB-as-target statements no longer govern new M1 work.** Do not implement those statements as current requirements; use sections A–F above. Archived internal claims are snapshots, not current STATUS.
+
+---
+
 > **Architecture decision update — 2026-10-18:** [ADR-0003](docs/adr/0003-oci-a1-hermes-sqlite.md) supersedes this v0.4 document's **placement and default backend/storage** assumptions for the *new implementation target only*: OCI A1 (one VM), separate Relay + Hermes Native Runs containers, persistent SQLite Task Ledger/Inbox with off-host encrypted backup. The existing fast/slow responsibilities, owner authentication, bounded admission/Inbox, no unsolicited speech, and fail-closed recovery remain normative. New Slow policy is **one outstanding task / immediate busy rejection** (PR #65); no FIFO admission queue. Hermes owns reasoning/summarization and full artifacts; Relay/Gemini Live must not summarize full reports (#56/#73). **OCI, ARM64, ingress, backups, artifact boundary, device and 24/7 operations remain unverified gates**, not deployed capabilities. Keep the historical ECS/OpenAB/DynamoDB diagrams and proof in this v0.4 baseline as provenance; the next full spec revision must replace their normative language, not imply they are the current deployment target. No live work or merge is authorized by this note.
 
 # Project Amusant

@@ -1,3 +1,29 @@
+# Amusant — Evidence and Status (snapshot 2026-10-19)
+
+> **Basis:** `main` at `1590230cb3d7a40ef1686b046df0603228e12854` (before this documentation PR). Status is an evidence ledger, not a deployment authorization. See [SPEC v0.5](SPEC.md), [ADR-0003](docs/adr/0003-oci-a1-hermes-sqlite.md), [active PLAN](PLAN.md) and [WS index](docs/project-management/workstreams.md).
+
+## Current M1 snapshot (verified repository artifacts vs pending external gates)
+
+| Area | Confirmed source or CI evidence | Still NOT proven |
+| --- | --- | --- |
+| **WS1 physical FAST** | Owner-reported 2026-10-15 StickS3 → **local** Relay → Gemini FAST 10/10; six Jellii LCD states/Opus/TLS-PSK local regression; [#69](https://github.com/smallgun01/amusant/pull/69) BLE+CJK firmware and [#86](https://github.com/smallgun01/amusant/pull/86) OpenCC captions merged | Latest merged firmware + Relay OpenCC **real LCD** acceptance, audible first sound p95/battery, G1/G2 cloud ingress |
+| **WS2 Hermes** | [#45](https://github.com/smallgun01/amusant/pull/45) adapter, [#60](https://github.com/smallgun01/amusant/pull/60) durable polling, [#65](https://github.com/smallgun01/amusant/pull/65) single-flight; [#75](https://github.com/smallgun01/amusant/pull/75) Option D fake-provider PoC and [#80](https://github.com/smallgun01/amusant/pull/80) reprojection, all merged | Real paid/provider tool/cancel-cost behavior; Facade **production-runtime integration** (#85), exact bounded artifact contract (#56), approved timing (#58) |
+| **WS3 OCI** | [#77](https://github.com/smallgun01/amusant/pull/77) ADR-0003 accepted target; [#70](https://github.com/smallgun01/amusant/pull/70) OCI **offline** package merged; [#83](https://github.com/smallgun01/amusant/pull/83) 12-case native ARM64 gate GO. [#87](https://github.com/smallgun01/amusant/pull/87) B1 Facade runtime wiring is **open Draft**, not main | B2 integrated fake-provider E2E, OCI instance canary, real private ingress, representative concurrent FAST load, physical G3a and 24/7 |
+| **WS4 durability/ops** | [#78](https://github.com/smallgun01/amusant/pull/78) SQLite online backup, integrity and retention audit **code** merged; bounded Relay shutdown code in #70, recovery in #60/#65 | Scheduled/off-host encrypted backups and restore drill; Hermes/Facade artifact restore; measured hosted cost, unattended monitoring and recovery |
+| **Historical AWS** | [#26](https://github.com/smallgun01/amusant/issues/26) 2026-10-13 one-off WSS/ACP + DynamoDB strong after-stop readback: bounded **functional PASS with procedural exceptions** | No accepted always-on AWS ECS A/OCI production system or automatic data cutover |
+
+**Evidence taxonomy:** E1 = source merged and offline/fake tests; E2 = owner-observed real local/physical; E3 = bounded real cloud/provider integration with approvals and record; E4 = sustained operations, restore, security and cost acceptance. Passing CI cannot substitute E2–E4.
+
+**Most important next acceptance:** [#85](https://github.com/smallgun01/amusant/issues/85) B1/B2 → separately approved OCI canary → [#46](https://github.com/smallgun01/amusant/issues/46) S1 → [#27](https://github.com/smallgun01/amusant/issues/27) secure G1/G2 → G3a physical closed loop. OpenCC #86 is merged, but LCD regression #67 stays open. No unsolicited speech. No authorized OCI/AWS/Cloudflare changes, model spend, firmware flash or production cutover.
+
+---
+
+# Historical status snapshots — 2026-10-16/18 (non-authoritative)
+
+The prior STATUS log follows **unchanged** for audit provenance. Mentions of #70 open, #45 Draft, ARM64 unverified, B0 undecided, W1.5 unimplemented, or OpenAB/two-ECS as current baseline are dated history, superseded by the snapshot above.
+
+---
+
 ## Current architectural decision and evidence scope — 2026-10-18
 
 **Owner-selected implementation target:** [ADR-0003](docs/adr/0003-oci-a1-hermes-sqlite.md): Oracle A1 single-host Relay + Hermes Native Runs, persistent SQLite Task Ledger and independent Hermes Home. PRs #45/#60/#65 are merged offline Hermes foundations; [PR #70](https://github.com/smallgun01/amusant/pull/70) is an **open OCI offline packaging candidate** (CI reported PASS on its referenced SHA), not a completed cloud deployment. The DynamoDB 100-history limitation was an application query issue, not an AWS hard cap (#30); #65 improved 100+ retained-history admission, while #30 comprehensive regression remains open. See #56/#73 for unresolved Hermes-origin small-result/artifact boundary.

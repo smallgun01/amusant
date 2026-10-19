@@ -1,6 +1,6 @@
 # Hermes H1.2 Result Delivery Contract — Proposal
 
-**Status:** Review-only proposal for [Issue #56](https://github.com/smallgun01/amusant/issues/56), based on the 2026-10-18 Owner direction and the PR #71 design review. This document does not approve a storage provider, change the normative SPEC/ADR, or authorize implementation, deployment, paid model calls, or new infrastructure. Keep this PR Draft.
+**Status (2026-10-19):** Design discussion merged by [PR #71](https://github.com/smallgun01/amusant/pull/71), not an integrated or accepted runtime specification. [#75](https://github.com/smallgun01/amusant/pull/75) and [#80](https://github.com/smallgun01/amusant/pull/80) proved a pinned, offline fake-provider Option D prototype; [#87](https://github.com/smallgun01/amusant/pull/87) is still a **Draft B1** and [#85](https://github.com/smallgun01/amusant/issues/85) B2 remains open. [SPEC v0.5](../../SPEC.md) and [ADR-0003](../adr/0003-oci-a1-hermes-sqlite.md) define the current product/architecture boundary. This proposal does **not** itself approve artifact hosting/retention, model spend, OCI deployment or public ingress.
 
 ## Decision boundary
 

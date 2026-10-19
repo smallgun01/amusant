@@ -1,74 +1,31 @@
-> **Current execution overlay (2026-10-18):** Owner selected [ADR-0003 OCI A1 + Hermes + SQLite](../adr/0003-oci-a1-hermes-sqlite.md) as the **implementation target, not a validated live service**. WS2 Hermes Native Runs code is merged (#45/#60/#65), with #73 small-envelope trust boundary offline PoC pending. WS3 owns #62 / PR #70 OCI image/Compose and ingress #27; WS4 owns SQLite backup/restore/retention, security, E3/E4 evidence. For OCI, the earlier AWS-specific A2/#35/DynamoDB and OpenAB B0 tasks below are historical/legacy-only; reinterpret, don't silently mark them PASS. The v1 Slow product policy is one outstanding task and **immediate busy rejection**, not FIFO/8 pending. Later OCI cloud/device/paid E2E requires separate owner approval.
+# Amusant WS1–WS4 — Current M1 delivery gates
 
-# Amusant Project Execution — Four Workstreams (WS1–WS4)
+> **Updated 2026-10-19.** Sequencing/ownership only. [SPEC.md](../../SPEC.md) governs product acceptance; [ADR-0003](../adr/0003-oci-a1-hermes-sqlite.md) governs selected architecture; [STATUS.md](../../STATUS.md) records verified evidence. An Issue/PR, CI job or roadmap does not approve paid tests, production deployment, public ingress, firmware flash or data migration.
 
-> Owner-approved PM restructuring: 2026-10-16. **Planning and tracking only; no runtime changes or execution authorization.**
-> This document is the **active workstream index**. `SPEC.md` remains normative; ADRs record accepted architecture; `PLAN.md` is the execution sequence; `STATUS.md` contains evidence; older P0–P4/H0/H1 and the [cross-track roadmap](../hardware/cross-track-integration-roadmap.md) remain historical Gate identifiers.
-> Naming: **WS1–WS4 = program workstreams**; **WiFi-W1 / W1.5 / W2a / W2b = firmware provisioning slices**, never interchangeable.
+## Workstream index and near-term WIP
 
-## North star and scoped releases
+| Lane / owning Issue | Current delivery | Blocking gate / external dependency |
+| --- | --- | --- |
+| **WS1 — [#47](https://github.com/smallgun01/amusant/issues/47)** StickS3/Fast | Local physical FAST already passed. #69 BLE+CJK + #86 OpenCC merged. #67 physical merged-build glyph/audio regression; #31 H0 measured audible latency/power; #36 Wi-Fi later | Device cloud FAST G2 needs [#27 G1](https://github.com/smallgun01/amusant/issues/27) approved compatible ingress, not W2b phone provisioning |
+| **WS2 — [#48](https://github.com/smallgun01/amusant/issues/48)** Hermes contracts | Hermes Native Runs selected; #45/#60/#65 merged, Option D #75/#80 fake-provider PoC. [#56](https://github.com/smallgun01/amusant/issues/56) envelope/artifact validation, [#58](https://github.com/smallgun01/amusant/issues/58) timing policy | #85 integration, real owner-approved provider/tool/cancel evidence; no second parallel OpenAB feature stream |
+| **WS3 — [#49](https://github.com/smallgun01/amusant/issues/49)** OCI/Integration | [#70](https://github.com/smallgun01/amusant/pull/70) offline OCI merged; native ARM64 [#83](https://github.com/smallgun01/amusant/pull/83) GO; [#85](https://github.com/smallgun01/amusant/issues/85) B1/B2 is active ([#87](https://github.com/smallgun01/amusant/pull/87) **Draft**). Then approved Canary, [S1 #46](https://github.com/smallgun01/amusant/issues/46), G2/G3a | Never promote pre-Facade Compose; no OCI live, device edge, real Agent or persistent cloud gate yet |
+| **WS4 — [#50](https://github.com/smallgun01/amusant/issues/50)** Reliability | Offline CI, durable Run/Single-flight and SQLite maintenance [#78](https://github.com/smallgun01/amusant/pull/78) merged | Add production-scope Option D contracts to ongoing CI; off-host encrypted backup & restore, bounded stop/cost, secrets/monitoring and load gates |
 
-- **M1 — Cloud Voice-Agent Alpha:** a reliable Relay, real Fast answer, durable Slow admission/execution, owner-authorized next-session Inbox retrieval and **tool-disabled spoken result**, meaningful failure/recovery, monitored cost and rollback. A software-client E2E (S1) precedes physical-device G3a; one known 2.4 GHz SSID is adequate for G2.
-- **M2 — Personal Companion Beta:** practical mobility/provisioning, safe/unobtrusive task completion notice, opt-in notes/reminders/memory with defined retention, power/latency and operational UX. These features do **not** block M1.
-- **Current implementation (PRs #60/#65):** One-to-one does not mean FAST stops while SLOW runs: an owner can continue FAST interaction, but only **one outstanding SLOW task** may hold the owner-scoped single-flight slot. A further `delegate_task` returns `slow_busy` rather than entering an eight-task FIFO queue. The in-process Dispatcher uses Hermes Native Runs with **explicitly configured** request/poll, Run-deadline, stop and retry timing; OpenAB's old 120-second ACP attempt is a legacy-path limit, not the Hermes default. Offline implementation does not establish sustained real-provider/physical acceptance.
-- **Product contract before B0**: expected Slow task length, progress/query/cancel semantics, concurrent Fast/Slow behavior, active/sleeping completion notification, result delivery vs audio actually heard, ownership/privacy/retention and error language. Propose changes to SPEC/ADR for approval; this PM restructure does **not** amend the accepted OpenAB/two-ECS baseline.
+## Required order (no new feature branches on the critical path)
 
-## Work Breakdown Structure
+1. **H5-P1B E1:** #85 B1 review then B2 full pinned fake-provider integration; verify owner/task binding, network isolation, prepared short `speak` + `card`, trusted artifact, Inbox, STOP/uncertain and GET-only recovery. Release B1/B2 only on evidence, not green CI alone.
+2. **OCI preflight → bounded E3 Canary:** #27 G1 transport design can run alongside B2. New empty SQLite Ledger, reviewed exact image digests, Hermes/Facade state, owner-approved off-host backup/restore, security rollback and load/cost limits before any VM/NSG mutation.
+3. **S1 / #46:** Genuine software Gemini FAST → durable Hermes SLOW → bounded Inbox → new tool-disabled Live spoken session, including restart/negative paths. Real traffic needs separate Owner approval.
+4. **G2 FAST then G3a SLOW:** secure device connection on a known Wi-Fi; S1 must be satisfied for G3a. G3b mobility, scheduling, proactive cues and Kai feature parity are post-M1 backlogs.
 
-| Workstream | Scope and current evidence | Immediate work | Tracking |
-|---|---|---|---|
-| **WS1 — Edge Device & Fast UX** | Real StickS3 → local Amusant Relay → Gemini audible FAST 10/10 owner-reported PASS; #33 six avatar states and physical PTT regression owner-reported PASS. Formal latency UX still pending. | Stage D #42 persona/Zephyr/Google Search live test; choose only needed Kai-parity capabilities; H0 latency/power; firmware ownership and WiFi-W1 → W1.5 BLE decision → W2a → W2b (BLE or SoftAP, not both required). | #31 #33 #14 #11 #36 #43; PR #42 |
-| **WS2 — Agent Backend & Slow Product** | Accepted OpenAB ACP cloud one-off PASS (#26); Hermes native Runs local Docker Phase 2A/2B fake-provider POC PASS, **no live/cloud acceptance**. | **B0** time-boxed agent/hosting selection using task quality, duration, recovery, tool sandbox, isolation, hosting costs and operational complexity. OpenAB remains accepted until an explicit ADR/SPEC change; preserve backend-neutral Relay. | #44 PR #45; #43 companion behavior |
-| **WS3 — Placement, Transport & E2E** | Local physical FAST and cloud one-off ACP/DynamoDB independently PASS; persistent Service A and public device ingress **not** verified. | #27 G1: safe device-to-Relay edge transport/ingress (Cloudflare standard WSS or PSK-compatible TCP; route/ownership audit); #35 A2 persistent Relay; **#46 S1** software cloud Fast→Slow→Inbox spoken; G2 single known Wi-Fi device→cloud FAST; G3a physical Slow E2E; G3b mobility joins Wi-Fi provisioning. | #27 #35 #46 #26 #31 #36 |
-| **WS4 — Robustness, Security & Operations** | Offline CI #34 and Inbox protection #40, Dispatcher wake #41 merged; T4b bounded TLS/ledger proof with procedural exceptions. | **PR-C** >100 retained TASK history per #30 A1; optional 500-row stress characterization, not a separate gate unless #30 is explicitly revised; dedup/latest/recovery. **PR-D** bounded shutdown, Python 3.13, non-smoke persistent entrypoint, health/non-root; secret/tool/egress, no replay after ambiguous send, monitoring, cost and retention/delete before unattended service. | #30 #35; PR #39 review brief |
+## Gate vocabulary and coordination
 
-## Decision and gate register
+- **E1:** reviewed/merged code + pinned offline tests. **E2:** physical/local real-device evidence. **E3:** approved bounded cloud/provider evidence. **E4:** sustained operational/security/cost verification. No automatic promotion.
+- **Single-flight:** exactly one outstanding SLOW task, immediate `slow_busy`; legacy 8-item FIFO remains historical only. No surprise voice. Hermes produces full report and short result; Relay/Gemini do not summarize artifacts.
+- **B0 resolved:** Hermes implementation target and OCI A1 + SQLite chosen, *not* production deployed. AWS/OpenAB/DynamoDB one-off receipts are historical, not new deployment blockers. [#35](https://github.com/smallgun01/amusant/issues/35) ECS Service A is superseded; [#30](https://github.com/smallgun01/amusant/issues/30) tracks bounded residual reliability work, not an entire AWS PR-C/D requirement for OCI.
+- **WIP limit:** one active build per WS1, WS2, WS3; one scoped WS4 remediation. [#43](https://github.com/smallgun01/amusant/issues/43) is capability backlog, not feature-parity mandate. A Draft PR, issue comment or old AWS acceptance does not authorize merge, flashing, paid calls or new cloud resources.
+- **Preserve trust boundaries:** StickS3→Relay G1, Relay→Facade private auth, Facade→Hermes private Runs, Hermes→Facade trusted writer, provider traffic via controlled egress. No extra Worker/SQS/Agent, direct Relay→Hermes, public Hermes/Facade API or unreviewed tool credentials.
 
-| ID | Nature | Entry / exit criterion | Dependents |
-|---|---|---|---|
-| **H0/G0** | Functional PASS, UX not fully accepted | #31 10/10 real-device local FAST; finalize p50/p95 **actual audible onset**, wake/reconnect and battery evidence/owner Go/No-Go; #33 avatar + audio PASS, power regression separate. | W1/W1.5 limited GO on functional G0; full H0 UX separately OPEN |
-| **B0** | **Architecture decision, OPEN** | Compare OpenAB ACP and Hermes native Runs with representative long/research tasks, real tool quality, lifecycle/retention, least privilege, hosting **ECS vs VM vs isolated N100** and costs; time-box research. Formal signoff + SPEC/ADR if changing. | Agent production deployment and S1 final backend |
-| **PR-C** | **Hard A2 live gate** | Must handle >100 retained completed TASK rows as specified by #30 A1 without breaking admission, pending capacity, dispatch, latest Inbox or dedup; keep query/read costs bounded (TTL alone is insufficient). A 500-row run may be an optional stress characterization, not a new acceptance threshold unless #30 is revised. | Persistent A2 live |
-| **PR-D** | **Hard A2 live gate** | Bounded graceful shutdown with uncertain post-send behavior, restart recovery; Python 3.13/TLS-PSK capability; real persistent entrypoint, ECS health, non-root. | Persistent A2 live |
-| **A2** | **Service runtime, OPEN** | Read-only/offline implementation can proceed before B0; live canary after PR-C/D, backend choice and separately approved resources: Service A 1 healthy, restart/rollback/DynamoDB. If B0 changes hosting/topology, revise ADR and #35 first. | S1 / G2 |
-| **G1** | **Device-edge decision and proof, OPEN** | Offline fake client authentication/TLS/reconnect/fail-closed, then separately authorized ingress canary. Native Kai TLS-PSK is not Cloudflare HTTPS WSS; existing stopped shared Gateway sidecar is not confirmed reusable. | G2 |
-| **S1** | **Software cloud E2E, OPEN** | #46: Live tool admission → Agent → persisted Inbox → *new* tool-free voice session speaks result; restart/unknown status/delivery-state safety; no physical hardware prerequisite. | G3a |
-| **G2** | **Physical cloud FAST, OPEN** | A2+G1; real StickS3 on **one already-known Wi-Fi** → AWS Relay → audible Gemini FAST, authenticated transport, reconnect/latency. No provisioning prerequisite. | G3a |
-| **G3a** | **Physical full Slow E2E, OPEN** | S1+G2; owner-operated device delegates Slow, next PTT retrieves spoken result, correct UI, recovery and failure semantics. | M1 physical acceptance |
-| **WiFi-W1/W1.5/W2a/W2b** | **Parallel H1 feature track** | NVS USB single profile → secure official Android BLE feasibility with per-device PoP → up to ~5 profiles → **one selected** BLE-app or secure time-limited SoftAP/portal. Freeze tested local Relay; separately approve flash. | G3b (not G2/G3a) |
-| **G3b** | **Companion mobility, OPEN** | G3a + accepted provisioning: network switch/hotspot + cloud FAST/SLOW and battery/performance regressions. | M2 |
+## Archived evidence
 
-## Work graph — independent streams, explicit join
-
-```mermaid
-flowchart TD
-  UX["WS1 Device FAST & H0 UX"] --> G2["G2: StickS3 → Cloud FAST"]
-  EDGE["WS3 G1 Device ingress"] --> G2
-  B0["WS2 B0: Agent selection & product contract"] --> A2["WS3 A2 Persistent Relay"]
-  C["WS4 PR-C / PR-D"] --> A2
-  A2 --> S1["WS3 S1 Software FAST→SLOW→Inbox spoken"]
-  A2 --> G2
-  B0 --> S1
-  G2 --> G3a["G3a Device SLOW→Inbox spoken"]
-  S1 --> G3a
-  UX --> WIFI["WS1 WiFi-W1→W1.5→W2a→W2b"]
-  WIFI --> G3b["G3b Multi-network mobility"]
-  G3a --> G3b
-```
-
-## Execution waves (dependencies, not invented calendar dates)
-
-1. **Wave 0 — PM hygiene:** reconcile STATUS/PLAN; freeze the S1/G3a/G3b definitions; map issues/PRs; distinguish implemented vs live-proven. #26 one-off accepted evidence remains, no re-run. #33 avatar/physical PTT completed; power testing tracked at #14. Open PR #39 is a docs plan whose A/B slices were already delivered by #40/#41.
-2. **Wave 1 — parallel:** WS2 B0 product contract and backend/hosting bake-off; WS4 PR-C then PR-D as small reviewed PRs; WS3 G1 read-only/offline transport and #35 A2.0/A2.1 (do not prematurely hardwire agent); WS1 #42 Stage D and H0 UX/latency. WiFi-W1 implementation and W1.5 offline feasibility may start now under the 2026-10-17 limited Owner GO (#36), with local Relay frozen; full H0 UX remains open, and flashing/live tests require separate approval.
-3. **Wave 2 — service and software E2E:** owner-approved A2.2 cloud canary **after** hard gates and B0; #46 S1 with software client and selected backend; device edge G1 live proof separately.
-4. **Wave 3 — physical join:** G2 single-Wi-Fi cloud FAST; G3a real StickS3 Slow→durable Inbox→next-session spoken result.
-5. **Wave 4 — companion mobility:** WiFi-W2a/W2b, G3b; then notes, reminders, proactive unread cues and opt-in memory under separately reviewed product/security contracts.
-
-## Evidence / issue hygiene
-
-- **E1:** merged code + offline regression CI. **E2:** actual local runtime/physical test. **E3:** bounded live cloud or cross-system test. **E4:** sustained service/restart/security/cost/operations accepted. Evidence level attaches to a *specific test boundary*, not a blanket project status.
-- Each gate should capture versions: firmware source/bin, Relay SHA/image digest, backend revision, TLS mode, Wi-Fi scenario, test scope, sanitized event IDs, count and latency method, approval envelope, rollback, failures and exceptions.
-- Issue lifecycle: `Backlog → Ready → Doing → Blocked → Verification → Done`; `Open/Closed` alone is not proof. Suggested owner-review cadence: weekly WIP limit **one active build per WS1–WS3 and one WS4 remediation**; Agent selection is time-boxed spike, not an indefinite extra build stream.
-- **Scope hygiene:** #43 is a menu, not a Kai parity mandate. Prioritize search/voice, idle Live session cost watchdog, safe Inbox completion/unread cue. Weather/parking/sun/tides/default location/multi-device are deferred unless owner reverses decision. Notes/reminders/memory require explicit retention/authorization, not simply voice tool parity.
-- PR #42 and #45 remain Draft until separately accepted; a green CI is not a real-device/real-Agent gate. Do not merge a backend-switch spike based solely on mock tests.
-- All AWS/Cloudflare mutations, real model calls, 24/7 service, real-device firmware flashing/eFuses, secret or public ingress changes need **separate explicit Owner approval**; this workstream reclassification grants none.
+Historical P0–P4/H0 and AWS ACP/DynamoDB decisions remain in [PLAN.md](../../PLAN.md), [STATUS.md](../../STATUS.md), [ADR-0001](../adr/0001-openab-acp-slow-path.md), [ADR-0002](../adr/0002-external-task-store.md) and [P4-T4b](../p4-t4b-live-acceptance.md). Those documents explain what was proven *then*; they do not override current gates.
