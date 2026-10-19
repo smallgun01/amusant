@@ -1,0 +1,5 @@
+evidence/*.json
+.amusant-b2-*/
+.audit-contract-*/
+.runner-contract-*/
+__pycache__/
