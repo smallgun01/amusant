@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 RUN_TAG = os.environ["POC_RUN_TAG"]
 SLOW_DELAY = float(os.environ.get("FAKE_SLOW_DELAY_SECONDS", "8"))
-STOP_DELAY = float(os.environ.get("FAKE_STOP_DELAY_SECONDS", "12"))
+STOP_DELAY = float(os.environ.get("FAKE_STOP_DELAY_SECONDS", "60"))
 PRESENTATION = {
     "schema_version": 1,
     "speak": "The report is ready for review.",
