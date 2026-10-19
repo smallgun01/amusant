@@ -13,6 +13,7 @@ import ssl
 import struct
 import sys
 import threading
+import traceback
 from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import quote
@@ -692,6 +693,15 @@ def main() -> int:
             "failure_type": type(exc).__name__,
             "checks": CHECKS,
         }
+        frames = traceback.extract_tb(exc.__traceback__)
+        if frames and Path(frames[-1].filename).resolve() == Path(__file__).resolve():
+            failure["failure_location"] = {
+                "function": frames[-1].name,
+                "line": frames[-1].lineno,
+            }
+            if isinstance(exc, AssertionError):
+                # All assertions in this synthetic runner use fixed, non-payload messages.
+                failure["failure_reason"] = str(exc)[:160]
         EVIDENCE_PATH.write_text(json.dumps(failure, sort_keys=True, indent=2) + "\n", encoding="utf-8")
         print(json.dumps(failure, sort_keys=True, separators=(",", ":")), file=sys.stderr)
         return 1

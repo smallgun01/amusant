@@ -224,7 +224,10 @@ def main() -> int:
         "checks": evidence.get("checks"),
         "relay_e2e": {
             key: relay_e2e.get(key)
-            for key in ("status", "phase", "failure_type", "checks")
+            for key in (
+                "status", "phase", "failure_type", "failure_location",
+                "failure_reason", "checks",
+            )
         } if isinstance(relay_e2e, dict) else None,
         "facade_audit": {
             key: facade_audit.get(key)
