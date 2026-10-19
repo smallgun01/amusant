@@ -148,7 +148,13 @@ class Issue85E2EContractTests(unittest.TestCase):
         self.assertIn('audit.stop_provider_release_signaled', stop_phase)
         self.assertIn('self.stop_remote_status in {', relay_e2e)
         self.assertIn('"stopping", "cancelled", "interrupted"', relay_e2e)
-        self.assertIn('self.stop_post_accepted = True', relay_e2e)
+        self.assertIn('self.stop_post_accepted = 200 <= status < 300', relay_e2e)
+        self.assertIn('lambda: audit.stop_post_completed', stop_phase)
+        self.assertIn('CHECKS["stop_hermes_stop_http_status"] = diagnostic_token(', stop_phase)
+        self.assertLess(
+            stop_phase.index("stop_row = await wait_row("),
+            stop_phase.index('CHECKS["stop_provider_released_after_accepted_stop"] = ('),
+        )
         self.assertIn("audit.stop_calls >= 1", stop_phase)
         self.assertIn("Relay did not send a Hermes stop POST before terminal state ", stop_phase)
         self.assertIn('stop_receipt.get("status") == "stopping"', stop_phase)

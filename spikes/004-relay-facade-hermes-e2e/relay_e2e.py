@@ -142,6 +142,8 @@ class HttpAudit:
         self.stop_calls = 0
         self.stop_run_id: str | None = None
         self.stop_post_accepted = False
+        self.stop_post_completed = False
+        self.stop_post_http_status: int | None = None
         self.stop_provider_release_signaled = False
         self.stop_remote_status = "unknown"
         self.stop_remote_error_category = "unknown"
@@ -227,9 +229,11 @@ class HttpAudit:
             with self.lock:
                 self.stop_calls += 1
             status, payload = self.original(executor, method, path, body, headers)
-            if status < 300 and self.stop_run_id and path == f"/v1/runs/{self.stop_run_id}/stop":
+            if self.stop_run_id and path == f"/v1/runs/{self.stop_run_id}/stop":
                 with self.lock:
-                    self.stop_post_accepted = True
+                    self.stop_post_completed = True
+                    self.stop_post_http_status = status
+                    self.stop_post_accepted = 200 <= status < 300
             return status, payload
         return self.original(executor, method, path, body, headers)
 
@@ -692,13 +696,15 @@ async def run():
             + diagnostic_token(stop_dispatch_observation)
             + " (cancel code " + CHECKS["stop_cancel_receipt_code"] + ")",
         )
-        CHECKS["stop_provider_released_after_accepted_stop"] = (
-            "PASS" if audit.stop_provider_release_signaled else "FAIL"
+        await eventually(
+            lambda: audit.stop_post_completed,
+            timeout=10.0,
+            description="Hermes stop POST response",
         )
-        require(
-            audit.stop_provider_release_signaled,
-            "Hermes did not accept the stop request before the fake provider release",
+        CHECKS["stop_hermes_stop_http_status"] = diagnostic_token(
+            str(audit.stop_post_http_status)
         )
+        require(audit.stop_post_accepted, "Hermes did not accept the stop POST")
         stop_row = await wait_row(
             store2, stop_task_id,
             lambda value: value.get("status") in {"completed", "failed", "uncertain"},
@@ -710,11 +716,18 @@ async def run():
         CHECKS["stop_terminal_error_code"] = diagnostic_token(stop_terminal_error_code)
         CHECKS["stop_hermes_status"] = diagnostic_token(audit.stop_remote_status)
         CHECKS["stop_hermes_error_category"] = diagnostic_token(audit.stop_remote_error_category)
+        CHECKS["stop_provider_released_after_accepted_stop"] = (
+            "PASS" if audit.stop_provider_release_signaled else "FAIL"
+        )
         require(
             stop_terminal_status == "failed" and stop_terminal_error_code == "hermes_cancelled",
             "stop test did not confirm Hermes cancellation (status "
             + CHECKS["stop_terminal_status"]
             + ", code " + CHECKS["stop_terminal_error_code"] + ")",
+        )
+        require(
+            audit.stop_provider_release_signaled,
+            "Hermes status never confirmed stopping or cancellation before the fixture deadline",
         )
         stop_visible = store2.lookup_inbox(client_id=CLIENT_ID, task_id=stop_task_id)
         CHECKS["stop_visible_status"] = diagnostic_token(
