@@ -287,7 +287,7 @@ class FacadeRuntimeContractTests(unittest.TestCase):
         def observe_writer_lookup(session_id):
             row = original_lookup(session_id)
             if (
-                threading.current_thread().name == "writer-rendezvous"
+                session_id == writer_session_id
                 and row and row.get("submit_state") == "submitting"
             ):
                 writer_observed_submitting.set()
@@ -299,6 +299,7 @@ class FacadeRuntimeContractTests(unittest.TestCase):
         self.assertTrue(post_started.wait(timeout=1))
         row = self.facade.request_by_owner_task(owner_scope, task_id)
         self.assertEqual(row["submit_state"], "submitting")
+        writer_session_id = row["session_id"]
 
         def write_report():
             writer_result.append(self._writer(
@@ -355,7 +356,7 @@ class FacadeRuntimeContractTests(unittest.TestCase):
         def observe_writer_lookup(session_id):
             row = original_lookup(session_id)
             if (
-                threading.current_thread().name == "presentation-rendezvous"
+                session_id == SESSION_ID
                 and row and row.get("submit_state") == "submitting"
             ):
                 writer_observed_submitting.set()
