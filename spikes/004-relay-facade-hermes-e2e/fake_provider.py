@@ -8,10 +8,12 @@ import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 RUN_TAG = os.environ["POC_RUN_TAG"]
 SLOW_DELAY = float(os.environ.get("FAKE_SLOW_DELAY_SECONDS", "8"))
 STOP_DELAY = float(os.environ.get("FAKE_STOP_DELAY_SECONDS", "60"))
+CONTROL_DIR = Path(os.environ.get("FAKE_CONTROL_DIR", "/evidence"))
 PRESENTATION = {
     "schema_version": 1,
     "speak": "The report is ready for review.",
@@ -348,7 +350,18 @@ class Handler(BaseHTTPRequestHandler):
             record = self.server.state.requests[-1]
 
         if delay:
-            time.sleep(delay)
+            if case == "stop_10k" and not called:
+                active_marker = CONTROL_DIR / "stop_10k.active"
+                release_marker = CONTROL_DIR / "stop_10k.release"
+                active_marker.write_text("active", encoding="ascii")
+                deadline = time.monotonic() + delay
+                while not release_marker.exists() and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                if release_marker.exists():
+                    release_marker.unlink()
+                active_marker.unlink(missing_ok=True)
+            else:
+                time.sleep(delay)
 
         if next_tool:
             function_args = json.dumps(arguments, ensure_ascii=False, separators=(",", ":"))

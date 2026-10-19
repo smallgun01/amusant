@@ -63,6 +63,7 @@ services:
       FAKE_STOP_DELAY_SECONDS: "60"
     volumes:
       - ./fake_provider.py:/poc/fake_provider.py:ro
+      - ${E2E_EVIDENCE_DIR:?required temporary evidence directory}:/evidence
     networks:
       hermes_api:
         ipv4_address: 172.30.64.4

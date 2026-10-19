@@ -141,6 +141,7 @@ class HttpAudit:
         self.get_calls = 0
         self.stop_calls = 0
         self.stop_run_id: str | None = None
+        self.stop_provider_release_signaled = False
         self.stop_remote_status = "unknown"
         self.stop_remote_error_category = "unknown"
         self.duplicate_verified = False
@@ -216,6 +217,12 @@ class HttpAudit:
         if method == "POST" and path.endswith("/stop"):
             with self.lock:
                 self.stop_calls += 1
+            status, payload = self.original(executor, method, path, body, headers)
+            if status < 300 and self.stop_run_id and path == f"/v1/runs/{self.stop_run_id}/stop":
+                (EVIDENCE_PATH.parent / "stop_10k.release").write_text("accepted", encoding="ascii")
+                with self.lock:
+                    self.stop_provider_release_signaled = True
+            return status, payload
         return self.original(executor, method, path, body, headers)
 
 
@@ -618,6 +625,12 @@ async def run():
                        timeout=20.0, description="Run ID before stop request")
         await stop_ws.close()
         stop_request_ws, stop_request_provider = await open_turn(server2, providers.instances)
+        await eventually(
+            lambda: (EVIDENCE_PATH.parent / "stop_10k.active").exists(),
+            timeout=20.0,
+            description="fake model request active before cancellation",
+        )
+        CHECKS["stop_fake_model_request_active"] = "PASS"
         # Let the current executor poll cycle yield before testing persisted stop intent.
         await asyncio.sleep(STOP_POLL_CYCLE_WAIT_SECONDS)
         pre_cancel_row = store2.get_by_task_id(stop_task_id)
@@ -670,6 +683,13 @@ async def run():
             "Relay did not send a Hermes stop POST before terminal state "
             + diagnostic_token(stop_dispatch_observation)
             + " (cancel code " + CHECKS["stop_cancel_receipt_code"] + ")",
+        )
+        CHECKS["stop_provider_released_after_accepted_stop"] = (
+            "PASS" if audit.stop_provider_release_signaled else "FAIL"
+        )
+        require(
+            audit.stop_provider_release_signaled,
+            "Hermes did not accept the stop request before the fake provider release",
         )
         stop_row = await wait_row(
             store2, stop_task_id,

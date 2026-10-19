@@ -143,6 +143,9 @@ class Issue85E2EContractTests(unittest.TestCase):
         self.assertIn('CHECKS["stop_terminal_error_code"] = diagnostic_token(stop_terminal_error_code)', stop_phase)
         self.assertIn('CHECKS["stop_visible_status"] = diagnostic_token(', stop_phase)
         self.assertIn('CHECKS["stop_visible_code"] = diagnostic_token(', stop_phase)
+        self.assertIn('CHECKS["stop_fake_model_request_active"] = "PASS"', stop_phase)
+        self.assertIn('CHECKS["stop_provider_released_after_accepted_stop"] = (', stop_phase)
+        self.assertIn('audit.stop_provider_release_signaled', stop_phase)
         self.assertIn("audit.stop_calls >= 1", stop_phase)
         self.assertIn("Relay did not send a Hermes stop POST before terminal state ", stop_phase)
         self.assertIn('stop_receipt.get("status") == "stopping"', stop_phase)
@@ -170,6 +173,10 @@ class Issue85E2EContractTests(unittest.TestCase):
         self.assertGreater(dispatch_timeout, poll_cycle)
         self.assertIn('STOP_DELAY = float(os.environ.get("FAKE_STOP_DELAY_SECONDS", "60"))', fake_provider)
         self.assertIn('if case == "stop_10k" and not called:', fake_provider)
+        self.assertIn('active_marker.write_text("active", encoding="ascii")', fake_provider)
+        self.assertIn('release_marker.unlink()', fake_provider)
+        self.assertIn('"stop_10k.release"', relay_e2e)
+        self.assertIn('${E2E_EVIDENCE_DIR:?required temporary evidence directory}:/evidence', self.compose)
 
     def test_runtime_pins_hermes_and_uses_only_the_local_fake_model(self):
         self.assertIn(IMAGE, self.compose)
