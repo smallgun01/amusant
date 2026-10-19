@@ -594,6 +594,9 @@ async def run():
         CHECKS["stop_pre_cancel_status"] = diagnostic_token(
             pre_cancel_row.get("status") if pre_cancel_row else None
         )
+        CHECKS["stop_pre_cancel_dispatch_state"] = diagnostic_token(
+            pre_cancel_row.get("dispatch_state") if pre_cancel_row else None
+        )
         require(
             pre_cancel_row is not None
             and bool(pre_cancel_row.get("backend_run_id"))
@@ -619,7 +622,12 @@ async def run():
                 return "stop_post"
             row = store2.get_by_task_id(stop_task_id)
             if row and row.get("status") in {"completed", "failed", "uncertain"}:
-                return diagnostic_token(row.get("status"))
+                CHECKS["stop_terminal_status"] = diagnostic_token(row.get("status"))
+                CHECKS["stop_terminal_error_code"] = diagnostic_token(row.get("last_error"))
+                CHECKS["stop_terminal_dispatch_state"] = diagnostic_token(row.get("dispatch_state"))
+                CHECKS["stop_terminal_stop_attempts"] = diagnostic_token(str(row.get("stop_attempts")))
+                CHECKS["stop_terminal_poll_attempts"] = diagnostic_token(str(row.get("poll_attempts")))
+                return CHECKS["stop_terminal_status"]
             return None
 
         stop_dispatch_observation = await eventually(
