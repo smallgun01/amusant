@@ -344,6 +344,37 @@ def _valid_writer_session(value):
     )
 
 
+
+WRITER_ACCEPTANCE_TIMEOUT_SECONDS = 1.5
+WRITER_ACCEPTANCE_POLL_SECONDS = 0.025
+
+
+def _accepted_writer_request(session_id):
+    """Wait briefly for the one in-flight submit to publish its trusted Run ID."""
+    deadline = time.monotonic() + WRITER_ACCEPTANCE_TIMEOUT_SECONDS
+    while True:
+        row = request_by_session(session_id)
+        if not row:
+            return None, "not_found"
+        state = row.get("submit_state")
+        if state == "accepted":
+            run_id = row.get("run_id")
+            if isinstance(run_id, str) and RUN_ID_VALUE_RE.fullmatch(run_id):
+                return row, None
+            return None, "invalid_run_id"
+        if state != "submitting":
+            return None, "not_accepted"
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None, "acceptance_timeout"
+        time.sleep(min(WRITER_ACCEPTANCE_POLL_SECONDS, remaining))
+
+
+def _writer_context_failure(reason):
+    status = 503 if reason == "acceptance_timeout" else 404
+    return status, {"error": {"code": "trusted_request_context_unavailable"}}
+
+
 def _record_writer_result(session_id, code, report_bytes=0, *, artifact_status=None):
     allowed = {
         "committed", "artifact_write_failed", "artifact_conflict",
@@ -376,13 +407,9 @@ def commit_report(session_id, report):
         return 400, {"error": {"code": "report_invalid"}}
     if len(encoded) > MAX_REPORT_BYTES:
         return 413, {"error": {"code": "report_over_cap"}}
-    row = request_by_session(session_id)
-    if (
-        not row or row.get("submit_state") != "accepted"
-        or not isinstance(row.get("run_id"), str)
-        or not RUN_ID_VALUE_RE.fullmatch(row["run_id"])
-    ):
-        return 404, {"error": {"code": "trusted_request_context_unavailable"}}
+    row, context_error = _accepted_writer_request(session_id)
+    if not row:
+        return _writer_context_failure(context_error)
     digest = hashlib.sha256(encoded).hexdigest()
     with ARTIFACT_COMMIT_LOCK:
         existing, _status = _load_committed_artifact(row)
@@ -492,9 +519,9 @@ def project_for_session(session_id, presentation):
         return 400, {"error": {"code": "trusted_request_context_unavailable"}}
     if not isinstance(presentation, str) or len(presentation.encode("utf-8", errors="replace")) > MAX_ENVELOPE_BYTES:
         return 413, {"error": {"code": "presentation_invalid"}}
-    row = request_by_session(session_id)
-    if not row or row.get("submit_state") != "accepted":
-        return 404, {"error": {"code": "trusted_request_context_unavailable"}}
+    row, context_error = _accepted_writer_request(session_id)
+    if not row:
+        return _writer_context_failure(context_error)
     artifact, artifact_status = _load_committed_artifact(row)
     if not artifact:
         code = artifact_status if artifact_status in {

@@ -11,6 +11,7 @@ import secrets
 import shutil
 import sys
 import threading
+import time
 import unittest
 from http.server import ThreadingHTTPServer
 from unittest.mock import Mock, patch
@@ -256,6 +257,211 @@ class FacadeRuntimeContractTests(unittest.TestCase):
             self.assertEqual(row["submit_state"], "uncertain")
             self.assertIsNone(row["run_id"])
             self.assertEqual(row["upstream_post_count"], 1)
+
+    def test_report_writer_waits_for_delayed_submit_acceptance(self):
+        owner_scope = self.facade.owner_scope_from_header(OWNER_SESSION_KEY)
+        task_id = "task-writer-acceptance-race"
+        run_id = "run_writer_acceptance_race"
+        post_started = threading.Event()
+        release_post = threading.Event()
+        writer_observed_submitting = threading.Event()
+        submit_result = []
+        writer_result = []
+
+        def delayed_post(*_args, **_kwargs):
+            post_started.set()
+            if not release_post.wait(timeout=4):
+                return 502, None, "upstream_timeout", 0
+            return 202, {"run_id": run_id}, None, 0
+
+        self.upstream.side_effect = delayed_post
+
+        def submit():
+            submit_result.append(self._relay(
+                "POST", "/v1/runs", {"input": "synthetic"},
+                extra_headers={"Idempotency-Key": task_id},
+            ))
+
+        original_lookup = self.facade.request_by_session
+
+        def observe_writer_lookup(session_id):
+            row = original_lookup(session_id)
+            if (
+                threading.current_thread().name == "writer-rendezvous"
+                and row and row.get("submit_state") == "submitting"
+            ):
+                writer_observed_submitting.set()
+            return row
+
+        submit_thread = threading.Thread(target=submit, name="relay-submit")
+        writer_thread = None
+        submit_thread.start()
+        self.assertTrue(post_started.wait(timeout=1))
+        row = self.facade.request_by_owner_task(owner_scope, task_id)
+        self.assertEqual(row["submit_state"], "submitting")
+
+        def write_report():
+            writer_result.append(self._writer(
+                "POST", "/internal/v1/artifacts", {"report": "early synthetic report"},
+                session=row["session_id"],
+            ))
+
+        writer_thread = threading.Thread(target=write_report, name="writer-rendezvous")
+        try:
+            with patch.object(self.facade, "request_by_session", observe_writer_lookup):
+                writer_thread.start()
+                self.assertTrue(writer_observed_submitting.wait(timeout=1))
+                release_post.set()
+                writer_thread.join(timeout=2.5)
+                submit_thread.join(timeout=1)
+        finally:
+            release_post.set()
+            if writer_thread.is_alive():
+                writer_thread.join(timeout=2)
+            if submit_thread.is_alive():
+                submit_thread.join(timeout=2)
+
+        self.assertFalse(writer_thread.is_alive())
+        self.assertFalse(submit_thread.is_alive())
+        self.assertEqual(len(submit_result), 1)
+        self.assertEqual(submit_result[0][0], 202)
+        self.assertEqual(len(writer_result), 1)
+        self.assertEqual(writer_result[0][0], 200)
+        accepted = self.facade.request_by_owner_task(owner_scope, task_id)
+        self.assertEqual(accepted["submit_state"], "accepted")
+        self.assertEqual(accepted["run_id"], run_id)
+        self.assertEqual(accepted["upstream_post_count"], 1)
+        artifact = self.facade.artifact_for(owner_scope, task_id, run_id)
+        self.assertIsNotNone(artifact)
+        with self.facade.connect() as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM artifacts WHERE owner_scope=? AND task_id=? AND run_id=?",
+                (owner_scope, task_id, run_id),
+            ).fetchone()[0]
+        self.assertEqual(count, 1)
+        self.upstream.assert_called_once()
+
+    def test_presentation_writer_waits_for_acceptance_transition(self):
+        presentation, expected_output = self._commit_and_project()
+        with self.facade.connect() as conn:
+            conn.execute(
+                "UPDATE requests SET submit_state='submitting' WHERE session_id=?",
+                (SESSION_ID,),
+            )
+        writer_observed_submitting = threading.Event()
+        writer_result = []
+        original_lookup = self.facade.request_by_session
+
+        def observe_writer_lookup(session_id):
+            row = original_lookup(session_id)
+            if (
+                threading.current_thread().name == "presentation-rendezvous"
+                and row and row.get("submit_state") == "submitting"
+            ):
+                writer_observed_submitting.set()
+            return row
+
+        def project():
+            writer_result.append(self._writer(
+                "POST", "/internal/v1/presentation",
+                {"presentation": presentation}, session=SESSION_ID,
+            ))
+
+        writer_thread = threading.Thread(target=project, name="presentation-rendezvous")
+        with patch.object(self.facade, "request_by_session", observe_writer_lookup):
+            writer_thread.start()
+            self.assertTrue(writer_observed_submitting.wait(timeout=1))
+            with self.facade.connect() as conn:
+                conn.execute(
+                    "UPDATE requests SET submit_state='accepted' WHERE session_id=?",
+                    (SESSION_ID,),
+                )
+            writer_thread.join(timeout=2.5)
+
+        self.assertFalse(writer_thread.is_alive())
+        self.assertEqual(len(writer_result), 1)
+        self.assertEqual(writer_result[0][0], 200)
+        self.assertEqual(writer_result[0][1]["output"], expected_output)
+
+    def test_writer_endpoints_fail_closed_when_acceptance_stays_pending(self):
+        presentation, _output = self._commit_and_project()
+        for path, body in (
+            ("/internal/v1/artifacts", {"report": "private synthetic report"}),
+            ("/internal/v1/presentation", {"presentation": presentation}),
+        ):
+            with self.subTest(path=path):
+                with self.facade.connect() as conn:
+                    conn.execute(
+                        "UPDATE requests SET submit_state='submitting' WHERE session_id=?",
+                        (SESSION_ID,),
+                    )
+                started = time.monotonic()
+                code, payload, _raw = self._writer(
+                    "POST", path, body, session=SESSION_ID
+                )
+                elapsed = time.monotonic() - started
+                with self.facade.connect() as conn:
+                    conn.execute(
+                        "UPDATE requests SET submit_state='accepted' WHERE session_id=?",
+                        (SESSION_ID,),
+                    )
+                self.assertEqual(code, 503, payload)
+                self.assertEqual(
+                    payload["error"]["code"],
+                    "trusted_request_context_unavailable",
+                )
+                self.assertLess(elapsed, 2.75)
+
+    def test_report_writer_fails_closed_when_submit_ack_never_arrives(self):
+        owner_scope = self.facade.owner_scope_from_header(OWNER_SESSION_KEY)
+        task_id = "task-writer-acceptance-timeout"
+        post_started = threading.Event()
+        release_post = threading.Event()
+        submit_result = []
+
+        def delayed_failure(*_args, **_kwargs):
+            post_started.set()
+            release_post.wait(timeout=4)
+            return 502, None, "upstream_timeout", 0
+
+        self.upstream.side_effect = delayed_failure
+        submit_thread = threading.Thread(
+            target=lambda: submit_result.append(self._relay(
+                "POST", "/v1/runs", {"input": "synthetic"},
+                extra_headers={"Idempotency-Key": task_id},
+            )),
+            name="relay-submit-timeout",
+        )
+        submit_thread.start()
+        self.assertTrue(post_started.wait(timeout=1))
+        row = self.facade.request_by_owner_task(owner_scope, task_id)
+        started = time.monotonic()
+        try:
+            code, payload, _raw = self._writer(
+                "POST", "/internal/v1/artifacts",
+                {"report": "must not be committed"},
+                session=row["session_id"],
+            )
+            elapsed = time.monotonic() - started
+        finally:
+            release_post.set()
+            submit_thread.join(timeout=2)
+
+        self.assertFalse(submit_thread.is_alive())
+        self.assertEqual(len(submit_result), 1)
+        self.assertEqual(submit_result[0][0], 502)
+        self.assertEqual(code, 503, payload)
+        self.assertEqual(
+            payload["error"]["code"],
+            "trusted_request_context_unavailable",
+        )
+        self.assertLess(elapsed, 2.75)
+        unresolved = self.facade.request_by_owner_task(owner_scope, task_id)
+        self.assertEqual(unresolved["submit_state"], "uncertain")
+        self.assertIsNone(unresolved["run_id"])
+        self.assertIsNone(unresolved["artifact_ref"])
+        self.assertEqual(unresolved["upstream_post_count"], 1)
+        self.upstream.assert_called_once()
 
     def test_completed_get_fails_closed_when_committed_report_changes_or_disappears(self):
         _presentation, envelope = self._commit_and_project()
