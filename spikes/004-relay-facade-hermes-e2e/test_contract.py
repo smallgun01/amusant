@@ -128,27 +128,28 @@ class Issue85E2EContractTests(unittest.TestCase):
         self.assertLess(first_session_close, cancel_session_open)
         self.assertIn('stop_request_provider, "b2-stop-request", "cancel_task"', stop_phase)
 
-    def test_stop_probe_requires_confirmed_cancellation_and_owner_visible_inbox(self):
+    def test_stop_probe_distinguishes_stop_handling_from_confirmed_cancellation(self):
         relay_e2e = (PROJECT / "relay_e2e.py").read_text(encoding="utf-8")
         stop_phase = relay_e2e.split('PHASE = "stop-run"', 1)[1].split(
             'PHASE = "ambiguous-submit"', 1
         )[0]
         self.assertIn('value.get("status") in {"completed", "failed", "uncertain"}', stop_phase)
         self.assertIn('stop_terminal_error_code = stop_row.get("last_error")', stop_phase)
-        self.assertIn('stop_terminal_error_code == "hermes_cancelled"', stop_phase)
+        self.assertIn('stop_outcome = classify_stop_outcome(', stop_phase)
         self.assertIn('CHECKS["stop_hermes_status"] = diagnostic_token(audit.stop_remote_status)', stop_phase)
         self.assertIn('CHECKS["stop_hermes_error_category"] = diagnostic_token(audit.stop_remote_error_category)', stop_phase)
         self.assertIn('CHECKS["stop_hermes_exit_category"] = diagnostic_token(audit.stop_remote_exit_category)', stop_phase)
         self.assertIn('CHECKS["stop_hermes_interrupted"] = diagnostic_token(audit.stop_remote_interrupted)', stop_phase)
         self.assertIn('CHECKS["stop_hermes_partial"] = diagnostic_token(audit.stop_remote_partial)', stop_phase)
         self.assertIn('store2.lookup_inbox(client_id=CLIENT_ID, task_id=stop_task_id)', stop_phase)
-        self.assertIn('stop_visible.get("status") == "cancelled"', stop_phase)
-        self.assertIn('stop_visible.get("code") == "hermes_cancelled"', stop_phase)
+        self.assertIn('CHECKS["stop_terminal_outcome"] = stop_outcome or "unclassified"', stop_phase)
+        self.assertIn('CHECKS["stop_cancel_confirmed"] = "true" if stop_outcome == "cancelled" else "false"', stop_phase)
+        self.assertIn('CHECKS["stop_handling"] = "PASS"', stop_phase)
         self.assertIn('CHECKS["stop_terminal_error_code"] = diagnostic_token(stop_terminal_error_code)', stop_phase)
         self.assertIn('CHECKS["stop_visible_status"] = diagnostic_token(', stop_phase)
         self.assertIn('CHECKS["stop_visible_code"] = diagnostic_token(', stop_phase)
         self.assertIn('CHECKS["stop_fake_model_request_active"] = "PASS"', stop_phase)
-        self.assertIn('CHECKS["stop_provider_released_after_accepted_stop"] = (', stop_phase)
+        self.assertIn('CHECKS["stop_fixture_release_signaled_after_stopping_observed"] = (', stop_phase)
         self.assertIn('audit.stop_provider_release_signaled', stop_phase)
         self.assertIn('self.stop_remote_status in {', relay_e2e)
         self.assertIn('"stopping", "cancelled", "interrupted"', relay_e2e)
@@ -157,11 +158,21 @@ class Issue85E2EContractTests(unittest.TestCase):
         self.assertIn('CHECKS["stop_hermes_stop_http_status"] = diagnostic_token(', stop_phase)
         self.assertLess(
             stop_phase.index("stop_row = await wait_row("),
-            stop_phase.index('CHECKS["stop_provider_released_after_accepted_stop"] = ('),
+            stop_phase.index('CHECKS["stop_fixture_release_signaled_after_stopping_observed"] = ('),
         )
-        self.assertIn("audit.stop_calls >= 1", stop_phase)
+        self.assertIn("audit.stop_calls == 1", stop_phase)
+        self.assertIn("audit.stop_targeted_posts == 1", stop_phase)
+        self.assertIn("stop_submit_attempts == 1", stop_phase)
+        self.assertIn("audit.stop_remote_terminal_after_accepted_stop", stop_phase)
         self.assertIn("Relay did not send a Hermes stop POST before terminal state ", stop_phase)
         self.assertIn('stop_receipt.get("status") == "stopping"', stop_phase)
+
+    def test_stop_readme_distinguishes_handling_from_actual_cancellation(self):
+        readme = (PROJECT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("stop_terminal_outcome=interrupt_failed", readme)
+        self.assertIn("stop_cancel_confirmed=false", readme)
+        self.assertIn("stop-handling PASS", readme)
+        self.assertIn("open post-E1 / pre-live-canary gate", readme)
 
     def test_stop_fake_request_outlasts_relay_poll_cycle(self):
         provider_service = service_block(self.compose, "fake-provider")

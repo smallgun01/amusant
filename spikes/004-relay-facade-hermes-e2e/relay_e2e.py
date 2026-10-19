@@ -32,6 +32,7 @@ from relay.device_tls_psk import PSK_CIPHERS, build_server_context
 from relay.hermes_runs_executor import HermesRequestError, HermesRunsExecutor
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
+from stop_classification import classify_stop_outcome
 
 
 TOKEN = "offline-b2-device-token-synthetic"
@@ -44,6 +45,7 @@ EVIDENCE_PATH = Path(os.environ.get("E2E_EVIDENCE_PATH", "/evidence/relay-e2e.js
 MIN_PCM_BYTES = 12_000
 STOP_POLL_CYCLE_WAIT_SECONDS = 16.0
 STOP_DISPATCH_TIMEOUT_SECONDS = 20.0
+HERMES_TERMINAL_STATUSES = {"completed", "failed", "cancelled", "interrupted", "expired"}
 
 CHECKS: dict[str, str] = {}
 WIRE: list[str | bytes] = []
@@ -162,6 +164,11 @@ class HttpAudit:
         self.relay_submit_calls: dict[str, int] = {}
         self.get_calls = 0
         self.stop_calls = 0
+        self.stop_targeted_posts = 0
+        self.stop_unexpected_posts = 0
+        self.stop_accepted_posts = 0
+        self.stop_remote_terminal_observed = False
+        self.stop_remote_terminal_after_accepted_stop = False
         self.stop_run_id: str | None = None
         self.stop_post_accepted = False
         self.stop_post_completed = False
@@ -246,10 +253,16 @@ class HttpAudit:
                     )
                     if self.stop_remote_status == "failed":
                         self.stop_remote_error_category = diagnostic_error_category(payload)
+                    if status == 200 and self.stop_remote_status in HERMES_TERMINAL_STATUSES:
+                        self.stop_remote_terminal_observed = True
+                        if self.stop_post_accepted:
+                            self.stop_remote_terminal_after_accepted_stop = True
                     release_provider = self.stop_post_accepted and self.stop_remote_status in {
                         "stopping", "cancelled", "interrupted"
                     }
                 if release_provider and not self.stop_provider_release_signaled:
+                    # This marker only releases the deterministic fake fixture;
+                    # it is not evidence that external model-provider work stopped.
                     (EVIDENCE_PATH.parent / "stop_10k.release").write_text("accepted", encoding="ascii")
                     with self.lock:
                         self.stop_provider_release_signaled = True
@@ -269,12 +282,20 @@ class HttpAudit:
         if method == "POST" and path.endswith("/stop"):
             with self.lock:
                 self.stop_calls += 1
+                expected_path = f"/v1/runs/{self.stop_run_id}/stop" if self.stop_run_id else None
+                targeted = path == expected_path
+                if targeted:
+                    self.stop_targeted_posts += 1
+                else:
+                    self.stop_unexpected_posts += 1
             status, payload = self.original(executor, method, path, body, headers)
-            if self.stop_run_id and path == f"/v1/runs/{self.stop_run_id}/stop":
+            if targeted:
                 with self.lock:
                     self.stop_post_completed = True
                     self.stop_post_http_status = status
                     self.stop_post_accepted = 200 <= status < 300
+                    if self.stop_post_accepted:
+                        self.stop_accepted_posts += 1
             return status, payload
         return self.original(executor, method, path, body, headers)
 
@@ -757,6 +778,9 @@ async def run():
         )
         stop_terminal_status = stop_row.get("status")
         stop_terminal_error_code = stop_row.get("last_error")
+        stop_visible = store2.lookup_inbox(client_id=CLIENT_ID, task_id=stop_task_id)
+        stop_visible_status = stop_visible.get("status") if stop_visible else None
+        stop_visible_code = stop_visible.get("code") if stop_visible else None
         CHECKS["stop_terminal_status"] = diagnostic_token(stop_terminal_status)
         CHECKS["stop_terminal_error_code"] = diagnostic_token(stop_terminal_error_code)
         CHECKS["stop_hermes_status"] = diagnostic_token(audit.stop_remote_status)
@@ -765,35 +789,54 @@ async def run():
         CHECKS["stop_hermes_completed"] = diagnostic_token(audit.stop_remote_completed)
         CHECKS["stop_hermes_interrupted"] = diagnostic_token(audit.stop_remote_interrupted)
         CHECKS["stop_hermes_partial"] = diagnostic_token(audit.stop_remote_partial)
-        CHECKS["stop_provider_released_after_accepted_stop"] = (
+        CHECKS["stop_remote_terminal_after_accepted_stop"] = (
+            "PASS" if audit.stop_remote_terminal_after_accepted_stop else "FAIL"
+        )
+        require(
+            audit.stop_remote_terminal_after_accepted_stop,
+            "a terminal Hermes status was not observed after the accepted stop request",
+        )
+        CHECKS["stop_fixture_release_signaled_after_stopping_observed"] = (
             "PASS" if audit.stop_provider_release_signaled else "FAIL"
         )
         require(
-            stop_terminal_status == "failed" and stop_terminal_error_code == "hermes_cancelled",
-            "stop test did not confirm Hermes cancellation (status "
-            + CHECKS["stop_terminal_status"]
-            + ", code " + CHECKS["stop_terminal_error_code"] + ")",
-        )
-        require(
             audit.stop_provider_release_signaled,
-            "Hermes status never confirmed stopping or cancellation before the fixture deadline",
+            "Hermes status never confirmed stopping/cancellation before the fake-fixture deadline",
         )
-        stop_visible = store2.lookup_inbox(client_id=CLIENT_ID, task_id=stop_task_id)
-        CHECKS["stop_visible_status"] = diagnostic_token(
-            stop_visible.get("status") if stop_visible else None
-        )
-        CHECKS["stop_visible_code"] = diagnostic_token(
-            stop_visible.get("code") if stop_visible else None
-        )
+        CHECKS["stop_visible_status"] = diagnostic_token(stop_visible_status)
+        CHECKS["stop_visible_code"] = diagnostic_token(stop_visible_code)
+        CHECKS["stop_hermes_stop_post_count"] = str(audit.stop_calls)
+        CHECKS["stop_targeted_hermes_stop_post_count"] = str(audit.stop_targeted_posts)
+        CHECKS["stop_unexpected_hermes_stop_post_count"] = str(audit.stop_unexpected_posts)
         require(
-            stop_visible is not None
-            and stop_visible.get("status") == "cancelled"
-            and stop_visible.get("code") == "hermes_cancelled",
-            "owner-visible Inbox did not confirm cancellation (status "
-            + CHECKS["stop_visible_status"]
-            + ", code " + CHECKS["stop_visible_code"] + ")",
+            audit.stop_calls == 1
+            and audit.stop_targeted_posts == 1
+            and audit.stop_unexpected_posts == 0
+            and audit.stop_accepted_posts == 1,
+            "Relay did not issue exactly one accepted STOP request for the expected Run",
         )
-        CHECKS["stop_cancellation_confirmed"] = "PASS"
+        stop_submit_attempts = audit.relay_submit_calls.get(stop_task_id, 0)
+        CHECKS["stop_relay_submit_attempts"] = str(stop_submit_attempts)
+        require(stop_submit_attempts == 1, "stop task was replayed or submitted more than once")
+        stop_outcome = classify_stop_outcome(
+            remote_status=audit.stop_remote_status,
+            remote_error_category=audit.stop_remote_error_category,
+            remote_interrupted=audit.stop_remote_interrupted,
+            ledger_status=stop_terminal_status,
+            ledger_code=stop_terminal_error_code,
+            visible_status=stop_visible_status,
+            visible_code=stop_visible_code,
+        )
+        CHECKS["stop_terminal_outcome"] = stop_outcome or "unclassified"
+        CHECKS["stop_cancel_confirmed"] = "true" if stop_outcome == "cancelled" else "false"
+        require(
+            stop_outcome is not None,
+            "Hermes stop result was incomplete, unrelated, or not honestly represented by Relay "
+            "(remote " + CHECKS["stop_hermes_status"] + "/" + CHECKS["stop_hermes_error_category"]
+            + ", Relay " + CHECKS["stop_terminal_status"] + "/" + CHECKS["stop_terminal_error_code"]
+            + ", owner " + CHECKS["stop_visible_status"] + "/" + CHECKS["stop_visible_code"] + ")",
+        )
+        CHECKS["stop_handling"] = "PASS"
 
         PHASE = "ambiguous-submit"
         ambiguous_ws, ambiguous_provider = await open_turn(server2, providers.instances)
@@ -845,7 +888,7 @@ async def run():
                 "uncertain task was replayed")
         CHECKS["full_report_markers_absent_from_relay_wire"] = "PASS"
         CHECKS["restart_task_status"] = "PASS" if completed.get("status") == "completed" else "FAIL"
-        CHECKS["stop_state"] = "PASS" if CHECKS.get("stop_cancellation_confirmed") == "PASS" else "FAIL"
+        CHECKS["stop_state"] = "PASS" if CHECKS.get("stop_handling") == "PASS" else "FAIL"
         CHECKS["ambiguous_state"] = "PASS" if uncertain.get("status") == "uncertain" else "FAIL"
 
         evidence = {
