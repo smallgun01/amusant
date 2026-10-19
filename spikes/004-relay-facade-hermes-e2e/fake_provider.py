@@ -11,6 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 RUN_TAG = os.environ["POC_RUN_TAG"]
 SLOW_DELAY = float(os.environ.get("FAKE_SLOW_DELAY_SECONDS", "8"))
+STOP_DELAY = float(os.environ.get("FAKE_STOP_DELAY_SECONDS", "25"))
 PRESENTATION = {
     "schema_version": 1,
     "speak": "The report is ready for review.",
@@ -313,7 +314,12 @@ class Handler(BaseHTTPRequestHandler):
         report_tool_requested = isinstance(report_tool_arguments, dict)
         write_file_requested = isinstance(write_file_arguments, dict)
 
-        delay = SLOW_DELAY if case in {"restart_10k", "ambiguous_10k", "stop_10k"} and not called else 0.0
+        if case == "stop_10k" and not called:
+            delay = STOP_DELAY
+        elif case in {"restart_10k", "ambiguous_10k"} and not called:
+            delay = SLOW_DELAY
+        else:
+            delay = 0.0
         with self.server.state.lock:
             self.server.state.sequence += 1
             sequence = self.server.state.sequence

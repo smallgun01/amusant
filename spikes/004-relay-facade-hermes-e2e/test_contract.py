@@ -134,6 +134,17 @@ class Issue85E2EContractTests(unittest.TestCase):
         )[0]
         self.assertIn('value.get("status") in {"completed", "failed", "uncertain"}', stop_phase)
         self.assertIn('CHECKS["stop_terminal_status"] = str(stop_row.get("status"))', stop_phase)
+        self.assertIn('require(audit.stop_calls >= 1, "Relay did not send a Hermes stop POST")', stop_phase)
+
+    def test_stop_fake_request_outlasts_relay_poll_cycle(self):
+        provider_service = service_block(self.compose, "fake-provider")
+        fake_provider = (PROJECT / "fake_provider.py").read_text(encoding="utf-8")
+        relay_e2e = (PROJECT / "relay_e2e.py").read_text(encoding="utf-8")
+        stop_delay = float(re.search(r'FAKE_STOP_DELAY_SECONDS: "([0-9.]+)"', provider_service).group(1))
+        poll_cycle = float(re.search(r'"AMUSANT_HERMES_POLL_CYCLE_SECONDS": "([0-9.]+)"', relay_e2e).group(1))
+        self.assertGreater(stop_delay, poll_cycle)
+        self.assertIn('STOP_DELAY = float(os.environ.get("FAKE_STOP_DELAY_SECONDS", "25"))', fake_provider)
+        self.assertIn('if case == "stop_10k" and not called:', fake_provider)
 
     def test_runtime_pins_hermes_and_uses_only_the_local_fake_model(self):
         self.assertIn(IMAGE, self.compose)
