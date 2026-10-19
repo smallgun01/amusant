@@ -141,6 +141,7 @@ class HttpAudit:
         self.get_calls = 0
         self.stop_calls = 0
         self.stop_run_id: str | None = None
+        self.stop_post_accepted = False
         self.stop_provider_release_signaled = False
         self.stop_remote_status = "unknown"
         self.stop_remote_error_category = "unknown"
@@ -197,10 +198,18 @@ class HttpAudit:
                 self.get_calls += 1
             status, payload = self.original(executor, method, path, body, headers)
             if path == "/v1/runs/" + str(self.stop_run_id):
+                release_provider = False
                 with self.lock:
                     self.stop_remote_status = diagnostic_token(payload.get("status"))
                     if self.stop_remote_status == "failed":
                         self.stop_remote_error_category = diagnostic_error_category(payload)
+                    release_provider = self.stop_post_accepted and self.stop_remote_status in {
+                        "stopping", "cancelled", "interrupted"
+                    }
+                if release_provider and not self.stop_provider_release_signaled:
+                    (EVIDENCE_PATH.parent / "stop_10k.release").write_text("accepted", encoding="ascii")
+                    with self.lock:
+                        self.stop_provider_release_signaled = True
             if (
                 status == 200
                 and payload.get("status") == "completed"
@@ -219,9 +228,8 @@ class HttpAudit:
                 self.stop_calls += 1
             status, payload = self.original(executor, method, path, body, headers)
             if status < 300 and self.stop_run_id and path == f"/v1/runs/{self.stop_run_id}/stop":
-                (EVIDENCE_PATH.parent / "stop_10k.release").write_text("accepted", encoding="ascii")
                 with self.lock:
-                    self.stop_provider_release_signaled = True
+                    self.stop_post_accepted = True
             return status, payload
         return self.original(executor, method, path, body, headers)
 
