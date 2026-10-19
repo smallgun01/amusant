@@ -583,11 +583,13 @@ async def run():
         await stop_request_ws.close()
         stop_row = await wait_row(
             store2, stop_task_id,
-            lambda value: value.get("status") in {"failed", "uncertain"},
+            lambda value: value.get("status") in {"completed", "failed", "uncertain"},
             timeout=30.0, description="stop terminal or uncertain state",
         )
         require(audit.stop_calls >= 1, "Relay did not send a Hermes stop POST")
         CHECKS["stop_or_explicit_uncertain_state"] = "PASS"
+        # A stop request can race with completion; the confirmed terminal state wins.
+        CHECKS["stop_terminal_status"] = str(stop_row.get("status"))
 
         PHASE = "ambiguous-submit"
         ambiguous_ws, ambiguous_provider = await open_turn(server2, providers.instances)
@@ -639,7 +641,7 @@ async def run():
                 "uncertain task was replayed")
         CHECKS["full_report_markers_absent_from_relay_wire"] = "PASS"
         CHECKS["restart_task_status"] = "PASS" if completed.get("status") == "completed" else "FAIL"
-        CHECKS["stop_state"] = "PASS" if stop_row.get("status") in {"failed", "uncertain"} else "FAIL"
+        CHECKS["stop_state"] = "PASS" if stop_row.get("status") in {"completed", "failed", "uncertain"} else "FAIL"
         CHECKS["ambiguous_state"] = "PASS" if uncertain.get("status") == "uncertain" else "FAIL"
 
         evidence = {

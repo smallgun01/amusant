@@ -127,6 +127,14 @@ class Issue85E2EContractTests(unittest.TestCase):
         self.assertLess(first_session_close, cancel_session_open)
         self.assertIn('stop_request_provider, "b2-stop-request", "cancel_task"', stop_phase)
 
+    def test_stop_probe_accepts_and_records_a_confirmed_completion_race(self):
+        relay_e2e = (PROJECT / "relay_e2e.py").read_text(encoding="utf-8")
+        stop_phase = relay_e2e.split('PHASE = "stop-run"', 1)[1].split(
+            'PHASE = "ambiguous-submit"', 1
+        )[0]
+        self.assertIn('value.get("status") in {"completed", "failed", "uncertain"}', stop_phase)
+        self.assertIn('CHECKS["stop_terminal_status"] = str(stop_row.get("status"))', stop_phase)
+
     def test_runtime_pins_hermes_and_uses_only_the_local_fake_model(self):
         self.assertIn(IMAGE, self.compose)
         self.assertIn(IMAGE, (PROJECT / "run_e2e.py").read_text(encoding="utf-8"))
