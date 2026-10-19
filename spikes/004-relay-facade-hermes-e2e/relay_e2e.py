@@ -66,7 +66,10 @@ def diagnostic_token(value: object) -> str:
 
 
 def diagnostic_error_category(payload: dict[str, object]) -> str:
-    parts = [payload.get("error"), payload.get("turn_exit_reason")]
+    error = payload.get("error")
+    parts = [error, payload.get("turn_exit_reason")]
+    if isinstance(error, dict):
+        parts.extend(error.get(key) for key in ("code", "type", "message"))
     message = " ".join(value for value in parts if isinstance(value, str)).lower()
     if "timeout" in message or "timed out" in message:
         return "timeout"
@@ -77,6 +80,25 @@ def diagnostic_error_category(payload: dict[str, object]) -> str:
     if "provider" in message or "model" in message or "api" in message:
         return "model_api_error"
     return "hermes_error" if message else "unknown"
+
+
+def diagnostic_exit_category(value: object) -> str:
+    if not isinstance(value, str):
+        return "unknown"
+    reason = value.lower()
+    if "interrupt" in reason or "cancel" in reason:
+        return "interrupt"
+    if "timeout" in reason or "timed_out" in reason:
+        return "timeout"
+    if "max_iterations" in reason or "budget_exhausted" in reason:
+        return "iteration_limit"
+    if "pending_tool" in reason:
+        return "pending_tool_result"
+    if "persistence" in reason or "storage" in reason:
+        return "persistence_error"
+    if "provider" in reason or "model" in reason or "api" in reason:
+        return "model_api_error"
+    return "other"
 
 
 class FakeGeminiLive:
@@ -147,6 +169,10 @@ class HttpAudit:
         self.stop_provider_release_signaled = False
         self.stop_remote_status = "unknown"
         self.stop_remote_error_category = "unknown"
+        self.stop_remote_exit_category = "unknown"
+        self.stop_remote_completed = "unknown"
+        self.stop_remote_interrupted = "unknown"
+        self.stop_remote_partial = "unknown"
         self.duplicate_verified = False
         self.ambiguous_task_id: str | None = None
         self.restart_task_id: str | None = None
@@ -203,6 +229,21 @@ class HttpAudit:
                 release_provider = False
                 with self.lock:
                     self.stop_remote_status = diagnostic_token(payload.get("status"))
+                    self.stop_remote_completed = diagnostic_token(
+                        str(payload.get("completed")).lower()
+                        if isinstance(payload.get("completed"), bool) else None
+                    )
+                    self.stop_remote_interrupted = diagnostic_token(
+                        str(payload.get("interrupted")).lower()
+                        if isinstance(payload.get("interrupted"), bool) else None
+                    )
+                    self.stop_remote_partial = diagnostic_token(
+                        str(payload.get("partial")).lower()
+                        if isinstance(payload.get("partial"), bool) else None
+                    )
+                    self.stop_remote_exit_category = diagnostic_exit_category(
+                        payload.get("turn_exit_reason")
+                    )
                     if self.stop_remote_status == "failed":
                         self.stop_remote_error_category = diagnostic_error_category(payload)
                     release_provider = self.stop_post_accepted and self.stop_remote_status in {
@@ -720,6 +761,10 @@ async def run():
         CHECKS["stop_terminal_error_code"] = diagnostic_token(stop_terminal_error_code)
         CHECKS["stop_hermes_status"] = diagnostic_token(audit.stop_remote_status)
         CHECKS["stop_hermes_error_category"] = diagnostic_token(audit.stop_remote_error_category)
+        CHECKS["stop_hermes_exit_category"] = diagnostic_token(audit.stop_remote_exit_category)
+        CHECKS["stop_hermes_completed"] = diagnostic_token(audit.stop_remote_completed)
+        CHECKS["stop_hermes_interrupted"] = diagnostic_token(audit.stop_remote_interrupted)
+        CHECKS["stop_hermes_partial"] = diagnostic_token(audit.stop_remote_partial)
         CHECKS["stop_provider_released_after_accepted_stop"] = (
             "PASS" if audit.stop_provider_release_signaled else "FAIL"
         )
