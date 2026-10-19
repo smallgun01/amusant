@@ -156,8 +156,9 @@ class Issue85E2EContractTests(unittest.TestCase):
         self.assertLessEqual(poll_cycle, 1.0)
         self.assertGreater(stop_grace, poll_cycle)
         self.assertGreater(dispatch_timeout, poll_cycle)
-        self.assertIn('STOP_DELAY = float(os.environ.get("FAKE_STOP_DELAY_SECONDS", "60"))', fake_provider)
+        self.assertIn('STOP_DELAY = float(os.environ.get("FAKE_STOP_DELAY_SECONDS", "12"))', fake_provider)
         self.assertIn('if case == "stop_10k" and not called:', fake_provider)
+        self.assertIn('case not in {"no_writer", "stop_10k"}', fake_provider)
 
     def test_runtime_pins_hermes_and_uses_only_the_local_fake_model(self):
         self.assertIn(IMAGE, self.compose)

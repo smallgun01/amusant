@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 RUN_TAG = os.environ["POC_RUN_TAG"]
 SLOW_DELAY = float(os.environ.get("FAKE_SLOW_DELAY_SECONDS", "8"))
-STOP_DELAY = float(os.environ.get("FAKE_STOP_DELAY_SECONDS", "60"))
+STOP_DELAY = float(os.environ.get("FAKE_STOP_DELAY_SECONDS", "12"))
 PRESENTATION = {
     "schema_version": 1,
     "speak": "The report is ready for review.",
@@ -290,7 +290,9 @@ class Handler(BaseHTTPRequestHandler):
                 1 for row in self.server.state.requests
                 if row.get("case") == case and row.get("write_file_requested") is True
             )
-        should_write = case != "no_writer" and (writer_calls == 0 or (case == "writer_redelivery" and writer_calls == 1))
+        should_write = case not in {"no_writer", "stop_10k"} and (
+            writer_calls == 0 or (case == "writer_redelivery" and writer_calls == 1)
+        )
         if should_write:
             report = report_body(case)
             report_arguments = {"report": report}
