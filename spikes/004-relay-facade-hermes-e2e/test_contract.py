@@ -105,6 +105,16 @@ class Issue85E2EContractTests(unittest.TestCase):
         provider_wait = open_turn.index("provider = await eventually(")
         self.assertLess(audio_send, provider_wait)
 
+    def test_single_flight_busy_probe_uses_a_new_live_session(self):
+        relay_e2e = (PROJECT / "relay_e2e.py").read_text(encoding="utf-8")
+        slow_phase = relay_e2e.split('PHASE = "slow-restart-admission"', 1)[1].split(
+            'PHASE = "drop-completed-envelope"', 1
+        )[0]
+        first_session_close = slow_phase.index("await slow_ws.close()")
+        busy_session_open = slow_phase.index("busy_ws, busy_provider = await open_turn(")
+        self.assertLess(first_session_close, busy_session_open)
+        self.assertIn('busy_provider, "b2-restart-busy", "delegate_task"', slow_phase)
+
     def test_runtime_pins_hermes_and_uses_only_the_local_fake_model(self):
         self.assertIn(IMAGE, self.compose)
         self.assertIn(IMAGE, (PROJECT / "run_e2e.py").read_text(encoding="utf-8"))

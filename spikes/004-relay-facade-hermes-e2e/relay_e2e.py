@@ -473,14 +473,19 @@ async def run():
         )
         require(accepted.get("status") == "accepted", "SLOW task was not durably admitted")
         restart_task_id = accepted["task_id"]
+        await slow_ws.close()
+        CHECKS["slow_relay_dispatcher_sqlite_admission"] = "PASS"
+
+        # One slow-path action is allowed per Live turn; use a new session for
+        # the same owner to exercise the durable single-flight admission guard.
+        busy_ws, busy_provider = await open_turn(server, providers.instances)
         busy = await invoke_tool(
-            slow_provider, "b2-restart-busy", "delegate_task",
+            busy_provider, "b2-restart-busy", "delegate_task",
             {"task": "A second task must remain single-flight.", "task_kind": "research"},
         )
         require(busy.get("status") == "busy" and busy.get("code") == "slow_busy", "single-flight did not return slow_busy")
-        await finish_synthetic_turn(slow_ws, slow_provider)
-        await slow_ws.close()
-        CHECKS["slow_relay_dispatcher_sqlite_admission"] = "PASS"
+        await finish_synthetic_turn(busy_ws, busy_provider)
+        await busy_ws.close()
         CHECKS["single_flight_slow_busy"] = "PASS"
 
         PHASE = "drop-completed-envelope"
