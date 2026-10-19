@@ -154,6 +154,11 @@ jobs:
       - name: Build Relay for ARM64 without importing cross-platform cache
         run: docker buildx build --platform linux/arm64 --load -f deploy/oci-a1/Dockerfile.relay -t amusant-relay:oci-arm64-ci .
 
+      - name: Exercise OpenCC on the Relay ARM64 runtime
+        run: |
+          docker run --rm --platform linux/arm64 --entrypoint /app/.venv/bin/python amusant-relay:oci-arm64-ci -c 'from opencc import OpenCC; assert OpenCC("s2twp.json").convert("没问题，我会回复你的。") == "沒問題，我會回覆你的。'
+
+
       - name: Exercise Relay ARM64 runtime and Opus codec
         run: docker run --rm --platform linux/arm64 --entrypoint /app/.venv/bin/python amusant-relay:oci-arm64-ci -m unittest discover -s relay/tests -p test_device_opus.py -v
 
@@ -176,8 +181,14 @@ jobs:
 # PR-B2 will replace this job with the integrated Facade path required by Issue #85.
 
   issue-79-option-d-recovery:
+    # Once Option D is part of the M1 runtime, proof must not be limited to
+    # historical issue-73/79 branch names. Run on relevant PRs and main pushes.
+    # Keep the expensive native ARM64 gate separate (manual / integration).
     name: Pinned Hermes Option D recovery proof
-    if: github.event_name == 'pull_request' && (startsWith(github.head_ref, 'codex/issue-73-') || startsWith(github.head_ref, 'codex/issue-79-'))
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push' ||
+      github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
