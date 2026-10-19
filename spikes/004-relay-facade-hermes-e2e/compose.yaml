@@ -1,0 +1,259 @@
+name: amusant-issue-85-pr-b2
+
+x-hermes-image: &hermes-image docker.io/nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7
+
+services:
+  state-init:
+    image: *hermes-image
+    platform: linux/arm64
+    user: "0:0"
+    network_mode: none
+    entrypoint: ["python3", "/poc/init_state.py"]
+    volumes:
+      - hermes_home:/opt/data
+      - result_state:/var/lib/amusant-results
+      - relay_state:/var/lib/amusant
+      - ./init_state.py:/poc/init_state.py:ro
+
+  secret-init:
+    image: *hermes-image
+    platform: linux/arm64
+    user: "0:0"
+    network_mode: none
+    entrypoint: ["python3", "/poc/init_secrets.py"]
+    environment:
+      POC_FACADE_KEY: ${POC_FACADE_KEY:?required synthetic facade key}
+      POC_HERMES_KEY: ${POC_HERMES_KEY:?required synthetic Hermes key}
+      POC_WRITER_KEY: ${POC_WRITER_KEY:?required synthetic writer key}
+    volumes:
+      - test_secrets:/run/test-secrets
+      - ./init_secrets.py:/poc/init_secrets.py:ro
+
+  seed:
+    image: *hermes-image
+    platform: linux/arm64
+    user: "10000:10000"
+    network_mode: none
+    environment:
+      HERMES_HOME: /opt/data
+    entrypoint: ["python3", "/poc/seed_config.py"]
+    volumes:
+      - hermes_home:/opt/data
+      - ./hermes-config.yaml:/poc/hermes-config.yaml:ro
+      - ./seed_config.py:/poc/seed_config.py:ro
+    depends_on:
+      state-init:
+        condition: service_completed_successfully
+
+  fake-provider:
+    image: *hermes-image
+    platform: linux/arm64
+    user: "10000:10000"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 512m
+    cpus: 0.75
+    entrypoint: ["python3", "/poc/fake_provider.py"]
+    environment:
+      POC_RUN_TAG: ${POC_RUN_TAG:?required unique synthetic marker}
+      FAKE_SLOW_DELAY_SECONDS: "8"
+      FAKE_STOP_DELAY_SECONDS: "60"
+    volumes:
+      - ./fake_provider.py:/poc/fake_provider.py:ro
+      - ${E2E_EVIDENCE_DIR:?required temporary evidence directory}:/evidence
+    networks:
+      hermes_api:
+        ipv4_address: 172.30.64.4
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=1).read(16)"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+      start_period: 2s
+
+  hermes:
+    image: *hermes-image
+    platform: linux/arm64
+    user: "10000:10000"
+    group_add: ["20000"]
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=128m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 1536m
+    cpus: 2.0
+    entrypoint: ["python3", "/usr/local/bin/amusant-hermes-entrypoint.py"]
+    command: []
+    environment:
+      HERMES_HOME: /opt/data
+      HERMES_UID: "10000"
+      HERMES_GID: "10000"
+      AMUSANT_FACADE_WRITER_URL: http://172.30.64.2:8644
+      AMUSANT_FACADE_WRITER_API_KEY_FILE: /run/test-secrets/facade_writer_api_key
+      API_SERVER_ENABLED: "true"
+      API_SERVER_HOST: 172.30.64.3
+      API_SERVER_PORT: "8642"
+      API_SERVER_KEY_FILE: /run/test-secrets/hermes_api_key
+      POC_FAKE_MODEL_KEY: ${POC_FAKE_MODEL_KEY:?required synthetic model key}
+      HERMES_PLUGINS_DEBUG: "0"
+    volumes:
+      - hermes_home:/opt/data
+      - test_secrets:/run/test-secrets:ro
+      - ../../deploy/oci-a1/hermes_plugin:/opt/data/plugins/amusant-option-d:ro
+      - ../../deploy/oci-a1/hermes_entrypoint.py:/usr/local/bin/amusant-hermes-entrypoint.py:ro
+    networks:
+      hermes_api:
+        ipv4_address: 172.30.64.3
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+      secret-init:
+        condition: service_completed_successfully
+      fake-provider:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://' + __import__('os').environ['API_SERVER_HOST'] + ':8642/health', timeout=2).read(128)"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+
+  facade:
+    build:
+      context: ../..
+      dockerfile: deploy/oci-a1/Dockerfile.facade
+    platform: linux/arm64
+    user: "10003:10003"
+    group_add: ["20000"]
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 512m
+    cpus: 1.0
+    environment:
+      AMUSANT_FACADE_BIND_IP: 172.30.62.3
+      AMUSANT_FACADE_WRITER_BIND_IP: 172.30.64.2
+      AMUSANT_RESULT_STATE_DIR: /var/lib/amusant-results
+      AMUSANT_FACADE_API_KEY_FILE: /run/test-secrets/facade_api_key
+      AMUSANT_HERMES_API_KEY_FILE: /run/test-secrets/hermes_api_key
+      AMUSANT_FACADE_WRITER_API_KEY_FILE: /run/test-secrets/facade_writer_api_key
+    volumes:
+      - result_state:/var/lib/amusant-results
+      - test_secrets:/run/test-secrets:ro
+    networks:
+      relay_api:
+        ipv4_address: 172.30.62.3
+      hermes_api:
+        ipv4_address: 172.30.64.2
+    depends_on:
+      state-init:
+        condition: service_completed_successfully
+      secret-init:
+        condition: service_completed_successfully
+      hermes:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://172.30.62.3:8643/health', timeout=2).read(64)"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+      start_period: 10s
+
+  relay-e2e:
+    build:
+      context: ../..
+      dockerfile: deploy/oci-a1/Dockerfile.relay
+    platform: linux/arm64
+    user: "10001:10001"
+    group_add: ["20000"]
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 1536m
+    cpus: 2.0
+    entrypoint: ["/app/.venv/bin/python", "/e2e/relay_e2e.py"]
+    environment:
+      PYTHONPATH: /app
+      PYTHONUNBUFFERED: "1"
+      POC_RUN_TAG: ${POC_RUN_TAG:?required unique synthetic marker}
+      POC_FACADE_KEY: ${POC_FACADE_KEY:?required synthetic facade key}
+      AMUSANT_CLIENT_ID: b2-offline-owner
+      AMUSANT_BACKEND_ID: offline-hermes
+      AMUSANT_TASK_STORE: sqlite
+      AMUSANT_TASK_DB: /var/lib/amusant/task-ledger.sqlite3
+      AMUSANT_TASK_DB_DIR: /var/lib/amusant
+      AMUSANT_DEFAULT_TASK_KIND: research
+      AMUSANT_MAX_TASK_TTL_SECONDS: "600"
+      AMUSANT_MAX_PENDING_TASKS: "16"
+      AMUSANT_ACCEPTANCE_TIMEOUT_SECONDS: "2"
+      AMUSANT_DISPATCHER_POLL_INTERVAL_SECONDS: "0.05"
+      AMUSANT_SLOW_EXECUTOR: hermes_runs
+      AMUSANT_HERMES_RUNS_URL: http://facade:8643
+      AMUSANT_HERMES_ALLOW_PLAINTEXT: "1"
+      AMUSANT_HERMES_RUN_DEADLINE_SECONDS: "120"
+      AMUSANT_HERMES_POLL_CYCLE_SECONDS: "15"
+      AMUSANT_HERMES_HTTP_TIMEOUT_SECONDS: "3"
+      AMUSANT_HERMES_POLL_INTERVAL_SECONDS: "0.5"
+      AMUSANT_HERMES_STOP_GRACE_SECONDS: "30"
+      AMUSANT_HERMES_STOP_MAX_ATTEMPTS: "3"
+      AMUSANT_HERMES_STOP_RETRY_BASE_SECONDS: "0.1"
+      AMUSANT_HERMES_STOP_RETRY_MAX_SECONDS: "0.5"
+      AMUSANT_LIVE_PROVIDER: gemini
+      GEMINI_API_KEY: offline-fake-gemini-key-never-used
+      E2E_EVIDENCE_PATH: /evidence/relay-e2e.json
+    volumes:
+      - relay_state:/var/lib/amusant
+      - ./relay_e2e.py:/e2e/relay_e2e.py:ro
+      - ./stop_classification.py:/e2e/stop_classification.py:ro
+      - ${E2E_EVIDENCE_DIR:?required temporary evidence directory}:/evidence
+    networks:
+      relay_api:
+        ipv4_address: 172.30.62.2
+    depends_on:
+      state-init:
+        condition: service_completed_successfully
+      facade:
+        condition: service_healthy
+
+  facade-audit:
+    image: *hermes-image
+    platform: linux/arm64
+    user: "0:0"
+    network_mode: none
+    entrypoint: ["python3", "/audit-src/audit_facade.py"]
+    environment:
+      FACADE_STATE_DIR: /audit
+      E2E_EVIDENCE_PATH: /evidence/facade-audit.json
+    volumes:
+      - result_state:/audit:ro
+      - ./audit_facade.py:/audit-src/audit_facade.py:ro
+      - ${E2E_EVIDENCE_DIR:?required temporary evidence directory}:/evidence
+
+networks:
+  relay_api:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.62.0/29
+  hermes_api:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.64.0/29
+
+volumes:
+  hermes_home:
+  result_state:
+  relay_state:
+  test_secrets:

@@ -177,9 +177,6 @@ jobs:
       - name: Exercise private writer channel across Linux UIDs
         run: docker run --rm --network none --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m --tmpfs /var/lib/amusant-results:rw,noexec,nosuid,size=16m,uid=10003,gid=10003,mode=700 amusant-facade-runtime-smoke
 
-# The legacy #002 fake-provider harness routes Relay directly to Hermes. Keep its source for reference;
-# PR-B2 will replace this job with the integrated Facade path required by Issue #85.
-
   issue-79-option-d-recovery:
     # Once Option D is part of the M1 runtime, proof must not be limited to
     # historical issue-73/79 branch names. Run on relevant PRs and main pushes.
