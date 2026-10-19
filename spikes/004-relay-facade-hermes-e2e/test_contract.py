@@ -43,6 +43,7 @@ class Issue85E2EContractTests(unittest.TestCase):
         cls.compose = (PROJECT / "compose.yaml").read_text(encoding="utf-8")
         cls.hermes_config = (PROJECT / "hermes-config.yaml").read_text(encoding="utf-8")
         cls.workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        cls.b2_workflow = (ROOT / ".github" / "workflows" / "issue-85-pr-b2-e2e.yml").read_text(encoding="utf-8")
 
     def test_fake_model_generates_exact_bounded_and_large_reports(self):
         small = report_body("restart_10k")
@@ -196,19 +197,27 @@ class Issue85E2EContractTests(unittest.TestCase):
         self.assertNotIn("GOOGLE_API_KEY", self.compose)
         self.assertNotIn("OPENAI_API_KEY", self.compose)
 
-    def test_native_ci_job_runs_for_the_b2_branch_and_uploads_evidence(self):
-        self.assertIn("issue-85-relay-facade-hermes-e2e:", self.workflow)
-        self.assertIn("runs-on: ubuntu-24.04-arm", self.workflow)
-        self.assertIn("github.head_ref == 'codex/issue-85-pr-b2-integrated-e2e'", self.workflow)
-        b2_job = self.workflow.split("  issue-85-relay-facade-hermes-e2e:", 1)[1].split(
-            "  issue-79-option-d-recovery:", 1
-        )[0]
-        self.assertIn("github.event_name == 'push'", b2_job)
-        self.assertIn("python3 spikes/004-relay-facade-hermes-e2e/run_e2e.py", self.workflow)
-        self.assertIn("name: issue-85-pr-b2-integrated-e2e-${{ github.run_id }}", self.workflow)
-        self.assertIn("path: spikes/004-relay-facade-hermes-e2e/evidence/phase1b-e1.json", self.workflow)
-        self.assertIn("persist-credentials: false", self.workflow)
-        preflight = self.workflow.split("- name: Verify Docker Compose is available", 1)[1].split(
+    def test_native_e2e_workflow_is_path_selective_and_manual(self):
+        self.assertNotIn("issue-85-relay-facade-hermes-e2e:", self.workflow)
+        trigger = self.b2_workflow.split("jobs:", 1)[0]
+        for event in ("pull_request:", "push:", "workflow_dispatch:"):
+            self.assertIn(event, trigger)
+        for relevant_path in (
+            '".github/workflows/**"',
+            '"deploy/oci-a1/**"',
+            '"fast_voice/**"',
+            '"relay/**"',
+            '"spikes/004-relay-facade-hermes-e2e/**"',
+            '"pyproject.toml"',
+            '"uv.lock"',
+        ):
+            self.assertIn(relevant_path, trigger)
+        self.assertIn("runs-on: ubuntu-24.04-arm", self.b2_workflow)
+        self.assertIn("python3 spikes/004-relay-facade-hermes-e2e/run_e2e.py", self.b2_workflow)
+        self.assertIn("name: issue-85-pr-b2-integrated-e2e-${{ github.run_id }}", self.b2_workflow)
+        self.assertIn("path: spikes/004-relay-facade-hermes-e2e/evidence/phase1b-e1.json", self.b2_workflow)
+        self.assertIn("persist-credentials: false", self.b2_workflow)
+        preflight = self.b2_workflow.split("- name: Verify Docker Compose is available", 1)[1].split(
             "- name: Check the integrated proof contract", 1
         )[0]
         self.assertIn("continue-on-error: true", preflight)

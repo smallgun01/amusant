@@ -642,9 +642,13 @@ async def run():
             timeout=20.0,
             description="fake model request active before cancellation",
         )
-        CHECKS["stop_fake_model_request_active"] = "PASS"
         # Let the current executor poll cycle yield before testing persisted stop intent.
         await asyncio.sleep(STOP_POLL_CYCLE_WAIT_SECONDS)
+        require(
+            (EVIDENCE_PATH.parent / "stop_10k.active").exists(),
+            "fake model request completed before cancellation was requested",
+        )
+        CHECKS["stop_fake_model_request_active"] = "PASS"
         pre_cancel_row = store2.get_by_task_id(stop_task_id)
         CHECKS["stop_pre_cancel_status"] = diagnostic_token(
             pre_cancel_row.get("status") if pre_cancel_row else None

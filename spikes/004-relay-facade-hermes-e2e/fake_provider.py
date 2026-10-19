@@ -349,21 +349,25 @@ class Handler(BaseHTTPRequestHandler):
             })
             record = self.server.state.requests[-1]
 
+        stop_release_requested = False
         if delay:
             if case == "stop_10k" and not called:
                 active_marker = CONTROL_DIR / "stop_10k.active"
                 release_marker = CONTROL_DIR / "stop_10k.release"
                 active_marker.write_text("active", encoding="ascii")
-                deadline = time.monotonic() + delay
-                while not release_marker.exists() and time.monotonic() < deadline:
-                    time.sleep(0.05)
-                if release_marker.exists():
-                    release_marker.unlink()
-                active_marker.unlink(missing_ok=True)
+                try:
+                    deadline = time.monotonic() + delay
+                    while not release_marker.exists() and time.monotonic() < deadline:
+                        time.sleep(0.05)
+                    stop_release_requested = release_marker.exists()
+                    if stop_release_requested:
+                        release_marker.unlink()
+                finally:
+                    active_marker.unlink(missing_ok=True)
             else:
                 time.sleep(delay)
 
-        if next_tool:
+        if next_tool and not stop_release_requested:
             function_args = json.dumps(arguments, ensure_ascii=False, separators=(",", ":"))
             response_message = {
                 "role": "assistant",
@@ -376,7 +380,9 @@ class Handler(BaseHTTPRequestHandler):
             }
             finish_reason = "tool_calls"
         else:
-            if case == "malformed_json":
+            if stop_release_requested:
+                content = "Synthetic stop fixture yielded after the accepted cancellation request."
+            elif case == "malformed_json":
                 content = "{ malformed synthetic envelope"
             elif case == "oversized_final":
                 prefix = f"POC_FINAL_SECRET_{RUN_TAG}_{case}_"

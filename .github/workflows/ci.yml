@@ -177,47 +177,6 @@ jobs:
       - name: Exercise private writer channel across Linux UIDs
         run: docker run --rm --network none --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m --tmpfs /var/lib/amusant-results:rw,noexec,nosuid,size=16m,uid=10003,gid=10003,mode=700 amusant-facade-runtime-smoke
 
-# The legacy #002 direct-to-Hermes harness remains a historical reference.
-# Issue #85 PR-B2 has its own native ARM64 integrated proof below. It runs on
-# the B2 PR and every main push to preserve the integrated regression gate.
-
-  issue-85-relay-facade-hermes-e2e:
-    name: Issue #85 Relay to Facade to Hermes offline E2E (native ARM64)
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      github.event_name == 'push' ||
-      (github.event_name == 'pull_request' && github.head_ref == 'codex/issue-85-pr-b2-integrated-e2e')
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 90
-    steps:
-      - name: Check out source
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - name: Verify Docker Compose is available
-        continue-on-error: true
-        run: |
-          docker version --format '{{.Server.Version}}'
-          docker compose version
-
-      - name: Check the integrated proof contract
-        run: python3 -m unittest discover -s spikes/004-relay-facade-hermes-e2e -p 'test_*.py' -v
-
-      - name: Run offline Relay to Facade to Hermes integration
-        env:
-          PYTHONUNBUFFERED: "1"
-        run: python3 spikes/004-relay-facade-hermes-e2e/run_e2e.py
-
-      - name: Upload sanitized integrated evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: issue-85-pr-b2-integrated-e2e-${{ github.run_id }}
-          path: spikes/004-relay-facade-hermes-e2e/evidence/phase1b-e1.json
-          if-no-files-found: warn
-          retention-days: 30
-
   issue-79-option-d-recovery:
     # Once Option D is part of the M1 runtime, proof must not be limited to
     # historical issue-73/79 branch names. Run on relevant PRs and main pushes.
