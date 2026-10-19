@@ -147,9 +147,11 @@ class Issue85E2EContractTests(unittest.TestCase):
         poll_cycle = float(re.search(r'"AMUSANT_HERMES_POLL_CYCLE_SECONDS": "([0-9.]+)"', relay_e2e).group(1))
         poll_wait = float(re.search(r"STOP_POLL_CYCLE_WAIT_SECONDS = ([0-9.]+)", relay_e2e).group(1))
         dispatch_timeout = float(re.search(r"STOP_DISPATCH_TIMEOUT_SECONDS = ([0-9.]+)", relay_e2e).group(1))
+        stop_grace = float(re.search(r'"AMUSANT_HERMES_STOP_GRACE_SECONDS": "([0-9.]+)"', relay_e2e).group(1))
         self.assertGreater(stop_delay, poll_cycle * 2)
         self.assertGreater(poll_wait, poll_cycle)
         self.assertGreater(dispatch_timeout, poll_cycle)
+        self.assertGreater(stop_grace, poll_cycle)
         self.assertIn('STOP_DELAY = float(os.environ.get("FAKE_STOP_DELAY_SECONDS", "60"))', fake_provider)
         self.assertIn('if case == "stop_10k" and not called:', fake_provider)
 
