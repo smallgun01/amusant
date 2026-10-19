@@ -156,6 +156,7 @@ class Issue85E2EContractTests(unittest.TestCase):
         stop_grace = float(re.search(r'"AMUSANT_HERMES_STOP_GRACE_SECONDS": "([0-9.]+)"', relay_e2e).group(1))
         self.assertGreater(stop_delay, poll_cycle * 2)
         self.assertGreater(poll_wait, poll_cycle)
+        self.assertLess(poll_cycle + poll_wait, stop_grace)
         self.assertGreater(dispatch_timeout, poll_cycle)
         self.assertGreater(stop_grace, poll_cycle)
         self.assertIn('STOP_DELAY = float(os.environ.get("FAKE_STOP_DELAY_SECONDS", "60"))', fake_provider)
