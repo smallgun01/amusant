@@ -178,12 +178,14 @@ jobs:
         run: docker run --rm --network none --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m --tmpfs /var/lib/amusant-results:rw,noexec,nosuid,size=16m,uid=10003,gid=10003,mode=700 amusant-facade-runtime-smoke
 
 # The legacy #002 direct-to-Hermes harness remains a historical reference.
-# Issue #85 PR-B2 has its own native ARM64 integrated proof below.
+# Issue #85 PR-B2 has its own native ARM64 integrated proof below. It runs on
+# the B2 PR and every main push to preserve the integrated regression gate.
 
   issue-85-relay-facade-hermes-e2e:
     name: Issue #85 Relay to Facade to Hermes offline E2E (native ARM64)
     if: >-
       github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push' ||
       (github.event_name == 'pull_request' && github.head_ref == 'codex/issue-85-pr-b2-integrated-e2e')
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 90

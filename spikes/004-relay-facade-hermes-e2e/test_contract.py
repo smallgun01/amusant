@@ -127,13 +127,19 @@ class Issue85E2EContractTests(unittest.TestCase):
         self.assertLess(first_session_close, cancel_session_open)
         self.assertIn('stop_request_provider, "b2-stop-request", "cancel_task"', stop_phase)
 
-    def test_stop_probe_accepts_and_records_a_confirmed_completion_race(self):
+    def test_stop_probe_requires_confirmed_cancellation_and_owner_visible_inbox(self):
         relay_e2e = (PROJECT / "relay_e2e.py").read_text(encoding="utf-8")
         stop_phase = relay_e2e.split('PHASE = "stop-run"', 1)[1].split(
             'PHASE = "ambiguous-submit"', 1
         )[0]
         self.assertIn('value.get("status") in {"completed", "failed", "uncertain"}', stop_phase)
-        self.assertIn('CHECKS["stop_terminal_status"] = (', stop_phase)
+        self.assertIn('stop_terminal_error_code = stop_row.get("last_error")', stop_phase)
+        self.assertIn('stop_terminal_error_code == "hermes_cancelled"', stop_phase)
+        self.assertIn('store2.lookup_inbox(client_id=CLIENT_ID, task_id=stop_task_id)', stop_phase)
+        self.assertIn('stop_visible.get("status") == "cancelled"', stop_phase)
+        self.assertIn('stop_visible.get("code") == "hermes_cancelled"', stop_phase)
+        self.assertIn('CHECKS["stop_terminal_error_code"] = diagnostic_token(stop_terminal_error_code)', stop_phase)
+        self.assertIn('CHECKS["stop_visible_status"] = diagnostic_token(', stop_phase)
         self.assertIn("audit.stop_calls >= 1", stop_phase)
         self.assertIn("Relay did not send a Hermes stop POST before terminal state ", stop_phase)
         self.assertIn('stop_receipt.get("status") == "stopping"', stop_phase)
@@ -168,6 +174,10 @@ class Issue85E2EContractTests(unittest.TestCase):
         self.assertIn("issue-85-relay-facade-hermes-e2e:", self.workflow)
         self.assertIn("runs-on: ubuntu-24.04-arm", self.workflow)
         self.assertIn("github.head_ref == 'codex/issue-85-pr-b2-integrated-e2e'", self.workflow)
+        b2_job = self.workflow.split("  issue-85-relay-facade-hermes-e2e:", 1)[1].split(
+            "  issue-79-option-d-recovery:", 1
+        )[0]
+        self.assertIn("github.event_name == 'push'", b2_job)
         self.assertIn("python3 spikes/004-relay-facade-hermes-e2e/run_e2e.py", self.workflow)
         self.assertIn("name: issue-85-pr-b2-integrated-e2e-${{ github.run_id }}", self.workflow)
         self.assertIn("path: spikes/004-relay-facade-hermes-e2e/evidence/phase1b-e1.json", self.workflow)

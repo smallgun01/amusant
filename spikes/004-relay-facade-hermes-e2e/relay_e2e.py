@@ -647,13 +647,31 @@ async def run():
             timeout=30.0, description="stop terminal or uncertain state",
         )
         stop_terminal_status = stop_row.get("status")
-        CHECKS["stop_terminal_status"] = (
-            stop_terminal_status
-            if stop_terminal_status in {"completed", "failed", "uncertain"}
-            else "unknown"
+        stop_terminal_error_code = stop_row.get("last_error")
+        CHECKS["stop_terminal_status"] = diagnostic_token(stop_terminal_status)
+        CHECKS["stop_terminal_error_code"] = diagnostic_token(stop_terminal_error_code)
+        require(
+            stop_terminal_status == "failed" and stop_terminal_error_code == "hermes_cancelled",
+            "stop test did not confirm Hermes cancellation (status "
+            + CHECKS["stop_terminal_status"]
+            + ", code " + CHECKS["stop_terminal_error_code"] + ")",
         )
-        CHECKS["stop_or_explicit_uncertain_state"] = "PASS"
-        # A stop request can race with completion; the confirmed terminal state wins.
+        stop_visible = store2.lookup_inbox(client_id=CLIENT_ID, task_id=stop_task_id)
+        CHECKS["stop_visible_status"] = diagnostic_token(
+            stop_visible.get("status") if stop_visible else None
+        )
+        CHECKS["stop_visible_code"] = diagnostic_token(
+            stop_visible.get("code") if stop_visible else None
+        )
+        require(
+            stop_visible is not None
+            and stop_visible.get("status") == "cancelled"
+            and stop_visible.get("code") == "hermes_cancelled",
+            "owner-visible Inbox did not confirm cancellation (status "
+            + CHECKS["stop_visible_status"]
+            + ", code " + CHECKS["stop_visible_code"] + ")",
+        )
+        CHECKS["stop_cancellation_confirmed"] = "PASS"
 
         PHASE = "ambiguous-submit"
         ambiguous_ws, ambiguous_provider = await open_turn(server2, providers.instances)
@@ -705,7 +723,7 @@ async def run():
                 "uncertain task was replayed")
         CHECKS["full_report_markers_absent_from_relay_wire"] = "PASS"
         CHECKS["restart_task_status"] = "PASS" if completed.get("status") == "completed" else "FAIL"
-        CHECKS["stop_state"] = "PASS" if stop_terminal_status in {"completed", "failed", "uncertain"} else "FAIL"
+        CHECKS["stop_state"] = "PASS" if CHECKS.get("stop_cancellation_confirmed") == "PASS" else "FAIL"
         CHECKS["ambiguous_state"] = "PASS" if uncertain.get("status") == "uncertain" else "FAIL"
 
         evidence = {
