@@ -290,7 +290,7 @@ class Handler(BaseHTTPRequestHandler):
                 1 for row in self.server.state.requests
                 if row.get("case") == case and row.get("write_file_requested") is True
             )
-        should_write = case not in {"no_writer", "stop_10k"} and (
+        should_write = case != "no_writer" and (
             writer_calls == 0 or (case == "writer_redelivery" and writer_calls == 1)
         )
         if should_write:
