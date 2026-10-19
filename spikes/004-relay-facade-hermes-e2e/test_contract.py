@@ -115,6 +115,18 @@ class Issue85E2EContractTests(unittest.TestCase):
         self.assertLess(first_session_close, busy_session_open)
         self.assertIn('busy_provider, "b2-restart-busy", "delegate_task"', slow_phase)
 
+    def test_cancel_probe_uses_a_new_live_session_after_delegate_action(self):
+        relay_e2e = (PROJECT / "relay_e2e.py").read_text(encoding="utf-8")
+        stop_phase = relay_e2e.split('PHASE = "stop-run"', 1)[1].split(
+            'PHASE = "ambiguous-submit"', 1
+        )[0]
+        first_session_close = stop_phase.index("await stop_ws.close()")
+        cancel_session_open = stop_phase.index(
+            "stop_request_ws, stop_request_provider = await open_turn("
+        )
+        self.assertLess(first_session_close, cancel_session_open)
+        self.assertIn('stop_request_provider, "b2-stop-request", "cancel_task"', stop_phase)
+
     def test_runtime_pins_hermes_and_uses_only_the_local_fake_model(self):
         self.assertIn(IMAGE, self.compose)
         self.assertIn(IMAGE, (PROJECT / "run_e2e.py").read_text(encoding="utf-8"))

@@ -573,12 +573,14 @@ async def run():
         stop_task_id = stop_accept["task_id"]
         await wait_row(store2, stop_task_id, lambda value: bool(value.get("backend_run_id")),
                        timeout=20.0, description="Run ID before stop request")
+        await stop_ws.close()
+        stop_request_ws, stop_request_provider = await open_turn(server2, providers.instances)
         stop_receipt = await invoke_tool(
-            stop_provider, "b2-stop-request", "cancel_task", {"task_id": stop_task_id}
+            stop_request_provider, "b2-stop-request", "cancel_task", {"task_id": stop_task_id}
         )
         require(stop_receipt.get("status") in {"stopping", "uncertain"}, "Relay did not record the stop request")
-        await finish_synthetic_turn(stop_ws, stop_provider)
-        await stop_ws.close()
+        await finish_synthetic_turn(stop_request_ws, stop_request_provider)
+        await stop_request_ws.close()
         stop_row = await wait_row(
             store2, stop_task_id,
             lambda value: value.get("status") in {"failed", "uncertain"},
