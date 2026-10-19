@@ -42,6 +42,7 @@ FACADE_KEY = os.environ["POC_FACADE_KEY"]
 RUN_TAG = os.environ["POC_RUN_TAG"]
 EVIDENCE_PATH = Path(os.environ.get("E2E_EVIDENCE_PATH", "/evidence/relay-e2e.json"))
 MIN_PCM_BYTES = 12_000
+STOP_POLL_CYCLE_WAIT_SECONDS = 16.0
 
 CHECKS: dict[str, str] = {}
 WIRE: list[str | bytes] = []
@@ -51,6 +52,16 @@ PHASE = "initializing"
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
+
+
+def diagnostic_token(value: object) -> str:
+    if (
+        isinstance(value, str)
+        and 1 <= len(value) <= 64
+        and all(character.isascii() and (character.isalnum() or character in "_-") for character in value)
+    ):
+        return value
+    return "unknown"
 
 
 class FakeGeminiLive:
@@ -571,16 +582,56 @@ async def run():
         )
         require(stop_accept.get("status") == "accepted", "stop scenario was not admitted")
         stop_task_id = stop_accept["task_id"]
-        await wait_row(store2, stop_task_id, lambda value: bool(value.get("backend_run_id")),
+        await wait_row(store2, stop_task_id,
+                       lambda value: bool(value.get("backend_run_id")) and value.get("status") == "running",
                        timeout=20.0, description="Run ID before stop request")
         await stop_ws.close()
         stop_request_ws, stop_request_provider = await open_turn(server2, providers.instances)
+        # Let the current executor poll cycle yield before testing the persisted stop intent.
+        await asyncio.sleep(STOP_POLL_CYCLE_WAIT_SECONDS)
+        pre_cancel_row = store2.get_by_task_id(stop_task_id)
+        CHECKS["stop_pre_cancel_status"] = diagnostic_token(
+            pre_cancel_row.get("status") if pre_cancel_row else None
+        )
+        require(
+            pre_cancel_row is not None
+            and bool(pre_cancel_row.get("backend_run_id"))
+            and pre_cancel_row.get("status") == "running",
+            "stop test Run was not active before cancellation: " + CHECKS["stop_pre_cancel_status"],
+        )
         stop_receipt = await invoke_tool(
             stop_request_provider, "b2-stop-request", "cancel_task", {"task_id": stop_task_id}
         )
-        require(stop_receipt.get("status") in {"stopping", "uncertain"}, "Relay did not record the stop request")
+        CHECKS["stop_cancel_receipt_status"] = diagnostic_token(stop_receipt.get("status"))
+        CHECKS["stop_cancel_receipt_code"] = diagnostic_token(stop_receipt.get("code"))
+        require(
+            stop_receipt.get("status") == "stopping",
+            "Relay did not record stop intent for a known Run ID (receipt "
+            + CHECKS["stop_cancel_receipt_status"]
+            + ", code " + CHECKS["stop_cancel_receipt_code"] + ")",
+        )
         await finish_synthetic_turn(stop_request_ws, stop_request_provider)
         await stop_request_ws.close()
+
+        def stop_dispatch_or_terminal():
+            if audit.stop_calls >= 1:
+                return "stop_post"
+            row = store2.get_by_task_id(stop_task_id)
+            if row and row.get("status") in {"completed", "failed", "uncertain"}:
+                return diagnostic_token(row.get("status"))
+            return None
+
+        stop_dispatch_observation = await eventually(
+            stop_dispatch_or_terminal,
+            timeout=12.0,
+            description="Hermes stop POST or terminal state",
+        )
+        require(
+            audit.stop_calls >= 1,
+            "Relay did not send a Hermes stop POST before terminal state "
+            + diagnostic_token(stop_dispatch_observation)
+            + " (cancel code " + CHECKS["stop_cancel_receipt_code"] + ")",
+        )
         stop_row = await wait_row(
             store2, stop_task_id,
             lambda value: value.get("status") in {"completed", "failed", "uncertain"},
@@ -591,11 +642,6 @@ async def run():
             stop_terminal_status
             if stop_terminal_status in {"completed", "failed", "uncertain"}
             else "unknown"
-        )
-        require(
-            audit.stop_calls >= 1,
-            "Relay did not send a Hermes stop POST before terminal state "
-            + CHECKS["stop_terminal_status"],
         )
         CHECKS["stop_or_explicit_uncertain_state"] = "PASS"
         # A stop request can race with completion; the confirmed terminal state wins.
