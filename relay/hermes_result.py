@@ -36,7 +36,7 @@ class HermesRunFacadeEnvelopeV1(TypedDict):
     card: HermesRunCardV1
     execution_status: Literal["completed"]
     artifact_status: Literal["committed"]
-    presentation_status: Literal["ready"]
+    presentation_status: Literal["ready", "failed"]
     artifact_ref: str
 
 
@@ -92,10 +92,11 @@ def parse_hermes_run_result(output: str) -> BoundedTaskResult:
             raise ValueError("hermes_result_legacy_details_invalid")
     if type(payload.get("schema_version")) is not int or payload["schema_version"] != HERMES_RESULT_SCHEMA_VERSION:
         raise ValueError("hermes_result_schema_unsupported")
+    presentation_status = payload.get("presentation_status")
     if (
         payload.get("execution_status") != "completed"
         or payload.get("artifact_status") != "committed"
-        or payload.get("presentation_status") != "ready"
+        or presentation_status not in {"ready", "failed"}
     ):
         raise ValueError("hermes_result_state_invalid")
     artifact_ref = payload.get("artifact_ref")
@@ -117,6 +118,12 @@ def parse_hermes_run_result(output: str) -> BoundedTaskResult:
         or any(not _valid_text(line, MAX_CARD_LINE_CHARS) for line in lines)
     ):
         raise ValueError("hermes_result_card_invalid")
+    if presentation_status == "failed" and (
+        speak != "The report is saved; its short presentation needs recovery."
+        or title != "Report saved"
+        or lines != ["Short presentation needs recovery."]
+    ):
+        raise ValueError("hermes_result_presentation_failure_invalid")
     return BoundedTaskResult(
         speak=speak,
         card={"title": title, "lines": list(lines)},

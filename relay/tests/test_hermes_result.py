@@ -44,6 +44,27 @@ class HermesResultTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "legacy_details_invalid"):
             parse_hermes_run_result(json.dumps(value))
 
+    def test_facade_presentation_failure_keeps_committed_report_retrievable(self):
+        value = json.loads(envelope())
+        value.update({
+            "speak": "The report is saved; its short presentation needs recovery.",
+            "card": {
+                "title": "Report saved",
+                "lines": ["Short presentation needs recovery."],
+            },
+            "presentation_status": "failed",
+        })
+        result = parse_hermes_run_result(json.dumps(value))
+        self.assertEqual(
+            result.speak,
+            "The report is saved; its short presentation needs recovery.",
+        )
+        self.assertEqual(result.card, {
+            "title": "Report saved",
+            "lines": ["Short presentation needs recovery."],
+        })
+        self.assertEqual(result.details_md, result.speak)
+
     def test_status_identity_and_shape_fields_are_not_model_controlled(self):
         invalid = (
             envelope(execution_status="running"),
