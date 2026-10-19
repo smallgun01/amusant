@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import os
 from pathlib import Path
 import re
@@ -85,6 +86,15 @@ class Issue85E2EContractTests(unittest.TestCase):
             'accept="text/event-stream"',
         ):
             self.assertIn(check, relay_e2e)
+
+    def test_runtime_factory_is_synchronous(self):
+        tree = ast.parse((PROJECT / "relay_e2e.py").read_text(encoding="utf-8"))
+        runtime_factory = next(
+            node for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "start_runtime"
+        )
+        self.assertIsInstance(runtime_factory, ast.FunctionDef)
 
     def test_runtime_pins_hermes_and_uses_only_the_local_fake_model(self):
         self.assertIn(IMAGE, self.compose)

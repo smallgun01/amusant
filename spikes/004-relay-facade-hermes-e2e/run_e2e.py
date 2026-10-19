@@ -211,6 +211,8 @@ def main() -> int:
         temp.cleanup()
 
     EVIDENCE.write_text(json.dumps(evidence, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    relay_e2e = evidence.get("relay_e2e")
+    facade_audit = evidence.get("facade_audit")
     print(json.dumps({
         "schema": SCHEMA,
         "status": evidence["status"],
@@ -219,6 +221,15 @@ def main() -> int:
         "ci_run_url": evidence.get("ci", {}).get("workflow_run_url"),
         "failure_stage": evidence.get("failure_stage"),
         "failure_type": evidence.get("failure_type") or failure_type,
+        "checks": evidence.get("checks"),
+        "relay_e2e": {
+            key: relay_e2e.get(key)
+            for key in ("status", "phase", "failure_type", "checks")
+        } if isinstance(relay_e2e, dict) else None,
+        "facade_audit": {
+            key: facade_audit.get(key)
+            for key in ("status", "failure_type", "checks")
+        } if isinstance(facade_audit, dict) else None,
         "evidence_path": "spikes/004-relay-facade-hermes-e2e/evidence/phase1b-e1.json",
     }, sort_keys=True, separators=(",", ":")))
     return 0 if evidence["status"] == "PASS" else 1

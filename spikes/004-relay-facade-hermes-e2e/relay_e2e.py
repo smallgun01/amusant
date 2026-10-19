@@ -302,7 +302,7 @@ async def finish_synthetic_turn(websocket, provider):
     await wait_turn_complete(websocket)
 
 
-async def start_runtime(environ, providers, conversation_counter):
+def start_runtime(environ, providers, conversation_counter):
     from relay.application import build_supported_relay_runtime
 
     return build_supported_relay_runtime(
