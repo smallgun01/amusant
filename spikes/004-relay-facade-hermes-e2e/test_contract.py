@@ -135,6 +135,8 @@ class Issue85E2EContractTests(unittest.TestCase):
         self.assertIn('value.get("status") in {"completed", "failed", "uncertain"}', stop_phase)
         self.assertIn('stop_terminal_error_code = stop_row.get("last_error")', stop_phase)
         self.assertIn('stop_terminal_error_code == "hermes_cancelled"', stop_phase)
+        self.assertIn('CHECKS["stop_hermes_status"] = diagnostic_token(audit.stop_remote_status)', stop_phase)
+        self.assertIn('CHECKS["stop_hermes_error_category"] = diagnostic_token(audit.stop_remote_error_category)', stop_phase)
         self.assertIn('store2.lookup_inbox(client_id=CLIENT_ID, task_id=stop_task_id)', stop_phase)
         self.assertIn('stop_visible.get("status") == "cancelled"', stop_phase)
         self.assertIn('stop_visible.get("code") == "hermes_cancelled"', stop_phase)

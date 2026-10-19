@@ -64,6 +64,20 @@ def diagnostic_token(value: object) -> str:
     return "unknown"
 
 
+def diagnostic_error_category(payload: dict[str, object]) -> str:
+    parts = [payload.get("error"), payload.get("turn_exit_reason")]
+    message = " ".join(value for value in parts if isinstance(value, str)).lower()
+    if "timeout" in message or "timed out" in message:
+        return "timeout"
+    if "interrupt" in message or "cancel" in message:
+        return "interrupt"
+    if "auth" in message or "credential" in message or "401" in message:
+        return "auth_error"
+    if "provider" in message or "model" in message or "api" in message:
+        return "model_api_error"
+    return "hermes_error" if message else "unknown"
+
+
 class FakeGeminiLive:
     """Fake Gemini Live provider used only by this test container."""
 
@@ -125,6 +139,9 @@ class HttpAudit:
         self.relay_submit_calls: dict[str, int] = {}
         self.get_calls = 0
         self.stop_calls = 0
+        self.stop_run_id: str | None = None
+        self.stop_remote_status = "unknown"
+        self.stop_remote_error_category = "unknown"
         self.duplicate_verified = False
         self.ambiguous_task_id: str | None = None
         self.restart_task_id: str | None = None
@@ -161,6 +178,14 @@ class HttpAudit:
                 if status < 300 and isinstance(payload.get("run_id"), str):
                     raise HermesRequestError("synthetic response loss after facade acceptance")
                 return status, payload
+            if "[POC_CASE=stop_10k]" in task_text:
+                with self.lock:
+                    self.relay_submit_calls[task_id] = self.relay_submit_calls.get(task_id, 0) + 1
+                status, payload = self.original(executor, method, path, body, headers)
+                if status < 300 and isinstance(payload.get("run_id"), str):
+                    with self.lock:
+                        self.stop_run_id = payload["run_id"]
+                return status, payload
             with self.lock:
                 self.relay_submit_calls[task_id] = self.relay_submit_calls.get(task_id, 0) + 1
             return self.original(executor, method, path, body, headers)
@@ -169,6 +194,11 @@ class HttpAudit:
             with self.lock:
                 self.get_calls += 1
             status, payload = self.original(executor, method, path, body, headers)
+            if path == "/v1/runs/" + str(self.stop_run_id):
+                with self.lock:
+                    self.stop_remote_status = diagnostic_token(payload.get("status"))
+                    if self.stop_remote_status == "failed":
+                        self.stop_remote_error_category = diagnostic_error_category(payload)
             if (
                 status == 200
                 and payload.get("status") == "completed"
@@ -647,6 +677,8 @@ async def run():
         stop_terminal_error_code = stop_row.get("last_error")
         CHECKS["stop_terminal_status"] = diagnostic_token(stop_terminal_status)
         CHECKS["stop_terminal_error_code"] = diagnostic_token(stop_terminal_error_code)
+        CHECKS["stop_hermes_status"] = diagnostic_token(audit.stop_remote_status)
+        CHECKS["stop_hermes_error_category"] = diagnostic_token(audit.stop_remote_error_category)
         require(
             stop_terminal_status == "failed" and stop_terminal_error_code == "hermes_cancelled",
             "stop test did not confirm Hermes cancellation (status "
