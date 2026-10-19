@@ -76,6 +76,7 @@ class Issue85E2EContractTests(unittest.TestCase):
         self.assertRegex(provider, r"(?m)^\s+hermes_api:\s*$")
         self.assertRegex(facade, r"(?m)^\s+relay_api:\s*$")
         self.assertRegex(facade, r"(?m)^\s+hermes_api:\s*$")
+        self.assertIn("./stop_classification.py:/e2e/stop_classification.py:ro", relay)
 
     def test_integrated_route_probe_checks_raw_hermes_dns_port_get_and_sse(self):
         relay_e2e = (PROJECT / "relay_e2e.py").read_text(encoding="utf-8")

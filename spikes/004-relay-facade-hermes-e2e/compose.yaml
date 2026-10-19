@@ -215,6 +215,7 @@ services:
     volumes:
       - relay_state:/var/lib/amusant
       - ./relay_e2e.py:/e2e/relay_e2e.py:ro
+      - ./stop_classification.py:/e2e/stop_classification.py:ro
       - ${E2E_EVIDENCE_DIR:?required temporary evidence directory}:/evidence
     networks:
       relay_api:
