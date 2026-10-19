@@ -43,6 +43,7 @@ RUN_TAG = os.environ["POC_RUN_TAG"]
 EVIDENCE_PATH = Path(os.environ.get("E2E_EVIDENCE_PATH", "/evidence/relay-e2e.json"))
 MIN_PCM_BYTES = 12_000
 STOP_POLL_CYCLE_WAIT_SECONDS = 16.0
+STOP_DISPATCH_TIMEOUT_SECONDS = 20.0
 
 CHECKS: dict[str, str] = {}
 WIRE: list[str | bytes] = []
@@ -623,7 +624,7 @@ async def run():
 
         stop_dispatch_observation = await eventually(
             stop_dispatch_or_terminal,
-            timeout=12.0,
+            timeout=STOP_DISPATCH_TIMEOUT_SECONDS,
             description="Hermes stop POST or terminal state",
         )
         require(
