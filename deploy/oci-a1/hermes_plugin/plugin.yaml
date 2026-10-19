@@ -1,0 +1,7 @@
+name: amusant-option-d
+version: 1.0.0
+description: Private runtime artifact writer and bounded result projection
+provides_tools:
+  - save_report
+provides_hooks:
+  - transform_llm_output

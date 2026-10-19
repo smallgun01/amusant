@@ -32,6 +32,19 @@ CLIENT = "phase2b-test-owner"
 CONVERSATION = "phase2b-test-conversation"
 
 
+def facade_output(speak: str) -> str:
+    line = " ".join(speak.split())[:120] or "Result"
+    return json.dumps({
+        "schema_version": 1,
+        "speak": speak,
+        "card": {"title": "Result", "lines": [line]},
+        "execution_status": "completed",
+        "artifact_status": "committed",
+        "presentation_status": "ready",
+        "artifact_ref": "art_" + "a" * 24,
+    })
+
+
 def request(
     task_id: str,
     executor_kind: str = "hermes_runs",
@@ -306,7 +319,7 @@ def exercise_multiple_known_run_restarts(store_factory, task_id: str) -> None:
     replies = [
         {"status": "running"},
         {"status": "running"},
-        {"status": "completed", "output": "Recovered after repeated Relay restarts."},
+        {"status": "completed", "output": facade_output("Recovered after repeated Relay restarts.")},
     ]
     calls = []
 

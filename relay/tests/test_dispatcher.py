@@ -498,7 +498,7 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
             "AMUSANT_TASK_DB": str(self.db_path),
             "AMUSANT_SLOW_EXECUTOR": "openab_acp",
             "AMUSANT_HERMES_RUNS_URL": "http://127.0.0.1:8642",
-            "AMUSANT_HERMES_API_KEY": "local-test-api-key-123",
+            "AMUSANT_FACADE_API_KEY": "local-test-api-key-123",
             # Pre-58A configuration can remain in a rollback environment.
             "AMUSANT_HERMES_TIMEOUT_SECONDS": "120",
         }
@@ -519,7 +519,7 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
             "AMUSANT_BACKEND_ID": "server-backend",
             "AMUSANT_TASK_DB": str(self.db_path),
             "AMUSANT_HERMES_RUNS_URL": "http://127.0.0.1:8642",
-            "AMUSANT_HERMES_API_KEY": "local-test-api-key-123",
+            "AMUSANT_FACADE_API_KEY": "local-test-api-key-123",
             "AMUSANT_HERMES_TIMEOUT_SECONDS": "120",
         }
         with patch("relay.application.load_acp_executor", return_value=FakeExecutor()):

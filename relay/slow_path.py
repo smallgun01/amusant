@@ -291,8 +291,6 @@ class SlowPathToolRouter:
                 payload["speak"] = record["speak"]
             if isinstance(record.get("card"), dict):
                 payload["card"] = record["card"]
-            if isinstance(record.get("details_md"), str):
-                payload["details_md"] = record["details_md"]
             if record.get("speak_now") is True:
                 payload["speak_now"] = True
         return payload

@@ -310,26 +310,35 @@ async def _healthcheck(reader: asyncio.StreamReader, writer: asyncio.StreamWrite
 
 
 async def serve() -> None:
-    bind_ip = ipaddress.ip_address(os.environ["EGRESS_PROXY_BIND_IP"])
+    bind_values = [value.strip() for value in os.environ["EGRESS_PROXY_BIND_IPS"].split(",") if value.strip()]
+    bind_ips = tuple(ipaddress.ip_address(value) for value in bind_values)
+    if len(bind_ips) != 2 or len(set(bind_ips)) != len(bind_ips):
+        raise ValueError("proxy requires two unique isolated listener addresses")
     peer_values = [value.strip() for value in os.environ["EGRESS_PROXY_ALLOWED_CLIENTS"].split(",") if value.strip()]
     allowed_peers = frozenset(ipaddress.ip_address(value) for value in peer_values)
     if len(allowed_peers) != len(peer_values):
         raise ValueError("proxy client addresses must be unique")
-    if not allowed_peers:
-        raise ValueError("proxy has no allowed client addresses")
+    if len(allowed_peers) != MAX_PROXY_CLIENTS:
+        raise ValueError("proxy requires the Relay and Hermes client addresses")
     capacities = ProxyCapacity(allowed_peers)
     proxy_port = int(os.environ.get("EGRESS_PROXY_PORT", "3128"))
 
     async def bounded_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         await handle_connect(reader, writer, allowed_peers=allowed_peers, capacities=capacities)
 
-    proxy = await asyncio.start_server(
-        bounded_client,
-        host=str(bind_ip), port=proxy_port, limit=MAX_HEADER_BYTES,
-    )
-    health = await asyncio.start_server(_healthcheck, host="127.0.0.1", port=3129)
-    async with proxy, health:
-        await asyncio.gather(proxy.serve_forever(), health.serve_forever())
+    servers = []
+    try:
+        for bind_ip in bind_ips:
+            servers.append(await asyncio.start_server(
+                bounded_client,
+                host=str(bind_ip), port=proxy_port, limit=MAX_HEADER_BYTES,
+            ))
+        servers.append(await asyncio.start_server(_healthcheck, host="127.0.0.1", port=3129))
+        await asyncio.gather(*(server.serve_forever() for server in servers))
+    finally:
+        for server in servers:
+            server.close()
+        await asyncio.gather(*(server.wait_closed() for server in servers), return_exceptions=True)
 
 
 if __name__ == "__main__":

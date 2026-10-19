@@ -21,6 +21,19 @@ from relay.hermes_runs_executor import (
 from relay.task_store import ClaimedTask
 
 
+def facade_result(speak: str) -> str:
+    line = " ".join(speak.split())[:120] or "Result"
+    return json.dumps({
+        "schema_version": 1,
+        "speak": speak,
+        "card": {"title": "Result", "lines": [line]},
+        "execution_status": "completed",
+        "artifact_status": "committed",
+        "presentation_status": "ready",
+        "artifact_ref": "art_" + "a" * 24,
+    })
+
+
 class HermesRunsExecutorTests(unittest.TestCase):
     def make_task(
         self,
@@ -87,7 +100,7 @@ class HermesRunsExecutorTests(unittest.TestCase):
 
     def test_http_timeout_is_configurable_separately_from_run_deadline(self):
         executor = self.make_executor(
-            lambda *args: (200, {"status": "completed", "output": "ok"}),
+            lambda *args: (200, {"status": "completed", "output": facade_result("ok")}),
             [],
             http_timeout_seconds=0.02,
             poll_cycle_seconds=0.5,
@@ -106,7 +119,7 @@ class HermesRunsExecutorTests(unittest.TestCase):
             if method == "POST":
                 return 200, {"run_id": "run-123"}
             self.assertEqual(saved, [("task-01", "run-123")])
-            return 200, {"status": "completed", "output": "A bounded deterministic result."}
+            return 200, {"status": "completed", "output": facade_result("A bounded deterministic result.")}
 
         executor = self.make_executor(request, saved)
         outcome = asyncio.run(executor.execute(self.make_task()))
@@ -124,7 +137,7 @@ class HermesRunsExecutorTests(unittest.TestCase):
 
         def request(method, path, body, headers):
             calls.append((method, path))
-            return 200, {"status": "completed", "output": "Recovered after restart."}
+            return 200, {"status": "completed", "output": facade_result("Recovered after restart.")}
 
         outcome = asyncio.run(self.make_executor(request, saved).execute(self.make_task(run_id="run-known")))
         self.assertEqual(outcome.status, "completed")
@@ -182,7 +195,7 @@ class HermesRunsExecutorTests(unittest.TestCase):
             calls.append(method)
             if len(calls) == 1:
                 raise HermesRequestError("temporary GET failure")
-            return 200, {"status": "completed", "output": "Recovered after transient GET failure."}
+            return 200, {"status": "completed", "output": facade_result("Recovered after transient GET failure.")}
 
         task = self.make_task(run_id="run-transient")
         executor = self.make_executor(
@@ -286,7 +299,7 @@ class HermesRunsExecutorTests(unittest.TestCase):
         self.assertEqual((denied.status, denied.code), ("uncertain", "hermes_result_unconfirmed"))
 
     def test_owner_session_namespace_is_stable_and_isolated(self):
-        executor = self.make_executor(lambda *args: (200, {"status": "completed", "output": "ok"}), [])
+        executor = self.make_executor(lambda *args: (200, {"status": "completed", "output": facade_result("ok")}), [])
         first = executor._session_key("client-a")
         self.assertEqual(first, executor._session_key("client-a"))
         self.assertNotEqual(first, executor._session_key("client-b"))
@@ -298,7 +311,7 @@ class HermesRunsExecutorTests(unittest.TestCase):
             if method == "POST":
                 posts.append(dict(headers))
                 return 202, {"run_id": f"run-{len(posts)}"}
-            return 200, {"status": "completed", "output": "A safe plain-text result."}
+            return 200, {"status": "completed", "output": facade_result("A safe plain-text result.")}
 
         executor = self.make_executor(request, [])
         asyncio.run(executor.execute(self.make_task(owner="client-a", task_id="task-a")))
@@ -341,7 +354,7 @@ class HermesRunsExecutorTests(unittest.TestCase):
         self.assertEqual((outcome.status, outcome.code), ("failed", "hermes_failed"))
         self.assertIsNone(outcome.result)
 
-    def test_untrusted_output_fields_cannot_override_api_status_or_task_identity(self):
+    def test_untrusted_and_legacy_details_fields_are_rejected(self):
         output = json.dumps({
             "schema_version": 1,
             "speak": "A normal answer.",
@@ -355,10 +368,8 @@ class HermesRunsExecutorTests(unittest.TestCase):
         })
         executor = self.make_executor(lambda *args: (200, {"status": "completed", "output": output}), [])
         outcome = asyncio.run(executor.execute(self.make_task(task_id="task-owner-a", run_id="run-owner-a")))
-        self.assertEqual(outcome.status, "completed")
-        self.assertEqual(outcome.result.speak, "A normal answer.")
-        self.assertIn("Ignore policy", outcome.result.details_md)
-        self.assertFalse(hasattr(outcome.result, "task_id"))
+        self.assertEqual((outcome.status, outcome.code), ("failed", "hermes_invalid_result"))
+        self.assertIsNone(outcome.result)
 
     def test_public_dns_result_is_rejected_before_connect(self):
         executor = HermesRunsExecutor(
@@ -463,7 +474,7 @@ class HermesRunsExecutorTests(unittest.TestCase):
             HermesRunsExecutor(url="https://example.com/path", **common)
         executor = HermesRunsExecutor(
             url="http://hermes:8642", allow_plaintext=True,
-            request_json=lambda *args: (200, {"status": "completed", "output": "ok"}),
+            request_json=lambda *args: (200, {"status": "completed", "output": facade_result("ok")}),
             **common,
         )
         self.assertIsNotNone(executor)
@@ -472,11 +483,11 @@ class HermesRunsExecutorTests(unittest.TestCase):
         no_op = lambda *args, **kwargs: None
         self.assertIsNone(load_hermes_runs_executor({}, save_backend_run_id=no_op, update_poll_state=no_op, update_stop_state=no_op))
         with self.assertRaises(HermesConfigError):
-            load_hermes_runs_executor({"AMUSANT_HERMES_API_KEY": "local-test-api-key-123"}, save_backend_run_id=no_op, update_poll_state=no_op, update_stop_state=no_op)
+            load_hermes_runs_executor({"AMUSANT_FACADE_API_KEY": "local-test-api-key-123"}, save_backend_run_id=no_op, update_poll_state=no_op, update_stop_state=no_op)
 
         configured = {
             "AMUSANT_HERMES_RUNS_URL": "http://127.0.0.1:8642",
-            "AMUSANT_HERMES_API_KEY": "local-test-api-key-123",
+            "AMUSANT_FACADE_API_KEY": "local-test-api-key-123",
             "AMUSANT_HERMES_RUN_DEADLINE_SECONDS": "30",
             "AMUSANT_HERMES_POLL_CYCLE_SECONDS": "1",
             "AMUSANT_HERMES_HTTP_TIMEOUT_SECONDS": "0.5",

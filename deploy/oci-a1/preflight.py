@@ -13,11 +13,21 @@ RFC1918_NETWORKS = tuple(
     ipaddress.ip_network(cidr)
     for cidr in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
 )
+NETWORK_NAMES = (
+    "RELAY_API_CIDR", "HERMES_API_CIDR",
+    "RELAY_EGRESS_CIDR", "HERMES_EGRESS_CIDR",
+)
+IMAGE_NAMES = ("RELAY_IMAGE", "FACADE_IMAGE", "HERMES_IMAGE", "EGRESS_PROXY_IMAGE")
+IP_NAMES_BY_NETWORK = {
+    "RELAY_API_CIDR": ("RELAY_BIND_IP", "FACADE_RELAY_BIND_IP"),
+    "HERMES_API_CIDR": ("FACADE_HERMES_BIND_IP", "HERMES_API_BIND_IP"),
+    "RELAY_EGRESS_CIDR": ("RELAY_EGRESS_IP", "EGRESS_PROXY_RELAY_BIND_IP"),
+    "HERMES_EGRESS_CIDR": ("HERMES_EGRESS_IP", "EGRESS_PROXY_HERMES_BIND_IP"),
+}
 REQUIRED = (
-    "RELAY_IMAGE", "HERMES_IMAGE", "EGRESS_PROXY_IMAGE",
-    "RELAY_API_CIDR", "RELAY_BIND_IP", "HERMES_API_BIND_IP",
-    "CONTROLLED_EGRESS_CIDR", "HERMES_EGRESS_IP", "RELAY_EGRESS_IP",
-    "EGRESS_PROXY_BIND_IP", "RELAY_HOST_PRIVATE_IP", "RELAY_PUBLISH_PORT",
+    *IMAGE_NAMES, *NETWORK_NAMES,
+    *(name for names in IP_NAMES_BY_NETWORK.values() for name in names),
+    "RELAY_HOST_PRIVATE_IP", "RELAY_PUBLISH_PORT",
 )
 
 
@@ -84,35 +94,27 @@ def validate(values: dict[str, str]) -> None:
     for name in REQUIRED:
         if not values.get(name, "").strip():
             raise PreflightError(f"{name} is required")
-    for name in ("RELAY_IMAGE", "HERMES_IMAGE", "EGRESS_PROXY_IMAGE"):
+    for name in IMAGE_NAMES:
         if not IMAGE_REF.fullmatch(values[name]):
             raise PreflightError(f"{name} must be pinned by a sha256 digest")
 
-    api_net = _network(values, "RELAY_API_CIDR")
-    egress_net = _network(values, "CONTROLLED_EGRESS_CIDR")
-    if api_net.overlaps(egress_net):
-        raise PreflightError("Relay API and controlled egress subnets must not overlap")
+    networks = {name: _network(values, name) for name in NETWORK_NAMES}
+    network_items = list(networks.items())
+    for index, (name, network) in enumerate(network_items):
+        for other_name, other in network_items[index + 1:]:
+            if network.overlaps(other):
+                raise PreflightError(f"{name} and {other_name} subnets must not overlap")
 
-    api_ips = {
-        name: _literal_ip(values, name)
-        for name in ("RELAY_BIND_IP", "HERMES_API_BIND_IP")
-    }
-    egress_ips = {
-        name: _literal_ip(values, name)
-        for name in ("HERMES_EGRESS_IP", "RELAY_EGRESS_IP", "EGRESS_PROXY_BIND_IP")
-    }
-    for name, address in api_ips.items():
-        _contained_host(api_net, address, name)
-    for name, address in egress_ips.items():
-        _contained_host(egress_net, address, name)
-    if len(set(api_ips.values())) != len(api_ips) or len(set(egress_ips.values())) != len(egress_ips):
-        raise PreflightError("Static service IP addresses must be unique on each network")
+    for network_name, ip_names in IP_NAMES_BY_NETWORK.items():
+        network = networks[network_name]
+        addresses = {name: _literal_ip(values, name) for name in ip_names}
+        for name, address in addresses.items():
+            _contained_host(network, address, name)
+        if len(set(addresses.values())) != len(addresses):
+            raise PreflightError(f"Static service IP addresses on {network_name} must be unique")
 
     host_ip = _literal_ip(values, "RELAY_HOST_PRIVATE_IP")
-    if host_ip.version != 4 or not any(
-        host_ip in ipaddress.ip_network(cidr)
-        for cidr in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
-    ):
+    if host_ip.version != 4 or not any(host_ip in private for private in RFC1918_NETWORKS):
         raise PreflightError("RELAY_HOST_PRIVATE_IP must be an RFC1918 IPv4 address")
     try:
         port = int(values["RELAY_PUBLISH_PORT"])
@@ -131,7 +133,7 @@ def main() -> int:
     except PreflightError as exc:
         print(f"OCI Compose preflight failed: {exc}", file=sys.stderr)
         return 2
-    print("OCI Compose static inputs validated; this does not authorize deployment or prove live gates.")
+    print("OCI Compose static inputs validated; no cloud or provider calls were made.")
     return 0
 
 

@@ -59,7 +59,7 @@ jobs:
         run: uv run --locked --python 3.13 --extra hardware-opus --group dev python relay/tests/psk_wss_integration.py
 
   oci-arm64-images:
-    name: OCI ARM64 Relay and egress-proxy image smoke
+    name: OCI ARM64 Relay, facade and egress-proxy image smoke
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
@@ -86,22 +86,31 @@ jobs:
           root = Path(sys.argv[1])
           values = {
               "RELAY_IMAGE": "registry.invalid/relay@sha256:" + "a" * 64,
-              "HERMES_IMAGE": "registry.invalid/hermes@sha256:" + "b" * 64,
-              "EGRESS_PROXY_IMAGE": "registry.invalid/proxy@sha256:" + "c" * 64,
+              "FACADE_IMAGE": "registry.invalid/facade@sha256:" + "b" * 64,
+              "HERMES_IMAGE": "registry.invalid/hermes@sha256:" + "c" * 64,
+              "EGRESS_PROXY_IMAGE": "registry.invalid/proxy@sha256:" + "d" * 64,
               "RELAY_API_CIDR": "172.30.62.0/29",
               "RELAY_BIND_IP": "172.30.62.2",
-              "HERMES_API_BIND_IP": "172.30.62.3",
-              "CONTROLLED_EGRESS_CIDR": "172.30.63.0/29",
-              "HERMES_EGRESS_IP": "172.30.63.2",
-              "RELAY_EGRESS_IP": "172.30.63.3",
-              "EGRESS_PROXY_BIND_IP": "172.30.63.4",
+              "FACADE_RELAY_BIND_IP": "172.30.62.3",
+              "HERMES_API_CIDR": "172.30.64.0/29",
+              "FACADE_HERMES_BIND_IP": "172.30.64.2",
+              "HERMES_API_BIND_IP": "172.30.64.3",
+              "RELAY_EGRESS_CIDR": "172.30.63.0/29",
+              "RELAY_EGRESS_IP": "172.30.63.2",
+              "EGRESS_PROXY_RELAY_BIND_IP": "172.30.63.3",
+              "HERMES_EGRESS_CIDR": "172.30.65.0/29",
+              "HERMES_EGRESS_IP": "172.30.65.2",
+              "EGRESS_PROXY_HERMES_BIND_IP": "172.30.65.3",
               "RELAY_HOST_PRIVATE_IP": "10.0.0.10",
               "RELAY_PUBLISH_PORT": "8443",
               "OCI_DATA_DIR": str(root / "data"),
+              "HERMES_CONFIG_FILE": str(root / "hermes-config.yaml"),
               "RELAY_CPU_LIMIT": "0.35",
+              "FACADE_CPU_LIMIT": "0.10",
               "HERMES_CPU_LIMIT": "0.55",
               "PROXY_CPU_LIMIT": "0.05",
               "RELAY_MEMORY_LIMIT": "1536m",
+              "FACADE_MEMORY_LIMIT": "256m",
               "HERMES_MEMORY_LIMIT": "3584m",
               "PROXY_MEMORY_LIMIT": "128m",
               "AMUSANT_CLIENT_ID": "offline-owner",
@@ -116,15 +125,25 @@ jobs:
               "AMUSANT_HERMES_STOP_RETRY_MAX_SECONDS": "0.2",
               "AMUSANT_RELAY_SHUTDOWN_GRACE_SECONDS": "10",
               "RELAY_STOP_GRACE_PERIOD": "90s",
+              "FACADE_STOP_GRACE_PERIOD": "10s",
               "HERMES_STOP_GRACE_PERIOD": "30s",
           }
-          for name in ("GEMINI_API_KEY_FILE", "DEVICE_TOKEN_FILE", "DEVICE_PSKS_FILE", "HERMES_API_KEY_FILE"):
+          for name in ("GEMINI_API_KEY_FILE", "DEVICE_TOKEN_FILE", "DEVICE_PSKS_FILE", "FACADE_API_KEY_FILE", "FACADE_WRITER_API_KEY_FILE", "HERMES_API_KEY_FILE"):
               path = root / name.lower()
               path.write_text("offline-only-placeholder\n", encoding="utf-8")
               path.chmod(0o600)
               values[name] = str(path)
           (root / "data" / "relay").mkdir(parents=True)
           (root / "data" / "hermes").mkdir()
+          (root / "data" / "results" / "facade").mkdir(parents=True)
+          (root / "hermes-config.yaml").write_text("\n".join([
+              "plugins:",
+              "  enabled:",
+              "    - amusant-option-d",
+              "platform_toolsets:",
+              "  api_server:",
+              "    - amusant_option_d",
+          ]) + "\n", encoding="utf-8")
           (root / "compose.env").write_text(
               "".join(f"{name}={value}\n" for name, value in values.items()), encoding="utf-8"
           )
@@ -139,27 +158,27 @@ jobs:
         run: |
           docker run --rm --platform linux/arm64 --entrypoint /app/.venv/bin/python amusant-relay:oci-arm64-ci -c 'from opencc import OpenCC; assert OpenCC("s2twp.json").convert("没问题，我会回复你的。") == "沒問題，我會回覆你的。"'
 
+
       - name: Exercise Relay ARM64 runtime and Opus codec
         run: docker run --rm --platform linux/arm64 --entrypoint /app/.venv/bin/python amusant-relay:oci-arm64-ci -m unittest discover -s relay/tests -p test_device_opus.py -v
 
       - name: Exercise Relay TLS-PSK runtime support
         run: docker run --rm --platform linux/arm64 --entrypoint /app/.venv/bin/python amusant-relay:oci-arm64-ci -m unittest discover -s relay/tests -p test_device_tls_psk.py -v
 
+      - name: Build facade for ARM64
+        run: docker buildx build --platform linux/arm64 --load -f deploy/oci-a1/Dockerfile.facade -t amusant-facade:oci-arm64-ci .
+
       - name: Build egress proxy for ARM64
         run: docker buildx build --platform linux/arm64 --load -f deploy/oci-a1/Dockerfile.egress-proxy -t amusant-egress-proxy:oci-arm64-ci .
 
-  hermes-offline-recovery:
-    name: Hermes Native Runs fake-provider recovery gates
-    runs-on: ubuntu-24.04
-    timeout-minutes: 25
-    steps:
-      - name: Check out source
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
+      - name: Build two-UID Facade writer smoke image
+        run: docker build --platform linux/amd64 -f deploy/oci-a1/Dockerfile.facade-smoke -t amusant-facade-runtime-smoke .
 
-      - name: Relay and Hermes offline fake-provider E2E
-        run: python spikes/002-hermes-native-runs-poc/run_phase2b.py
+      - name: Exercise private writer channel across Linux UIDs
+        run: docker run --rm --network none --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m --tmpfs /var/lib/amusant-results:rw,noexec,nosuid,size=16m,uid=10003,gid=10003,mode=700 amusant-facade-runtime-smoke
+
+# The legacy #002 fake-provider harness routes Relay directly to Hermes. Keep its source for reference;
+# PR-B2 will replace this job with the integrated Facade path required by Issue #85.
 
   issue-79-option-d-recovery:
     # Once Option D is part of the M1 runtime, proof must not be limited to
