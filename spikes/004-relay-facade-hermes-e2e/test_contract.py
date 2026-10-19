@@ -96,6 +96,15 @@ class Issue85E2EContractTests(unittest.TestCase):
         )
         self.assertIsInstance(runtime_factory, ast.FunctionDef)
 
+    def test_open_turn_sends_audio_before_waiting_for_live_provider(self):
+        relay_e2e = (PROJECT / "relay_e2e.py").read_text(encoding="utf-8")
+        open_turn = relay_e2e.split("async def open_turn", 1)[1].split(
+            "async def invoke_tool", 1
+        )[0]
+        audio_send = open_turn.index('await websocket.send(b"\\x00" * MIN_PCM_BYTES)')
+        provider_wait = open_turn.index("provider = await eventually(")
+        self.assertLess(audio_send, provider_wait)
+
     def test_runtime_pins_hermes_and_uses_only_the_local_fake_model(self):
         self.assertIn(IMAGE, self.compose)
         self.assertIn(IMAGE, (PROJECT / "run_e2e.py").read_text(encoding="utf-8"))

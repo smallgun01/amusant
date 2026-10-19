@@ -269,17 +269,17 @@ async def open_turn(server, providers):
         max_size=64 * 1024,
         ping_interval=None,
     )
-    provider = await eventually(
-        lambda: providers[before] if len(providers) > before else None,
-        description="fake Live provider creation",
-    )
-    await asyncio.wait_for(provider.connected.wait(), timeout=4.0)
     await websocket.send(json.dumps({
         "type": "hello", "device": "untrusted-synthetic-label", "codecs": ["pcm"]
     }))
     await websocket.send(json.dumps({"type": "ptt_start"}))
     await websocket.send(b"\x00" * MIN_PCM_BYTES)
     await websocket.send(json.dumps({"type": "ptt_end"}))
+    provider = await eventually(
+        lambda: providers[before] if len(providers) > before else None,
+        description="fake Live provider creation",
+    )
+    await asyncio.wait_for(provider.connected.wait(), timeout=4.0)
     if provider.auto_complete:
         await wait_turn_complete(websocket)
     else:
