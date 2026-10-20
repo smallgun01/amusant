@@ -1,13 +1,13 @@
 # Project Amusant — Current M1 execution plan
 
-> **2026-10-19 working sequence; read with [SPEC v0.5](SPEC.md), [ADR-0003](docs/adr/0003-oci-a1-hermes-sqlite.md), [STATUS](STATUS.md) and [WS1–WS4](docs/project-management/workstreams.md).** OCI/Hermes/SQLite is the selected **implementation target**, not a live deployment. The historical plan below is retained only to trace earlier AWS/OpenAB decisions.
+> **Updated 2026-10-20 against `main@5c788be`.** Read with [SPEC v0.5](SPEC.md), [ADR-0003](docs/adr/0003-oci-a1-hermes-sqlite.md), [STATUS](STATUS.md) and [WS1–WS4](docs/project-management/workstreams.md). OCI/Hermes/SQLite remains an **implementation target**, not a live deployment. The archived AWS/OpenAB plan below is non-authoritative.
 
 ## Active plan and dependencies
 
 | Order | WS | Work | Exit / next gate |
 | --- | --- | --- | --- |
-| 1 (active) | WS2+WS3 | [#85](https://github.com/smallgun01/amusant/issues/85) B1 runtime wiring (Draft [#87](https://github.com/smallgun01/amusant/pull/87)), B2 pinned Hermes Option D integration | Relay → authenticated Facade → Hermes, trusted artifact commit, negative auth/routing, restart and Inbox E1 PASS; **no live deployment** |
-| 2 (parallel prep; separate approval) | WS3+WS4 | OCI A1 private canary preparation, image/secret/digest/persistence/backup and [#27](https://github.com/smallgun01/amusant/issues/27) G1 ingress design | Offline preflight, native ARM64 gate (#83 merged), exact rollback and Owner-approved live window; no new AWS/DynamoDB migration |
+| 1 (**E1 complete, 2026-10-19**) | WS2+WS3 | [#85](https://github.com/smallgun01/amusant/issues/85) B1 [PR #87](https://github.com/smallgun01/amusant/pull/87) and B2 [PR #90](https://github.com/smallgun01/amusant/pull/90) merged | Native ARM64 fake-provider Relay→Facade→Hermes→Artifact→SQLite/Inbox, routing/auth negatives, restart/ambiguous POST and STOP **handling**: [native ARM64 E2E #39240814687](https://github.com/smallgun01/amusant/actions/runs/39240814687) PASS; **no OCI/paid-provider proof** |
+| 2 (**active planning; separate approval**) | WS3+WS4 | [#62](https://github.com/smallgun01/amusant/issues/62) OCI A1 private canary preparation: pinned image digests, secret/volume mounts, off-host Ledger/Facade/Hermes backups and restore; [#27](https://github.com/smallgun01/amusant/issues/27) G1 ingress design in parallel | Offline preflight and #83 ARM64 gate already GO; still require Owner-approved live window, rollback, provider limits and no automatic AWS/DynamoDB migration |
 | 3 (approved E3 only) | WS3 | Bounded OCI live canary with fake or separately consented real provider; representative Hermes tool load concurrent with FAST | SQLite/Facade/Hermes durable readback, encrypted off-host restore, CPU/RSS/FAST p50/p95, secrets isolation and rollback |
 | 4 | WS2+WS3 | [#46](https://github.com/smallgun01/amusant/issues/46) S1 cloud software E2E | Gemini FAST → admit → Hermes result → Inbox → **tool-disabled** spoken retrieval; restart/uncertain/stop evidence, actual cost |
 | 5 | WS1+WS3 | G2 device cloud FAST then G3a physical Slow with #27 ingress | Known Wi-Fi StickS3 authenticated connection, physical PTT, then later owner-initiated retrieval of SLOW result |
@@ -15,7 +15,7 @@
 
 **Product constraints:** one owner/Relay; one outstanding SLOW task (busy rejection), no automatic result voice, no second Agent backend, no queue/third Worker, no direct Relay→Hermes Runs route after Facade integration. [#56](https://github.com/smallgun01/amusant/issues/56) result contract and [#58](https://github.com/smallgun01/amusant/issues/58) timing policy must be resolved to accept live Slow behavior. Completion cues, memory/reminders, W2a/W2b and wider Kai parity stay backlog unless specifically approved.
 
-**Evidence:** E1 offline/merged ≠ E2 physical ≠ E3 bounded cloud ≠ E4 sustained. Native ARM64 #83 and OCI packaging #70 are E1; prior AWS T4b #26 is a bounded, *historical AWS* proof. #87 is Draft. Owner separately authorizes every OCI/AWS change, public ingress, paid Agent/Gemini call, firmware flash or data migration; **this plan grants none**.
+**Evidence:** E1 offline/merged ≠ E2 physical ≠ E3 bounded cloud ≠ E4 sustained. #70/#83 and [PR #87](https://github.com/smallgun01/amusant/pull/87)/[PR #90](https://github.com/smallgun01/amusant/pull/90) are E1; B2 23/23 offline contract tests, [native ARM64 E2E #39240814687](https://github.com/smallgun01/amusant/actions/runs/39240814687) and [regular CI #39240814701](https://github.com/smallgun01/amusant/actions/runs/39240814701) passed. Its observed STOP terminal state was `failed / interrupt`, correctly surfaced as `hermes_failed`, **not** confirmed cancellation or provider billing cessation. Prior AWS T4b #26 is a bounded historical AWS proof. Owner separately authorizes OCI/AWS changes, public ingress, paid calls, firmware flashing and data migration; this plan grants none.
 
 **Engineering WIP discipline:** at most one major build per WS1–WS3 plus a bounded WS4 remediation; record blocked-by and acceptance links on the corresponding issue; no new extra hosting/Agent feature branch before G3a.
 

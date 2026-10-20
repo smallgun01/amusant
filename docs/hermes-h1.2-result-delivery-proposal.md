@@ -1,6 +1,6 @@
 # Hermes H1.2 Result Delivery Contract — Proposal
 
-**Status (2026-10-19):** Design discussion merged by [PR #71](https://github.com/smallgun01/amusant/pull/71), not an integrated or accepted runtime specification. [#75](https://github.com/smallgun01/amusant/pull/75) and [#80](https://github.com/smallgun01/amusant/pull/80) proved a pinned, offline fake-provider Option D prototype; [#87](https://github.com/smallgun01/amusant/pull/87) is still a **Draft B1** and [#85](https://github.com/smallgun01/amusant/issues/85) B2 remains open. [SPEC v0.5](../../SPEC.md) and [ADR-0003](../adr/0003-oci-a1-hermes-sqlite.md) define the current product/architecture boundary. This proposal does **not** itself approve artifact hosting/retention, model spend, OCI deployment or public ingress.
+**Status (2026-10-20):** [PR #71](https://github.com/smallgun01/amusant/pull/71) merged this **design proposal**; [#75](https://github.com/smallgun01/amusant/pull/75)/[#80](https://github.com/smallgun01/amusant/pull/80) proved the isolated Option D PoC. [#87](https://github.com/smallgun01/amusant/pull/87) runtime B1 and [#90](https://github.com/smallgun01/amusant/pull/90) pinned native ARM64 B2 are now **merged E1 GO** ([evidence](https://github.com/smallgun01/amusant/actions/runs/39240814687)), but not a live OCI deployment, real-provider test, accepted full section-read/v2 envelope, retention policy or artifact-hosting approval. [SPEC v0.5](../SPEC.md) and [ADR-0003](adr/0003-oci-a1-hermes-sqlite.md) govern the target. This proposal alone authorizes no external actions.
 
 ## Decision boundary
 
@@ -65,19 +65,19 @@ A section follow-up is a new explicit Slow Task bound server-side to the authent
 
 Retry counts, deadlines, and exact status-field names remain implementation details to approve alongside the schema caps. Retries must be bounded and observable; no silent truncation or infinite retry is allowed.
 
-## Current-code gaps
+## Implementation reconciliation — original proposal vs merged E1 (2026-10-20)
 
-| Area | Current behavior on main | Gap against this proposal |
+| Area | Implemented offline baseline after #87/#90 | Still proposed / not accepted |
 |---|---|---|
-| [relay/hermes_result.py](../relay/hermes_result.py) | HermesRunResult v1 has speak, card, and details_md; plain-text and selected malformed-schema fallbacks are supported; fields are clipped to existing limits. | No artifact reference, has_more, section metadata, or outcome axes. Fallback and clipping can turn incomplete output into apparent success; v2 must reject invalid/oversized metadata and never truncate a full report into speech. |
-| [relay/slow_path.py](../relay/slow_path.py) | delegate_task accepts task plus optional task_kind. Completed check_task_status results include stored details_md regardless of the speak flag. | No typed target/source/output context. Default Gemini response leaks the long-result field into the tool payload. No separate execution/artifact/presentation outcomes or explicit section-read operation. |
-| [relay/live_bridge.py](../relay/live_bridge.py) | Sends the router result to Gemini as a tool response (8 KiB hard ceiling). The optional spoken path already uses a tool-disabled session and injects the saved speak value. | The tool response currently includes details_md; the new path must whitelist envelope fields and use only validated speak for speech. |
-| [relay/task_store.py](../relay/task_store.py) and [relay/dynamodb_task_store.py](../relay/dynamodb_task_store.py) | SQLite and DynamoDB persist bounded speak, card, and details_md; lookup is owner-scoped and marks results read, while spoken state requires a separate confirmed audio path. | No envelope version, section metadata, outcome axes, or artifact pointer. Preserve owner-scoped lookup and truthful delivery state while storing only a small envelope/pointer, never the report itself. |
-| [SPEC.md](../SPEC.md), [ADR-0002](adr/0002-external-task-store.md) | Normative text still describes bounded details_md in TaskStore; ADR-0002 rejects expanding the TaskStore into artifacts. | The new direction needs a reviewed delta and a separate artifact-storage decision. Do not silently change these accepted documents or expand the DynamoDB table into an artifact repository. |
+| [relay/hermes_result.py](../relay/hermes_result.py) | Strict bounded Facade projection with `schema_version`, `execution_status`, `artifact_status`, `presentation_status`, `artifact_ref`, `speak` and `card`; the legacy `details_md` input is capped at 512 characters and the Relay storage slot holds only `speak`. | No general section/has_more readback or accepted complete v2 field policy; source-model provider behavior remains unverified. |
+| [relay/slow_path.py](../relay/slow_path.py) | `delegate_task` still accepts task + optional kind; `check_task_status` returns bounded status, `speak`, `card` and no `details_md` to Gemini on the completed path. | No explicit typed context/source/section-follow-up or separately reviewed full artifact readback UX. |
+| [relay/live_bridge.py](../relay/live_bridge.py) | Tool responses are bounded and Inbox speech runs through a tool-disabled Live session. #90 proves the fake-provider chain, not live Gemini audio. | Real `check_task_status` → spoken S1, owner-audible completion and interruption/acknowledgement need E3 acceptance. |
+| [relay/task_store.py](../relay/task_store.py) and [relay/dynamodb_task_store.py](../relay/dynamodb_task_store.py) | Owner-scoped Ledger/Inbox remain bounded; the legacy details slot stores short speech only on the Hermes path, while Facade owns full reports and references. | No generalized ArtifactRef persistence/section-read schema migration or accepted cross-volume expiration/backup policy. |
+| [SPEC.md](../SPEC.md), [ADR-0002](adr/0002-external-task-store.md) | SPEC v0.5 defines the current small-result/Facade target; ADR-0002 remains historical AWS/DynamoDB context. | Finalize #56 extended artifact/section handling and hosting/retention approval without rewriting the Relay Ledger as an artifact repository. |
 
-The [#58/#61 implementation](https://github.com/smallgun01/amusant/issues/58) is now merged: preserve its durable polling, one-outstanding-task, immediate busy rejection, stop-confirmed cancellation, and restart behavior. Run deadline and HTTP/poll timing remain explicit configuration choices, not approved product defaults. This proposal adds no queue policy or new Worker/ECS/SQS service.
+The [#58/#61 implementation](https://github.com/smallgun01/amusant/issues/58) preserves durable polling, one outstanding task, busy rejection, stop request/GET-terminal **classification** and restart behavior. #90's pinned active fake-provider STOP ended `failed / interrupt` and correctly reported `hermes_failed` (`stop_cancel_confirmed=false`): do **not** call this confirmed cancellation. Real Run deadline and HTTP/poll timing remain Owner-policy and live-cost gates; no extra queue/Worker/ECS/SQS service is proposed.
 
-## Owner decisions before implementation
+## Owner decisions for remaining v2 and live operations
 
 1. Select the durable artifact mechanism and its hosting boundary. Define encryption, allowed content types/maximum size, owner/task authentication, retrieval route, deletion, retention, and behavior when an artifact expires or is unavailable. Keep the existing TaskStore a ledger and pointer store.
 2. Approve the input and result schema versions, required fields, outcome names, strict caps, section metadata shape, and migration/backward-compatibility behavior. The existing v1 limits are implementation behavior, not approved v2 limits.
@@ -85,7 +85,7 @@ The [#58/#61 implementation](https://github.com/smallgun01/amusant/issues/58) is
 4. Confirm the bounded retry budget/deadlines and whether a user retry after presentation failure is a new task linked to the existing artifact.
 5. Approve the pinned real-Hermes smoke model/provider, run count, spend cap, runtime, and tool/egress scope before any live call.
 
-## Offline acceptance plan
+## Remaining acceptance plan (beyond #90 offline E1)
 
 - Input: resolved earlier-PR context succeeds; ambiguous “that PR”, wrong owner, unsupported source, oversized envelope, and unauthorized scope fail safely without using implicit transcript context.
 - Hermes-to-Relay boundary: verify the full report is durably committed before terminal success; GET /v1/runs/{run_id} and the Relay polling projection expose only the small envelope, with no report/tool body in result payloads, logs, or traces consumed by Relay. Relay never receives 10k/30k raw output and truncates it.
@@ -100,4 +100,4 @@ The [#58/#61 implementation](https://github.com/smallgun01/amusant/issues/58) is
 
 ## Scope of this proposal
 
-Review-only. It changes no application code, storage, SPEC/ADR, runtime defaults, infrastructure, or production environment. Once the Owner approves the schema and storage boundaries, implementation can be split into result-contract, artifact-adapter, and section-read work while retaining the existing Relay TaskStore, Inbox, and #58 single-flight behavior.
+This file preserves the H1.2 feature proposal and unimplemented acceptance cases. It documents verified #87/#90 offline evidence without turning unapproved v2 storage/section-read rules into shipped capability. Editing this proposal does not itself change code, runtime defaults, infrastructure or authorization. #56 still owns remaining product/scope choices; #46 and #62 own separately approved live validation.
