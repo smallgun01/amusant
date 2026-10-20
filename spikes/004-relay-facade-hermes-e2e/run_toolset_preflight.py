@@ -174,9 +174,19 @@ def main():
         "cases": cases,
     }
     EVIDENCE.write_text(json.dumps(record, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps({"schema": SCHEMA, "status": overall, "cases": statuses, "ci_run_url": record["ci"]["workflow_run_url"]}, separators=(",", ":")))
+    # These records are deliberately sanitized by the provider, runner, and
+    # audit helpers: names/statuses only, with no prompt, report, secret, or
+    # provider response body. Printing them makes a failed preflight diagnosable
+    # from the retained Actions log as well as from the downloadable artifact.
+    print(json.dumps({
+        "schema": SCHEMA,
+        "status": overall,
+        "ci_run_url": record["ci"]["workflow_run_url"],
+        "sanitized_cases": cases,
+    }, sort_keys=True, separators=(",", ":")))
     return 0 if overall == "PASS" else 1
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
