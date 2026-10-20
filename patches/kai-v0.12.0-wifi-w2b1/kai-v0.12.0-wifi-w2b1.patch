@@ -22,7 +22,7 @@ index a79fccb..392515e 100644
  
  // libopus (fixed point) keeps sizeable frames on the stack; Arduino's default 8 KB loop stack is too tight.
  SET_LOOP_TASK_STACK_SIZE(16 * 1024);
-@@ -83,11 +86,20 @@ RTC_DATA_ATTR static uint8_t cachedBssid[6];
+@@ -83,11 +87,20 @@ RTC_DATA_ATTR static uint8_t cachedBssid[6];
  RTC_DATA_ATTR static int32_t cachedChannel = 0;
  RTC_DATA_ATTR static uint32_t cachedRelayIp = 0;
  RTC_DATA_ATTR static uint8_t untouchedTimerWakes = 0;  // timer wakes in a row with no button press
@@ -43,7 +43,7 @@ index a79fccb..392515e 100644
  #ifdef KAI_TELEMETRY
  RTC_DATA_ATTR static int64_t sleptAtUs = 0;  // RTC wall clock keeps running through deep sleep
  RTC_DATA_ATTR static int16_t sleptMv = 0;
-@@ -647,6 +659,20 @@ static void stopNetworkForProfileChange() {
+@@ -647,6 +660,20 @@ static void stopNetworkForProfileChange() {
    WiFi.disconnect(true, false);
  }
  
@@ -64,7 +64,7 @@ index a79fccb..392515e 100644
  static void onWifiConsoleEvent(const wifi_console::Event& event) {
    switch (event.type) {
      case wifi_console::EventType::Status:
-@@ -673,6 +699,10 @@ static void onWifiConsoleEvent(const wifi_console::Event& event) {
+@@ -673,6 +700,10 @@ static void onWifiConsoleEvent(const wifi_console::Event& event) {
        setMode(Mode::Offline);
        face::setStatusText("USB Wi-Fi setup");
        Serial.println("WIFI OK CLEARED");
@@ -75,7 +75,7 @@ index a79fccb..392515e 100644
        if (!bleWasActive && audio::onUsbPower()) {
          if (wifi_ble_provisioning::start(false, true, millis())) {
            face::showProvisioning(wifi_ble_provisioning::proofOfPossession());
-@@ -696,6 +726,11 @@ static void onWifiConsoleEvent(const wifi_console::Event& event) {
+@@ -696,6 +727,11 @@ static void onWifiConsoleEvent(const wifi_console::Event& event) {
        wifiProfileState = wifi_config::LoadResult::Valid;
        stopNetworkForProfileChange();
        invalidateNetworkHints();
@@ -87,7 +87,7 @@ index a79fccb..392515e 100644
        if (!bleWasActive) startWifi();  // Wait for NimBLE teardown if USB overrides an active session.
        setMode(Mode::Offline);
        face::setStatusText("connecting wifi...");
-@@ -768,18 +803,25 @@ static void serviceWifiBleProvisioning() {
+@@ -768,18 +804,25 @@ static void serviceWifiBleProvisioning() {
    switch (event) {
      case wifi_ble_provisioning::Event::CredentialsSucceeded:
        if (!wifi_config::save(profile)) {
@@ -120,7 +120,7 @@ index a79fccb..392515e 100644
 +        }
        }
        break;
-@@ -792,12 +834,18 @@ static void serviceWifiBleProvisioning() {
+@@ -792,12 +835,18 @@ static void serviceWifiBleProvisioning() {
      case wifi_ble_provisioning::Event::TimedOut:
        Serial.println("WIFI BLE TIMEOUT");
        face::clearProvisioning();
@@ -141,7 +141,7 @@ index a79fccb..392515e 100644
          invalidateNetworkHints();
          startWifi();
          setMode(Mode::Offline);
-@@ -812,7 +860,11 @@ static void serviceWifiBleProvisioning() {
+@@ -812,7 +861,11 @@ static void serviceWifiBleProvisioning() {
      case wifi_ble_provisioning::Event::Error:
        Serial.println("WIFI BLE ERR SERVICE");
        face::clearProvisioning();
@@ -154,7 +154,7 @@ index a79fccb..392515e 100644
        break;
  
      case wifi_ble_provisioning::Event::None:
-@@ -822,6 +874,44 @@ static void serviceWifiBleProvisioning() {
+@@ -822,6 +875,45 @@ static void serviceWifiBleProvisioning() {
    wifi_config::wipeSensitive(profile);
  }
  
@@ -186,8 +186,9 @@ index a79fccb..392515e 100644
 +    requestOwnerSetupExit("Setup ended; Wi-Fi kept");
 +  }
 +  if (setupReturnToNormal && !wifi_ble_provisioning::active()) restartNormalAfterOwnerSetup();
-+  if (setupReturnToNormal && uint32_t(now - setupReturnStartedAt) >= wifi_setup_intent::kManagerDrainTimeoutMs) {
-+    Serial.println("WIFI BLE DRAIN TIMEOUT");
++  if (wifi_setup_intent::managerDrainFallbackExpired(now, setupReturnStartedAt,
++                                                      setupReturnToNormal && wifi_ble_provisioning::active())) {
++    Serial.println("WIFI BLE DRAIN FALLBACK");
 +    esp_restart();
 +    while (true) delay(1000);
 +  }
@@ -199,7 +200,7 @@ index a79fccb..392515e 100644
  // ---- buttons ---------------------------------------------------------------
  
  static void showStatus() {
-@@ -843,13 +933,36 @@ static void showStatus() {
+@@ -843,13 +935,36 @@ static void showStatus() {
    showCard(c);
  }
  
@@ -236,7 +237,7 @@ index a79fccb..392515e 100644
  
    // Front: push to talk (also barges in while Kai is talking).
    if (M5.BtnA.wasPressed() && wsConnected && mode != Mode::Listening) {
-@@ -868,13 +981,37 @@ static void handleButtons() {
+@@ -868,13 +983,37 @@ static void handleButtons() {
      setMode(Mode::Thinking);
    }
  
@@ -275,7 +276,7 @@ index a79fccb..392515e 100644
        showStatus();
      }
    } else if (M5.BtnB.wasClicked()) {
-@@ -894,6 +1031,10 @@ void setup() {
+@@ -894,6 +1033,10 @@ void setup() {
    cfg.fallback_board = m5::board_t::board_M5StickS3;
    M5.begin(cfg);
    Serial.begin(115200);
@@ -286,7 +287,7 @@ index a79fccb..392515e 100644
  
    M5.Power.setExtOutput(false);  // 5V boost for Grove/Hat/IR: unused, and it was left running
    M5.Imu.sleep();                // not used yet
-@@ -913,20 +1054,41 @@ void setup() {
+@@ -913,20 +1056,41 @@ void setup() {
  
    wifiProfileState = wifi_config::load(activeWifiProfile);
    wifiConfigured = wifiProfileState == wifi_config::LoadResult::Valid;
@@ -334,7 +335,7 @@ index a79fccb..392515e 100644
    } else {
      if (wifiConfigured)
        face::setStatusText(wokeFromSleep ? "waking up..." : "connecting wifi...");
-@@ -943,6 +1105,10 @@ void setup() {
+@@ -943,6 +1107,10 @@ void setup() {
  
  void loop() {
    M5.update();
@@ -457,24 +458,45 @@ diff --git a/firmware/src/wifi_ble_provisioning.cpp b/firmware/src/wifi_ble_prov
 index fefef1c..3a1b8b3 100644
 --- a/firmware/src/wifi_ble_provisioning.cpp
 +++ b/firmware/src/wifi_ble_provisioning.cpp
-@@ -11,6 +11,8 @@
+@@ -11,6 +11,9 @@
  
  #include "freertos/FreeRTOS.h"
  #include "wifi_ble_flow.h"
 +#include "wifi_provisioning_commit_gate.h"
++#include "wifi_provisioning_lifecycle.h"
 +#include "wifi_setup_intent.h"
  
  #if !defined(CONFIG_NIMBLE_ENABLED) || !CONFIG_NIMBLE_ENABLED
  #error "The pinned StickS3 framework must enable NimBLE for BLE provisioning."
-@@ -47,6 +49,7 @@ portMUX_TYPE queueMux = portMUX_INITIALIZER_UNLOCKED;
- bool managerActive = false;
- bool stopRequested = false;
+@@ -30,1 +33,1 @@
+-enum class ProviderEvent : uint8_t { CredentialsReceived, CredentialsFailed, CredentialsSucceeded, Deinitialized };
++enum class ProviderEvent : uint8_t { CredentialsReceived, CredentialsFailed, CredentialsSucceeded, ServiceEnded, Deinitialized };
+@@ -47,6 +50,6 @@ portMUX_TYPE queueMux = portMUX_INITIALIZER_UNLOCKED;
+-bool managerActive = false;
+-bool stopRequested = false;
++wifi_provisioning_lifecycle::ManagerLifecycle managerLifecycle;
  bool cancelRequested = false;
 +wifi_provisioning_commit_gate::Gate credentialCommitGate;
  
  class NativeProvisioningManager : public wifi_ble_flow::ProvisioningManager {
   public:
-@@ -157,11 +160,14 @@ bool buildProof() {
+@@ -136,5 +139,7 @@ void onProvisioningEvent(void*, network_prov_cb_event_t event, void* eventData) {
+   } else if (event == NETWORK_PROV_WIFI_CRED_SUCCESS) {
+     enqueue(ProviderEvent::CredentialsSucceeded, NULL);
++  } else if (event == NETWORK_PROV_END) {
++    enqueue(ProviderEvent::ServiceEnded, NULL);
+   } else if (event == NETWORK_PROV_DEINIT) {
+     enqueue(ProviderEvent::Deinitialized, NULL);
+   }
+@@ -143,6 +148,5 @@ void requestStop() {
+ void requestStop() {
+-  if (managerActive && !stopRequested) {
+-    stopRequested = true;
++  if (managerLifecycle.requestStop()) {
+     network_prov_mgr_stop_provisioning();
+   }
+ }
+@@ -157,11 +161,14 @@ bool buildProof() {
  
  }  // namespace
  
@@ -483,7 +505,7 @@ index fefef1c..3a1b8b3 100644
 +bool start(bool profileConfigured, bool usbPowered, uint32_t nowMs, bool ownerTriggered) {
 +  const uint32_t windowMs = ownerTriggered ? wifi_setup_intent::kPhysicalSetupWindowMs
 +                                            : wifi_ble_flow::kProvisionWindowMs;
-+  if (managerActive || !session.start(nowMs, profileConfigured, usbPowered, ownerTriggered, windowMs)) return false;
++  if (managerLifecycle.active() || !session.start(nowMs, profileConfigured, usbPowered, ownerTriggered, windowMs)) return false;
    clearQueue();
    wipeBytes(proofOfPossessionValue, sizeof(proofOfPossessionValue));
    wipeBytes(serviceName, sizeof(serviceName));
@@ -491,15 +513,36 @@ index fefef1c..3a1b8b3 100644
  
    WiFi.persistent(false);
    if (!WiFi.STA.begin(false) || esp_wifi_set_storage(WIFI_STORAGE_RAM) != ESP_OK) {
-@@ -217,6 +223,7 @@ bool start(bool profileConfigured, bool usbPowered, uint32_t nowMs) {
+@@ -201,3 +208,2 @@
+-  managerActive = true;
+-  stopRequested = false;
++  managerLifecycle.onInitialized();
+   cancelRequested = false;
+@@ -208,3 +214,2 @@
+-    network_prov_mgr_deinit();
+-    managerActive = false;
+-    stopRequested = false;
++    if (managerLifecycle.requestDeinitialize()) network_prov_mgr_deinit();
++    managerLifecycle.onDeinitialized();
+@@ -217,6 +222,7 @@ bool start(bool profileConfigured, bool usbPowered, uint32_t nowMs) {
  }
  
  void stop() {
 +  credentialCommitGate.cancel();
-   if (managerActive) {
+-  if (managerActive) {
++  if (managerLifecycle.active()) {
      cancelRequested = true;
      session.stop();
-@@ -232,7 +239,7 @@ void stop() {
+@@ -223,3 +229,2 @@
+     session.stop();
+-    clearQueue();
+     requestStop();
+@@ -226,3 +231,3 @@
+-  if (!managerActive) {
++  if (!managerLifecycle.active()) {
+     session.stop();
+     wipeBytes(proofOfPossessionValue, sizeof(proofOfPossessionValue));
+@@ -232,7 +237,7 @@ void stop() {
  void service(uint32_t nowMs, bool usbPowered, Event& event, wifi_config::Profile& profile) {
    event = Event::None;
    wifi_config::wipeSensitive(profile);
@@ -508,7 +551,7 @@ index fefef1c..3a1b8b3 100644
    if (session.expire(nowMs, usbPowered)) {
 +    credentialCommitGate.cancel();
      requestStop();
-@@ -240,6 +247,31 @@ void service(uint32_t nowMs, bool usbPowered, Event& event, wifi_config::Profile
+@@ -240,6 +245,31 @@ void service(uint32_t nowMs, bool usbPowered, Event& event, wifi_config::Profile
      return;
    }
  
@@ -536,11 +579,16 @@ index fefef1c..3a1b8b3 100644
 +      return;
 +    }
 +  }
-+  if (!managerActive) return;
++  if (!managerLifecycle.active()) return;
    QueuedEvent queued = {};
    bool overflowed = false;
    const bool hasEvent = dequeue(queued, overflowed);
-@@ -269,26 +301,28 @@ void service(uint32_t nowMs, bool usbPowered, Event& event, wifi_config::Profile
+@@ -254,2 +284,3 @@
+-  if (cancelRequested && queued.type != ProviderEvent::Deinitialized) {
++  if (cancelRequested && queued.type != ProviderEvent::Deinitialized &&
++      queued.type != ProviderEvent::ServiceEnded) {
+     wifi_config::wipeSensitive(queued.profile);
+@@ -269,24 +300,30 @@ void service(uint32_t nowMs, bool usbPowered, Event& event, wifi_config::Profile
        }
        break;
      case ProviderEvent::CredentialsSucceeded:
@@ -554,9 +602,11 @@ index fefef1c..3a1b8b3 100644
 +        event = Event::Error;
        }
        break;
-     case ProviderEvent::Deinitialized:
-       managerActive = false;
-       stopRequested = false;
+     case ProviderEvent::ServiceEnded:
++      if (managerLifecycle.onServiceEnded()) network_prov_mgr_deinit();
++      break;
++    case ProviderEvent::Deinitialized:
++      managerLifecycle.onDeinitialized();
        cancelRequested = false;
 -      session.stop();
 -      wipeBytes(proofOfPossessionValue, sizeof(proofOfPossessionValue));
@@ -574,7 +624,7 @@ index fefef1c..3a1b8b3 100644
  }
  
 -bool active() { return managerActive; }
-+bool active() { return managerActive || session.active(); }
++bool active() { return managerLifecycle.active() || session.active(); }
  
  bool restartRequiresReboot() { return session.restartRequiresReboot(); }
 diff --git a/firmware/src/wifi_ble_provisioning.h b/firmware/src/wifi_ble_provisioning.h
@@ -595,7 +645,7 @@ new file mode 100644
 index 0000000..757219c
 --- /dev/null
 +++ b/firmware/src/wifi_setup_intent.h
-@@ -0,0 +1,37 @@
+@@ -0,0 +1,43 @@
 +#pragma once
 +
 +#include <stdint.h>
@@ -605,7 +655,9 @@ index 0000000..757219c
 +constexpr uint32_t kBootIntentMagic = 0x57494649UL;
 +constexpr uint32_t kPhysicalGestureHoldMs = 5000;
 +constexpr uint32_t kPhysicalSetupWindowMs = 180000;
-+constexpr uint32_t kManagerDrainTimeoutMs = 30000;
++constexpr uint32_t kProvisioningAutoStopMaxMs = 30000;
++constexpr uint32_t kManagerDrainFallbackMarginMs = 15000;
++constexpr uint32_t kManagerDrainTimeoutMs = kProvisioningAutoStopMaxMs + kManagerDrainFallbackMarginMs;
 +constexpr uint8_t kMinimumEntryBatteryPercent = 20;
 +constexpr uint8_t kAbortBatteryPercent = 15;
 +
@@ -626,6 +678,10 @@ index 0000000..757219c
 +inline bool setupGestureEligible(bool idle, bool offline, bool earlyTalk, bool listening,
 +                                 bool voicePlaybackIdle) {
 +  return (idle || offline) && !earlyTalk && !listening && voicePlaybackIdle;
++}
++
++inline bool managerDrainFallbackExpired(uint32_t nowMs, uint32_t startedAtMs, bool managerActive) {
++  return managerActive && uint32_t(nowMs - startedAtMs) >= kManagerDrainTimeoutMs;
 +}
 +
 +inline bool networkReady(bool provisionerAccepted, bool wifiConnected, bool hasIpAddress) {
@@ -705,3 +761,62 @@ index 0000000..0000000
 +};
 +
 +}  // namespace wifi_provisioning_commit_gate
+diff --git a/firmware/src/wifi_provisioning_lifecycle.h b/firmware/src/wifi_provisioning_lifecycle.h
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/firmware/src/wifi_provisioning_lifecycle.h
+@@ -0,0 +1,52 @@
++#pragma once
++
++#include <stdint.h>
++
++namespace wifi_provisioning_lifecycle {
++
++class ManagerLifecycle {
++ public:
++  enum class State : uint8_t {
++    Inactive,
++    Running,
++    StopRequested,
++    Deinitializing,
++  };
++
++  ManagerLifecycle() : state_(State::Inactive) {}
++
++  bool onInitialized() {
++    if (state_ != State::Inactive) return false;
++    state_ = State::Running;
++    return true;
++  }
++
++  bool requestStop() {
++    if (state_ != State::Running) return false;
++    state_ = State::StopRequested;
++    return true;
++  }
++
++  bool requestDeinitialize() {
++    if (state_ == State::Inactive || state_ == State::Deinitializing) return false;
++    state_ = State::Deinitializing;
++    return true;
++  }
++
++  bool onServiceEnded() { return requestDeinitialize(); }
++
++  bool onDeinitialized() {
++    if (state_ == State::Inactive) return false;
++    state_ = State::Inactive;
++    return true;
++  }
++
++  bool active() const { return state_ != State::Inactive; }
++  bool stopRequested() const { return state_ == State::StopRequested; }
++  bool deinitializationRequested() const { return state_ == State::Deinitializing; }
++
++ private:
++  State state_;
++};
++
++}  // namespace wifi_provisioning_lifecycle
+

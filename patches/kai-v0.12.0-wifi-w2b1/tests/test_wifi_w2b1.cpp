@@ -6,6 +6,7 @@
 #include "wifi_ble_flow.h"
 #include "wifi_config.h"
 #include "wifi_provisioning_commit_gate.h"
+#include "wifi_provisioning_lifecycle.h"
 #include "wifi_setup_intent.h"
 
 static wifi_config::Profile makeProfile(const char* ssid, char passwordByte) {
@@ -43,7 +44,9 @@ static void testOneShotBootIntent() {
 
 static void testFiveSecondGestureAndConflictGates() {
   assert(wifi_setup_intent::kPhysicalGestureHoldMs == 5000);
-  assert(wifi_setup_intent::kManagerDrainTimeoutMs == 30000);
+  assert(wifi_setup_intent::kProvisioningAutoStopMaxMs == 30000);
+  assert(wifi_setup_intent::kManagerDrainTimeoutMs == 45000);
+  assert(wifi_setup_intent::kManagerDrainTimeoutMs > wifi_setup_intent::kProvisioningAutoStopMaxMs);
   assert(wifi_setup_intent::setupGestureEligible(true, false, false, false, true));
   assert(wifi_setup_intent::setupGestureEligible(false, true, false, false, true));
   assert(!wifi_setup_intent::setupGestureEligible(false, false, false, false, true));
@@ -193,9 +196,74 @@ static void testCredentialSuccessThenDeinitThenIpTimeoutKeepsOldProfile() {
   assert(!gate.pending());
   assert(Preferences::profileWrites() == 1);
   assertSavedProfile(oldProfile);
-  assert(wifi_setup_intent::kManagerDrainTimeoutMs == 30000);
 
   wifi_config::wipeSensitive(oldProfile);
+}
+
+static void testSdkAutoStopThenEndDeinitializesManagerOnce() {
+  Preferences::reset();
+  wifi_config::Profile oldProfile = makeProfile("old-network", 'o');
+  wifi_config::Profile candidate = makeProfile("new-network", 'n');
+  assert(wifi_config::save(oldProfile));
+
+  wifi_provisioning_lifecycle::ManagerLifecycle manager;
+  assert(manager.onInitialized());
+  assert(manager.active());
+  wifi_provisioning_commit_gate::Gate commit;
+  assert(commit.acceptCredentialsSucceeded(100));
+  assert(commit.poll(100, false, false) == wifi_provisioning_commit_gate::PollResult::Waiting);
+  assert(Preferences::profileWrites() == 1);
+  assertSavedProfile(oldProfile);
+
+  assert(commit.poll(101, true, true) == wifi_provisioning_commit_gate::PollResult::Commit);
+  assert(wifi_config::save(candidate));
+  assert(Preferences::profileWrites() == 2);
+  assertSavedProfile(candidate);
+
+  // The success path leaves the default SDK auto-stop enabled so the phone app
+  // can fetch completion. NETWORK_PROV_END then requests exactly one deinit.
+  assert(!manager.requestStop());
+  assert(manager.onServiceEnded());
+  assert(manager.deinitializationRequested());
+  assert(manager.active());
+  assert(!manager.onServiceEnded());
+  assert(!manager.requestStop());
+
+  assert(manager.onDeinitialized());
+  assert(!manager.active());
+  assert(!manager.onDeinitialized());
+  assert(commit.poll(102, true, true) == wifi_provisioning_commit_gate::PollResult::None);
+  assert(Preferences::profileWrites() == 2);
+
+  wifi_config::wipeSensitive(oldProfile);
+  wifi_config::wipeSensitive(candidate);
+}
+
+static void testCancelStopAndEndAreIdempotent() {
+  wifi_provisioning_lifecycle::ManagerLifecycle manager;
+  assert(manager.onInitialized());
+  assert(manager.requestStop());
+  assert(!manager.requestStop());
+  assert(manager.stopRequested());
+
+  assert(manager.onServiceEnded());
+  assert(!manager.onServiceEnded());
+  assert(manager.deinitializationRequested());
+  assert(manager.onDeinitialized());
+  assert(!manager.onDeinitialized());
+  assert(!manager.active());
+}
+
+static void testManagerDrainFallbackWaitsPastSdkAutostop() {
+  const uint32_t startedAt = 1000;
+  assert(!wifi_setup_intent::managerDrainFallbackExpired(
+      startedAt + wifi_setup_intent::kProvisioningAutoStopMaxMs, startedAt, true));
+  assert(!wifi_setup_intent::managerDrainFallbackExpired(
+      startedAt + wifi_setup_intent::kManagerDrainTimeoutMs - 1, startedAt, true));
+  assert(wifi_setup_intent::managerDrainFallbackExpired(
+      startedAt + wifi_setup_intent::kManagerDrainTimeoutMs, startedAt, true));
+  assert(!wifi_setup_intent::managerDrainFallbackExpired(
+      startedAt + wifi_setup_intent::kManagerDrainTimeoutMs, startedAt, false));
 }
 
 enum class PendingInterruption { ButtonCancel, LowBattery, SetupWindowExpired };
@@ -304,8 +372,12 @@ int main() {
   testNvsWriteFailureLeavesOldProfile();
   testCredentialSuccessThenDeinitThenIpCommitsOnce();
   testCredentialSuccessThenDeinitThenIpTimeoutKeepsOldProfile();
+  testSdkAutoStopThenEndDeinitializesManagerOnce();
+  testCancelStopAndEndAreIdempotent();
+  testManagerDrainFallbackWaitsPastSdkAutostop();
   testCancelLowBatteryAndWindowExpiryDiscardPendingCandidate();
   testNvsFailureAfterAssociationDoesNotLoseOldProfile();
   testBoundedWindowCancelAndUsbDisconnect();
   return 0;
 }
+

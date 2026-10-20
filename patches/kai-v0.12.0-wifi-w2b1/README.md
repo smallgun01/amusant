@@ -48,7 +48,7 @@ python3 patches/kai-v0.12.0-wifi-w2b1/tests/run_host_tests.py \
   --wifi-tests patches/kai-v0.12.0-wifi-w1.5/tests
 ```
 
-The W2b-1 C++ fake-NVS suite covers explicit configured-profile entry, the 5-second gesture gates, one-shot intent, battery thresholds, wrong-PoP behavior, no write before association plus IP, retry limits, single-profile replacement, NVS write failure, cancellation, timeout, and USB removal. Its `CredentialCommitGate` is the same small state machine used by the native provisioning service: the host seam injects `CredentialsSucceeded` and `Deinitialized` in either order, then controls Wi-Fi/IP readiness and interruptions. It verifies that deinitialization preserves a pending candidate, the old NVS record remains until commit, commit occurs at most once, cancellation/low battery/window expiry discard pending state, and the IP wait terminates at 15 seconds. This does not emulate Espressif's callback scheduler or replace hardware acceptance.
+The W2b-1 C++ fake-NVS suite covers configured-profile entry, gesture/battery gates, credential commit ordering, cancellation, timeout, write failure, and teardown. `CredentialCommitGate` retains the existing NVS profile until Wi-Fi plus IP are verified. The shared `ManagerLifecycle` seam exercises the pinned SDK success path: leave SDK auto-stop enabled for the phone app, receive `NETWORK_PROV_END`, request manager deinit once, then become inactive on `NETWORK_PROV_DEINIT`. Tests cover idempotent stop/deinit, cancel teardown, exactly-once profile save, and a last-resort 45-second fallback (SDK's documented 30-second maximum plus 15 seconds of margin). This seam does not emulate Espressif's callback scheduler or replace hardware acceptance.
 
 For a local build, use only the placeholder secrets file and the production profile:
 
@@ -66,7 +66,11 @@ PlatformIO linker figures below are from the pinned production `sticks3` profile
 
 | Profile | Firmware image | Program Flash | Static RAM |
 | --- | ---: | ---: | ---: |
-| `sticks3` | 2,430,080 B | 2,396,099 / 3,342,336 B (71.7%) | 79,616 / 327,680 B (24.3%) |
+The last merged-main build measured the values below. CI is rebuilding the corrected lifecycle path in this PR; replace these figures with the PR build result before requesting review.
+
+| Profile | Firmware image | Program Flash | Static RAM |
+| --- | ---: | ---: | ---: |
+| `sticks3` (merged-main baseline) | 2,430,080 B | 2,396,099 / 3,342,336 B (71.7%) | 79,616 / 327,680 B (24.3%) |
 
 Runtime free heap, battery draw, Android interoperability, and reconnection to a real AP are not measurable from this offline build and remain part of owner-supervised physical acceptance. The separate CJK diagnostic patch is not applied or built by this production workflow.
 

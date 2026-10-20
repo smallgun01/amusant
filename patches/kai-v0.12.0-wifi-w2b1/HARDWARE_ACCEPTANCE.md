@@ -26,6 +26,13 @@ Use this checklist only after PR review and separate owner authorization for the
 - [ ] Submit valid credentials for a test AP/hotspot. Verify association and a nonzero IP before the firmware reports saved success, then verify normal reboot loads the replacement profile.
 - [ ] On home Wi-Fi, verify PTT/Opus/TLS-PSK/Bearer and deep-sleep reconnect. When using a phone hotspot, treat public Relay reachability as a separate WS3/cloud gate.
 
+## Post-success BLE teardown regression
+
+- On an owner-approved test session, use the Android Espressif provisioning app and a designated 2.4 GHz test AP. Confirm the app receives its successful completion; keep PoP and Wi-Fi credentials out of logs and notes.
+- After valid credentials, confirm Serial reports `WIFI OK SAVED BLE`, then `WIFI BLE SETUP RETURN` and a normal software restart. `WIFI BLE DRAIN FALLBACK` must not appear on the successful path.
+- Verify the replacement profile reconnects after normal boot. Also cancel a separate setup attempt and confirm the old profile remains and normal boot returns.
+- If END/deinit does not complete before the fallback or the app does not receive completion, stop testing and preserve the serial sequence without secrets. Do not erase NVS or flash automatically.
+
 ## Record and restore
 
 - [ ] Record time to enter setup, PoP readability/app steps, time to connect, free heap, battery/USB state, and reconnect result. Keep credentials and PoP out of notes and logs.

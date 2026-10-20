@@ -20,7 +20,8 @@ def main():
     args = parser.parse_args()
     source = args.firmware_root.resolve() / "src"
     required = (source / "wifi_config.cpp", source / "wifi_ble_flow.cpp",
-                source / "wifi_setup_intent.h", source / "wifi_provisioning_commit_gate.h")
+                source / "wifi_setup_intent.h", source / "wifi_provisioning_commit_gate.h",
+                source / "wifi_provisioning_lifecycle.h")
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
         raise SystemExit("Apply the W2b-1 patch after the pinned W1.5 + CJK layers; missing: " + ", ".join(missing))
@@ -46,8 +47,9 @@ def main():
         ]
         subprocess.run(command, check=True)
         subprocess.run([str(executable)], check=True)
-    print("W2b-1 offline gesture, battery, provisioning event-order gate, timeout, and fake-NVS tests passed.", flush=True)
+    print("W2b-1 offline gesture, provisioning lifecycle, commit gate, timeout, and fake-NVS tests passed.", flush=True)
 
 
 if __name__ == "__main__":
     main()
+
