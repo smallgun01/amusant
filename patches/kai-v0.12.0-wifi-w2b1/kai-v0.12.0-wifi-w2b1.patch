@@ -468,7 +468,7 @@ index fefef1c..3a1b8b3 100644
  
  #if !defined(CONFIG_NIMBLE_ENABLED) || !CONFIG_NIMBLE_ENABLED
  #error "The pinned StickS3 framework must enable NimBLE for BLE provisioning."
-@@ -30,1 +33,1 @@
+@@ -28,1 +31,1 @@
 -enum class ProviderEvent : uint8_t { CredentialsReceived, CredentialsFailed, CredentialsSucceeded, Deinitialized };
 +enum class ProviderEvent : uint8_t { CredentialsReceived, CredentialsFailed, CredentialsSucceeded, ServiceEnded, Deinitialized };
 @@ -47,6 +50,6 @@ portMUX_TYPE queueMux = portMUX_INITIALIZER_UNLOCKED;
