@@ -5,6 +5,7 @@
 #include <Preferences.h>
 #include "wifi_ble_flow.h"
 #include "wifi_config.h"
+#include "wifi_provisioning_commit_gate.h"
 #include "wifi_setup_intent.h"
 
 static wifi_config::Profile makeProfile(const char* ssid, char passwordByte) {
@@ -149,6 +150,125 @@ static void testNvsWriteFailureLeavesOldProfile() {
   wifi_config::wipeSensitive(candidate);
 }
 
+static void testCredentialSuccessThenDeinitThenIpCommitsOnce() {
+  Preferences::reset();
+  wifi_config::Profile oldProfile = makeProfile("old-network", 'o');
+  wifi_config::Profile candidate = makeProfile("new-network", 'n');
+  assert(wifi_config::save(oldProfile));
+
+  wifi_provisioning_commit_gate::Gate gate;
+  assert(gate.acceptCredentialsSucceeded(100));
+  assert(gate.onProviderDeinitialized());
+  assert(gate.providerEnded());
+  assert(gate.poll(101, false, false) == wifi_provisioning_commit_gate::PollResult::Waiting);
+  assert(Preferences::profileWrites() == 1);
+  assertSavedProfile(oldProfile);
+
+  const wifi_provisioning_commit_gate::PollResult ready = gate.poll(102, true, true);
+  assert(ready == wifi_provisioning_commit_gate::PollResult::Commit);
+  if (ready == wifi_provisioning_commit_gate::PollResult::Commit) {
+    assert(wifi_config::save(candidate));
+  }
+  assert(gate.poll(103, true, true) == wifi_provisioning_commit_gate::PollResult::None);
+  assert(Preferences::profileWrites() == 2);
+  assertSavedProfile(candidate);
+
+  wifi_config::wipeSensitive(oldProfile);
+  wifi_config::wipeSensitive(candidate);
+}
+
+static void testCredentialSuccessThenDeinitThenIpTimeoutKeepsOldProfile() {
+  Preferences::reset();
+  wifi_config::Profile oldProfile = makeProfile("old-network", 'o');
+  assert(wifi_config::save(oldProfile));
+
+  wifi_provisioning_commit_gate::Gate gate;
+  assert(gate.acceptCredentialsSucceeded(1000));
+  assert(gate.onProviderDeinitialized());
+  assert(gate.poll(1000 + wifi_provisioning_commit_gate::kAssociationTimeoutMs - 1,
+                   false, false) == wifi_provisioning_commit_gate::PollResult::Waiting);
+  assertSavedProfile(oldProfile);
+  assert(gate.poll(1000 + wifi_provisioning_commit_gate::kAssociationTimeoutMs,
+                   false, false) == wifi_provisioning_commit_gate::PollResult::TimedOut);
+  assert(!gate.pending());
+  assert(Preferences::profileWrites() == 1);
+  assertSavedProfile(oldProfile);
+  assert(wifi_setup_intent::kManagerDrainTimeoutMs == 30000);
+
+  wifi_config::wipeSensitive(oldProfile);
+}
+
+enum class PendingInterruption { ButtonCancel, LowBattery, SetupWindowExpired };
+
+static void assertPendingInterruptionPreservesProfile(PendingInterruption interruption) {
+  Preferences::reset();
+  wifi_config::Profile oldProfile = makeProfile("old-network", 'o');
+  wifi_config::Profile candidate = makeProfile("new-network", 'n');
+  assert(wifi_config::save(oldProfile));
+
+  const uint32_t startedAt = 2000;
+  wifi_ble_flow::Session session;
+  assert(session.start(startedAt, true, true, true, wifi_setup_intent::kPhysicalSetupWindowMs));
+  assert(session.credentialsReceived(candidate));
+  wifi_provisioning_commit_gate::Gate gate;
+  assert(gate.acceptCredentialsSucceeded(startedAt + 1));
+  assert(gate.onProviderDeinitialized());
+
+  switch (interruption) {
+    case PendingInterruption::ButtonCancel:
+      session.stop();
+      gate.cancel();
+      break;
+    case PendingInterruption::LowBattery:
+      assert(wifi_setup_intent::abortForBattery(14, false));
+      session.stop();
+      gate.cancel();
+      break;
+    case PendingInterruption::SetupWindowExpired:
+      assert(session.expire(startedAt + wifi_setup_intent::kPhysicalSetupWindowMs, false));
+      gate.cancel();
+      break;
+  }
+
+  assert(!session.active());
+  assert(gate.poll(startedAt + 2, true, true) == wifi_provisioning_commit_gate::PollResult::None);
+  assert(Preferences::profileWrites() == 1);
+  assertSavedProfile(oldProfile);
+
+  wifi_config::wipeSensitive(oldProfile);
+  wifi_config::wipeSensitive(candidate);
+}
+
+static void testCancelLowBatteryAndWindowExpiryDiscardPendingCandidate() {
+  assertPendingInterruptionPreservesProfile(PendingInterruption::ButtonCancel);
+  assertPendingInterruptionPreservesProfile(PendingInterruption::LowBattery);
+  assertPendingInterruptionPreservesProfile(PendingInterruption::SetupWindowExpired);
+}
+
+static void testNvsFailureAfterAssociationDoesNotLoseOldProfile() {
+  Preferences::reset();
+  wifi_config::Profile oldProfile = makeProfile("old-network", 'o');
+  wifi_config::Profile candidate = makeProfile("new-network", 'n');
+  assert(wifi_config::save(oldProfile));
+
+  wifi_provisioning_commit_gate::Gate gate;
+  assert(gate.acceptCredentialsSucceeded(3000));
+  assert(gate.onProviderDeinitialized());
+  const wifi_provisioning_commit_gate::PollResult ready = gate.poll(3001, true, true);
+  assert(ready == wifi_provisioning_commit_gate::PollResult::Commit);
+  Preferences::failProfileWrites(true);
+  if (ready == wifi_provisioning_commit_gate::PollResult::Commit) {
+    assert(!wifi_config::save(candidate));
+  }
+  Preferences::failProfileWrites(false);
+  assert(gate.poll(3002, true, true) == wifi_provisioning_commit_gate::PollResult::None);
+  assert(Preferences::profileWrites() == 1);
+  assertSavedProfile(oldProfile);
+
+  wifi_config::wipeSensitive(oldProfile);
+  wifi_config::wipeSensitive(candidate);
+}
+
 static void testBoundedWindowCancelAndUsbDisconnect() {
   Preferences::reset();
   wifi_config::Profile oldProfile = makeProfile("old-network", 'o');
@@ -182,7 +302,10 @@ int main() {
   testConfiguredSetupIsExplicitAndFailureKeepsOldProfile();
   testSuccessfulAssociationCommitsNewSingleProfile();
   testNvsWriteFailureLeavesOldProfile();
+  testCredentialSuccessThenDeinitThenIpCommitsOnce();
+  testCredentialSuccessThenDeinitThenIpTimeoutKeepsOldProfile();
+  testCancelLowBatteryAndWindowExpiryDiscardPendingCandidate();
+  testNvsFailureAfterAssociationDoesNotLoseOldProfile();
   testBoundedWindowCancelAndUsbDisconnect();
   return 0;
 }
-

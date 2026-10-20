@@ -25,9 +25,10 @@ The physical gesture writes a short magic value to RTC no-init memory, clears st
 
 Association has a 15-second IP-acquisition deadline. The 180-second outer window bounds PoP entry and retries; manager teardown gets at most 30 additional seconds before a software restart returns to normal boot. USB removal does not end an owner-triggered session; it continues on battery and is subject to the low-battery abort policy. The legacy first-boot USB provisioning behavior still closes if USB is removed.
 
+The provisioning service uses a small portable `CredentialCommitGate` after it dequeues `CRED_SUCCESS`. Its `onProviderDeinitialized()` transition keeps a successful candidate pending while Wi-Fi association/IP is checked, even if the native provider's `DEINIT` callback is dequeued first. The host suite drives that same gate through success → deinit → IP, success → deinit → IP timeout, and cancellation/low-battery/window-expiry sequences. It verifies one commit maximum and old-profile retention. This is a deterministic event-order seam around the real service decision; it does not model Espressif's callback scheduling or certify radio behavior.
+
 The profile remains the single authoritative credential record. Provisioning explicitly uses RAM-only ESP Wi-Fi storage and starts with an empty station config, so the candidate is not separately committed by `esp_wifi`. `wifi_config::save()` writes the complete profile as one NVS blob only after association and IP acquisition. If the save reports failure, the application keeps its old profile state and returns to the normal boot. No Relay/cloud reachability is required to accept Wi-Fi.
 
 ## Review points and limits
 
 Please review the reboot-based one-shot setup boot, the 5-second Button B gesture, the 20%/15% battery thresholds, and the 180-second/three-attempt limits before physical acceptance. Existing host tests and pinned builds can verify the policy and firmware integration; they cannot establish Android UX, NimBLE heap margin, battery draw, RF timing, or real old-profile reconnection. Those remain on the owner-supervised hardware checklist. No flash or live call is part of this PR.
-
