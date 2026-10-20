@@ -62,14 +62,14 @@ rm kai/firmware/src/secrets.h
 
 ## Footprint and verification
 
-The combined PR CI reports `firmware.bin` size and PlatformIO program-flash/static-RAM use for both profiles. Fill in the exact figures after the Draft PR checks finish:
+The exact pinned PlatformIO build passed in [combined workflow run 39367061435](https://github.com/smallgun01/amusant/actions/runs/39367061435). The offline W1.5, CJK, and W2b-1 host suites and both firmware builds passed. Program Flash and static RAM are PlatformIO linker figures; image size is the resulting `firmware.bin`.
 
 | Profile | Firmware image | Program Flash | Static RAM |
 | --- | ---: | ---: | ---: |
-| `sticks3` | CI pending | CI pending | CI pending |
-| `sticks3_cjk_diagnostic` | CI pending | CI pending | CI pending |
+| `sticks3` | 2,430,016 B | 2,396,035 / 3,342,336 B (71.7%) | 79,608 / 327,680 B (24.3%) |
+| `sticks3_cjk_diagnostic` | 2,432,208 B | 2,398,167 / 3,342,336 B (71.8%) | 79,872 / 327,680 B (24.4%) |
 
-Both profiles must fit the 3,342,336-byte application slot. Runtime free heap, battery draw, Android interoperability, and reconnection to a real AP are not measurable from this offline build and remain part of owner-supervised physical acceptance.
+Both profiles fit the 3,342,336-byte application slot. Runtime free heap, battery draw, Android interoperability, and reconnection to a real AP are not measurable from this offline build and remain part of owner-supervised physical acceptance. The existing PR check runs also passed: [repository CI 39367061547](https://github.com/smallgun01/amusant/actions/runs/39367061547), [issue workflow 39367061498](https://github.com/smallgun01/amusant/actions/runs/39367061498), and [W1.5 host workflow 39367061510](https://github.com/smallgun01/amusant/actions/runs/39367061510).
 
 ## Rollback
 
