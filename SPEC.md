@@ -1,6 +1,6 @@
 # Project Amusant — Voice Companion Specification v0.5 (review candidate)
 
-- **Proposed update:** 2026-10-19, Documentation Alignment PR. This is a proposed consolidation of accepted Owner architecture decisions, **not** a live-deployment or paid-run authorization. No change to cloud, devices or secrets follows from merging this text alone.
+- **Current candidate:** v0.5 alignment merged via [PR #88](https://github.com/smallgun01/amusant/pull/88); this follow-up records later #87/#90 **E1 evidence only**, not an amendment to the Owner's live-service, artifact-retention, provider-model, timing or paid-run decisions. No cloud/device/secrets authorization is implied.
 - **Primary source:** this v0.5 requirements section, interpreted with accepted [ADR-0003](docs/adr/0003-oci-a1-hermes-sqlite.md). Earlier v0.4 requirements are preserved below as a **historical appendix only**; where they conflict, they are superseded.
 - **Authority hierarchy:** SPEC sets product requirements and acceptance; ADRs explain accepted architecture decisions; [PLAN.md](PLAN.md) and [WS index](docs/project-management/workstreams.md) sequence work; [STATUS.md](STATUS.md) records evidence; issues/PRs track implementation. A mock or CI PASS is not E3/E4 deployment evidence.
 
@@ -57,6 +57,8 @@ Target placement is one OCI A1 VM (candidate 1 OCPU / 6 GiB), with isolated Rela
 | **E3 / S1 #46** | Genuine authorized FAST → delegate → Hermes → bounded Inbox → new tool-disabled spoken response; verify uncertain/cancel/idle and restart; no paid or cloud action without Owner approval |
 | **E3 / G2–G3a** | Authenticated physical StickS3 over approved G1 → OCI FAST, then physical SLOW submit/retrieve/spoken after S1 |
 | **E4** | Sustained monitoring, secret hygiene, bounded shutdown, provider stop/billing observations, off-host recovery and operational acceptance |
+
+**Implementation evidence (2026-10-19, non-normative):** [PR #87](https://github.com/smallgun01/amusant/pull/87) and [PR #90](https://github.com/smallgun01/amusant/pull/90) merged. The pinned native ARM64, synthetic-provider B2 test passed ([workflow](https://github.com/smallgun01/amusant/actions/runs/39240814687)); it proves the wired Facade network/owner/task/report boundary and E1 STOP-status handling, **not** E3 OCI or live cancellation. Pinned Hermes returned `failed / interrupt` and Relay correctly reported `hermes_failed`; `stop_cancel_confirmed=false`. The required E3/G2/G3a/E4 acceptance gates above remain open.
 
 **No implied authorization:** Documentation and offline PRs do not permit cloud/VCN/NSG mutations, public ports, production cutover, paid inference, firmware flashing/erase, data migrations or deletion of AWS assets. Each live step requires its own Owner approval and sanitized evidence. Earlier AWS T4b was only bounded OpenAB/ACP/DynamoDB functional acceptance.
 

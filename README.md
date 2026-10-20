@@ -8,11 +8,12 @@ Amusant is an independently maintained, **one-owner, PTT-first voice companion**
 
 | Workstream | Verified | Outstanding product gate |
 | --- | --- | --- |
-| [WS1 / #47](https://github.com/smallgun01/amusant/issues/47) — StickS3 & FAST | Owner-reported real local StickS3 FAST 10/10; Jellii six states; BLE+CJK firmware merged (#69), OpenCC live caption conversion merged (#86) | Physical CJK/OpenCC regression (#67), H0 audible latency/battery, safe cloud ingress (#27) |
-| [WS2 / #48](https://github.com/smallgun01/amusant/issues/48) — Hermes | Native Runs adapter, run-id recovery & single-flight (#45/#60/#65); Option D PoC and idempotent reprojection (#75/#80) | Integrate Facade with real Relay/Hermes (#85), validate result/artifact contract (#56), real provider policy (#58) |
-| [WS3 / #49](https://github.com/smallgun01/amusant/issues/49) — OCI & E2E | Offline OCI package (#70), native ARM64 Gate GO (#83), draft B1 Facade wiring (#87, not merged) | B2 integrated offline E2E (#85), separate approved OCI canary, software S1 (#46), device G2/G3a |
+| [WS1 / #47](https://github.com/smallgun01/amusant/issues/47) — StickS3 & FAST | Owner-reported local StickS3 FAST 10/10; Jellii six states; #69 BLE+CJK and #86 OpenCC merged. [#92](https://github.com/smallgun01/amusant/pull/92) W2b BLE re-provisioning remains **Draft / offline CI only** | #67 merged CJK/OpenCC physical acceptance, H0 audible latency/battery, #27 G1 cloud ingress; W2b is not an M1 G2 prerequisite |
+| [WS2 / #48](https://github.com/smallgun01/amusant/issues/48) — Hermes | Native Runs/GET-only/single-flight #45/#60/#65; Option D #75/#80; [PR #87](https://github.com/smallgun01/amusant/pull/87) runtime wiring and [PR #90](https://github.com/smallgun01/amusant/pull/90) pinned native ARM64 integrated **offline E1 GO** | #56 full v2/output, artifact retrieval/retention policy; #58 approved real-provider/cancel/cost policy; live Agent proof |
+| [WS3 / #49](https://github.com/smallgun01/amusant/issues/49) — OCI & E2E | #70 offline OCI package, #83 native ARM64 image gate and [PR #87](https://github.com/smallgun01/amusant/pull/87)/[PR #90](https://github.com/smallgun01/amusant/pull/90) integrated Relay→Facade→Hermes→SQLite/Inbox E1 (Issue [#85](https://github.com/smallgun01/amusant/issues/85) closed) | Separately approved OCI E3 canary, off-host backup/restore, #46 real software S1, #27 ingress and physical G2/G3a |
 | [WS4 / #50](https://github.com/smallgun01/amusant/issues/50) — operations | Offline regression, bounded shutdown, SQLite online backup/integrity/retention audit (#78) | Off-host encrypted backup/restore, load & cost, cancel behavior and E3/E4 operational gates |
 
+**E1 evidence boundary (2026-10-19):** [native ARM64 E2E #39240814687](https://github.com/smallgun01/amusant/actions/runs/39240814687) and [regular CI #39240814701](https://github.com/smallgun01/amusant/actions/runs/39240814701) passed the synthetic-provider B2 integration. STOP handling was exercised, but pinned Hermes returned `failed / interrupt`; `stop_cancel_confirmed=false`. This does **not** establish successful active-run cancellation, billable-provider settlement or OCI availability.
 The last full hardware/real-provider acceptance is **not** implied by a green CI or a merged PR. See [STATUS.md](STATUS.md) for evidence scope.
 
 ## Documentation authority (read in this order)
@@ -29,7 +30,7 @@ The last full hardware/real-provider acceptance is **not** implied by a green CI
 
 StickS3 PTT → authorized Relay/Gemini FAST → durable delegated task → Facade-sanitized Hermes result → owner-scoped Inbox → **new tool-disabled Live session reads bounded `speak` on explicit PTT**. No unsolicited voice, general task queue, third-party tenancy, extra Agent, raw report to Gemini, or automatic AWS data migration.
 
-**Critical path:** [#85](https://github.com/smallgun01/amusant/issues/85) B1/B2 offline integration → separately approved OCI canary → [#46](https://github.com/smallgun01/amusant/issues/46) software S1 → [#27](https://github.com/smallgun01/amusant/issues/27) secure device ingress/G2 → G3a physical Slow closed loop. Independent WS1 local work may proceed without a cloud approval.
+**Critical path (after #85 E1 GO):** accepted offline Facade integration [PR #87](https://github.com/smallgun01/amusant/pull/87)/[PR #90](https://github.com/smallgun01/amusant/pull/90) → [#62](https://github.com/smallgun01/amusant/issues/62) OCI preflight and separately approved bounded E3 canary → [#46](https://github.com/smallgun01/amusant/issues/46) genuine software S1 → device G2 then G3a physical Slow closed loop. [#27](https://github.com/smallgun01/amusant/issues/27) secure G1 edge ingress and #56/#58 product-policy preparation run **in parallel** with the canary prerequisites; no new feature backend or deploy permission is implied.
 
 ## Project references
 
