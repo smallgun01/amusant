@@ -222,7 +222,7 @@ static void testSdkAutoStopThenEndDeinitializesManagerOnce() {
 
   // The success path leaves the default SDK auto-stop enabled so the phone app
   // can fetch completion. NETWORK_PROV_END then requests exactly one deinit.
-  assert(!manager.requestStop());
+  assert(!manager.stopRequested());
   assert(manager.onServiceEnded());
   assert(manager.deinitializationRequested());
   assert(manager.active());
