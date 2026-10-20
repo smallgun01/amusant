@@ -35,6 +35,7 @@ class Preferences {
 
   size_t putBytes(const char* key, const void* source, size_t length) {
     if (readOnly_) return 0;
+    if (writeFailure()) return 0;
     const uint8_t* input = static_cast<const uint8_t*>(source);
     std::vector<uint8_t> bytes(input, input + length);
     values()[composeKey(key)] = bytes;
@@ -53,7 +54,10 @@ class Preferences {
     values().clear();
     namespaces().clear();
     profileWriteCount() = 0;
+    writeFailure() = false;
   }
+
+  static void failProfileWrites(bool fail) { writeFailure() = fail; }
 
   static void corrupt(const char* nameSpace, const char* key, size_t index) {
     std::map<std::string, std::vector<uint8_t> >::iterator found =
@@ -81,7 +85,13 @@ class Preferences {
     return count;
   }
 
+  static bool& writeFailure() {
+    static bool fail = false;
+    return fail;
+  }
+
   std::string nameSpace_;
   bool readOnly_;
 };
+
 

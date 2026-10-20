@@ -1,0 +1,81 @@
+# Wi-Fi W2b-1 — configured BLE re-provisioning
+
+This downstream firmware patch implements Issue #91 on the exact Kai v0.12.0 pin. It adds a 5-second Button B setup gesture and a controlled, one-shot reboot into authenticated BLE provisioning. The existing `amu_wifi/profile` record remains unchanged until replacement credentials have joined Wi-Fi and acquired a nonzero IP address. USB Serial remains the recovery path.
+
+The architecture and owner review points are in [DESIGN.md](DESIGN.md); the separate future physical procedure is [HARDWARE_ACCEPTANCE.md](HARDWARE_ACCEPTANCE.md). This package does not change AWS, Relay, cloud ingress, the PTT/Opus/TLS-PSK/Bearer path, or normal deep-sleep behavior. It does not flash a device or make a paid/live call.
+
+## Pinned baseline and layer order
+
+Target Kai commit: `1681fb3c11acd28525d8987bba4b9bf4bc2a288f`.
+
+From the Amusant repository root, apply layers in this order:
+
+1. Kai v0.12.0 at the exact commit above.
+2. Jellii patch.
+3. W1 dynamic Wi-Fi / NVS patch.
+4. W1.5 BLE provisioning patch.
+5. Run the integrated production CJK adapter.
+6. Apply this W2b-1 patch directly after production CJK.
+
+The historic CJK runtime diagnostic patch and its tests remain available as a separate opt-in troubleshooting asset. They are not part of this production firmware chain. The production CJK Traditional Chinese font, UTF-8 layout, and glyph-width checks remain enabled.
+
+```sh
+git clone --no-tags https://github.com/zbruceli/kai.git kai
+git -C kai checkout --detach 1681fb3c11acd28525d8987bba4b9bf4bc2a288f
+git -C kai apply --check ../patches/kai-v0.12.0-jellii/kai-v0.12.0-jellii.patch
+git -C kai apply ../patches/kai-v0.12.0-jellii/kai-v0.12.0-jellii.patch
+git -C kai apply --check ../patches/kai-v0.12.0-wifi-w1/kai-v0.12.0-wifi-w1.patch
+git -C kai apply ../patches/kai-v0.12.0-wifi-w1/kai-v0.12.0-wifi-w1.patch
+git -C kai apply --check ../patches/kai-v0.12.0-wifi-w1.5/kai-v0.12.0-wifi-w1.5.patch
+git -C kai apply ../patches/kai-v0.12.0-wifi-w1.5/kai-v0.12.0-wifi-w1.5.patch
+python3 patches/sticks3-w15-cjk/apply_integration.py --kai kai
+git -C kai apply --check ../patches/kai-v0.12.0-wifi-w2b1/kai-v0.12.0-wifi-w2b1.patch
+git -C kai apply ../patches/kai-v0.12.0-wifi-w2b1/kai-v0.12.0-wifi-w2b1.patch
+git -C kai diff --check
+```
+
+The combined production workflow performs these patch-apply checks from a clean pinned Kai checkout. W2b-1 is a downstream patch; it does not vendor or modify upstream Kai.
+
+## Offline tests and build
+
+The combined workflow runs the W1, W1.5, and W2b-1 host suites, the production CJK UTF-8 layout and real-font glyph-width checks, then builds only `sticks3`:
+
+```sh
+python3 patches/kai-v0.12.0-wifi-w1/tests/run_host_tests.py --firmware-root kai/firmware
+python3 patches/kai-v0.12.0-wifi-w1.5/tests/run_host_tests.py --firmware-root kai/firmware
+python3 patches/kai-v0.12.0-wifi-w2b1/tests/run_host_tests.py \
+  --firmware-root kai/firmware \
+  --wifi-tests patches/kai-v0.12.0-wifi-w1.5/tests
+```
+
+The W2b-1 C++ fake-NVS suite covers explicit configured-profile entry, the 5-second gesture gates, one-shot intent, battery thresholds, wrong-PoP behavior, no write before association plus IP, retry limits, single-profile replacement, NVS write failure, cancellation, timeout, and USB removal. Its `CredentialCommitGate` is the same small state machine used by the native provisioning service: the host seam injects `CredentialsSucceeded` and `Deinitialized` in either order, then controls Wi-Fi/IP readiness and interruptions. It verifies that deinitialization preserves a pending candidate, the old NVS record remains until commit, commit occurs at most once, cancellation/low battery/window expiry discard pending state, and the IP wait terminates at 15 seconds. This does not emulate Espressif's callback scheduler or replace hardware acceptance.
+
+For a local build, use only the placeholder secrets file and the production profile:
+
+```sh
+cp kai/firmware/src/secrets.example.h kai/firmware/src/secrets.h
+pio run -d kai/firmware -e sticks3
+rm kai/firmware/src/secrets.h
+```
+
+The CI production check verifies the `sticks3` sources do not define `JELLII_CJK_DIAGNOSTICS`, contain `CJK SHOW`, or include the opt-in CJK diagnostic strings in the firmware image. The build uses placeholder secrets only; it does not upload firmware or contact Gemini.
+
+## Footprint and verification
+
+PlatformIO linker figures below are from the pinned production `sticks3` profile; image size is the resulting `firmware.bin`.
+
+| Profile | Firmware image | Program Flash | Static RAM |
+| --- | ---: | ---: | ---: |
+| `sticks3` | 2,430,080 B | 2,396,099 / 3,342,336 B (71.7%) | 79,616 / 327,680 B (24.3%) |
+
+Runtime free heap, battery draw, Android interoperability, and reconnection to a real AP are not measurable from this offline build and remain part of owner-supervised physical acceptance. The separate CJK diagnostic patch is not applied or built by this production workflow.
+
+## Rollback
+
+On the reconstructed Kai tree, reverse only W2b-1 to return to the merged W1.5 + production CJK state:
+
+```sh
+git -C kai apply -R ../patches/kai-v0.12.0-wifi-w2b1/kai-v0.12.0-wifi-w2b1.patch
+```
+
+This source rollback does not flash a device, erase NVS, or alter the saved W1 profile. Restoring a device image is a separate owner-authorized action.

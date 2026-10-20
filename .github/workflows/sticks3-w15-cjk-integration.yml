@@ -1,4 +1,4 @@
-name: StickS3 W1.5 BLE + CJK integration
+name: StickS3 W1.5 BLE + production CJK + W2b-1
 
 on:
   pull_request:
@@ -9,7 +9,7 @@ on:
       - "patches/kai-v0.12.0-wifi-w1/**"
       - "patches/kai-v0.12.0-wifi-w1.5/**"
       - "patches/kai-v0.12.0-cjk-display/**"
-      - "patches/kai-v0.12.0-cjk-diagnostic/**"
+      - "patches/kai-v0.12.0-wifi-w2b1/**"
 
 permissions:
   contents: read
@@ -36,19 +36,19 @@ jobs:
             git -C kai apply "$GITHUB_WORKSPACE/patches/$p"
           done
           python3 patches/sticks3-w15-cjk/apply_integration.py --kai kai
-      - name: Apply opt-in CJK runtime diagnostic layer
+      - name: Apply configured Wi-Fi W2b-1 layer
         run: |
-          git -C kai apply --check "$GITHUB_WORKSPACE/patches/kai-v0.12.0-cjk-diagnostic/kai-v0.12.0-cjk-diagnostic.patch"
-          git -C kai apply "$GITHUB_WORKSPACE/patches/kai-v0.12.0-cjk-diagnostic/kai-v0.12.0-cjk-diagnostic.patch"
-          git -C kai add -N firmware/src/jellii_cjk_diagnostic.h
+          git -C kai apply --check "$GITHUB_WORKSPACE/patches/kai-v0.12.0-wifi-w2b1/kai-v0.12.0-wifi-w2b1.patch"
+          git -C kai apply "$GITHUB_WORKSPACE/patches/kai-v0.12.0-wifi-w2b1/kai-v0.12.0-wifi-w2b1.patch"
           git -C kai diff --check -- \
-            firmware/platformio.ini firmware/src/face.cpp firmware/src/face.h \
-            firmware/src/jellii_cjk_diagnostic.h firmware/src/main.cpp \
-            firmware/src/wifi_console.cpp firmware/src/wifi_console.h
+            firmware/src/main.cpp firmware/src/wifi_ble_flow.cpp firmware/src/wifi_ble_flow.h \
+            firmware/src/wifi_ble_provisioning.cpp firmware/src/wifi_ble_provisioning.h \
+            firmware/src/wifi_setup_intent.h firmware/src/wifi_provisioning_commit_gate.h
       - name: Firmware C++ and Python host tests
         run: |
           python3 patches/kai-v0.12.0-wifi-w1.5/tests/run_host_tests.py --firmware-root kai/firmware
-          python3 patches/kai-v0.12.0-cjk-diagnostic/tests/run_host_tests.py \
+          python3 patches/kai-v0.12.0-wifi-w1/tests/run_host_tests.py --firmware-root kai/firmware
+          python3 patches/kai-v0.12.0-wifi-w2b1/tests/run_host_tests.py \
             --firmware-root kai/firmware \
             --wifi-tests patches/kai-v0.12.0-wifi-w1.5/tests
           g++ -std=c++17 -O2 -Wall -Wextra -Werror -Ikai/firmware/src \
@@ -59,17 +59,28 @@ jobs:
         run: |
           python3 -m venv /tmp/pioenv
           /tmp/pioenv/bin/pip install --disable-pip-version-check "platformio==6.2.0"
-      - name: Build combined StickS3 firmware with placeholder secrets ONLY
+      - name: Build production StickS3 firmware with placeholder secrets ONLY
         run: |
           cp kai/firmware/src/secrets.example.h kai/firmware/src/secrets.h
           /tmp/pioenv/bin/pio run -d kai/firmware -e sticks3
           image_bytes=$(stat -c %s kai/firmware/.pio/build/sticks3/firmware.bin)
-          echo "W1.5 + CJK firmware binary: $image_bytes / 3342336 bytes"
+          echo "Production W1.5 + CJK + W2b-1 firmware binary: $image_bytes / 3342336 bytes"
           test "$image_bytes" -le 3342336
-          /tmp/pioenv/bin/pio run -d kai/firmware -e sticks3_cjk_diagnostic
-          diagnostic_bytes=$(stat -c %s kai/firmware/.pio/build/sticks3_cjk_diagnostic/firmware.bin)
-          echo "CJK diagnostic firmware: $diagnostic_bytes / 3342336 bytes"
-          test "$diagnostic_bytes" -le 3342336
+          python3 - <<'PY'
+          from pathlib import Path
+
+          root = Path("kai/firmware")
+          for relative in ("platformio.ini", "src/main.cpp", "src/wifi_console.cpp", "src/face.cpp"):
+              source = (root / relative).read_text(encoding="utf-8")
+              if "JELLII_CJK_DIAGNOSTICS" in source or "CJK SHOW" in source:
+                  raise SystemExit(f"production source unexpectedly contains opt-in CJK diagnostics: {relative}")
+          image = (root / ".pio/build/sticks3/firmware.bin").read_bytes()
+          forbidden = (b"CJK SHOW", b"CJK MISSING", b"CJK FORMAT", b"CJK NONBMP", b"CJK INVALID")
+          present = [marker.decode("ascii") for marker in forbidden if marker in image]
+          if present:
+              raise SystemExit("production firmware exposes opt-in CJK diagnostics: " + ", ".join(present))
+          print("Production sticks3 excludes JELLII_CJK_DIAGNOSTICS and CJK Serial diagnostics.")
+          PY
       - name: Check exact pinned glyph data and production wrap widths
         run: |
           python3 patches/kai-v0.12.0-cjk-display/tests/check_efont_tw.py \
