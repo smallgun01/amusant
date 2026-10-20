@@ -66,7 +66,7 @@ PlatformIO linker figures below are from the pinned production `sticks3` profile
 
 | Profile | Firmware image | Program Flash | Static RAM |
 | --- | ---: | ---: | ---: |
-| `sticks3` | 2,430,016 B | 2,396,035 / 3,342,336 B (71.7%) | 79,608 / 327,680 B (24.3%) |
+| `sticks3` | 2,430,080 B | 2,396,099 / 3,342,336 B (71.7%) | 79,616 / 327,680 B (24.3%) |
 
 Runtime free heap, battery draw, Android interoperability, and reconnection to a real AP are not measurable from this offline build and remain part of owner-supervised physical acceptance. The separate CJK diagnostic patch is not applied or built by this production workflow.
 
