@@ -37,6 +37,40 @@ def run_capture(command, *, timeout):
     )
 
 
+def inspect_network_isolation(project_name, evidence_dir):
+    expected = {"hermes_api": False, "relay_api": False}
+    try:
+        result = run_capture(
+            ["docker", "network", "inspect", f"{project_name}_hermes_api", f"{project_name}_relay_api"],
+            timeout=30,
+        )
+        raw = json.loads(result.stdout) if result.returncode == 0 else None
+        if isinstance(raw, list):
+            for row in raw:
+                if not isinstance(row, dict) or not isinstance(row.get("Name"), str):
+                    continue
+                name = row["Name"]
+                for suffix in expected:
+                    if name.endswith("_" + suffix):
+                        expected[suffix] = row.get("Internal") is True
+        passed = all(expected.values())
+        summary = {
+            "status": "PASS" if passed else "UNKNOWN",
+            "networks_internal": expected,
+            "external_egress_disabled": passed,
+        }
+    except (OSError, subprocess.TimeoutExpired, ValueError, TypeError):
+        summary = {
+            "status": "UNKNOWN",
+            "networks_internal": expected,
+            "external_egress_disabled": False,
+        }
+    (evidence_dir / "network-isolation.json").write_text(
+        json.dumps(summary, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8"
+    )
+    return summary
+
+
 def ci_metadata():
     server = os.environ.get("GITHUB_SERVER_URL", "").rstrip("/")
     repository = os.environ.get("GITHUB_REPOSITORY", "")
@@ -96,6 +130,7 @@ def run_case(case):
     stage = "native-arm64-toolset-run"
     up = audit = None
     runner_record = provider_record = audit_record = None
+    network_record = None
     try:
         up = run_capture(
             compose + ["up", "--build", "--abort-on-container-exit", "--exit-code-from", "toolset-runner", "toolset-runner"],
@@ -103,6 +138,10 @@ def run_case(case):
         )
         runner_record = read_json(evidence_dir / f"toolset-runner-{case}.json")
         provider_record = read_json(evidence_dir / f"toolset-provider-h12_toolset_{case}.json")
+
+        # Prove the test-only service networks are Docker-internal before the
+        # networkless volume audit evaluates the permission evidence.
+        network_record = inspect_network_isolation(project_name, evidence_dir)
 
         stage = "networkless-volume-audit"
         audit = run_capture(compose + ["run", "--rm", "--no-deps", "toolset-audit"], timeout=120)
@@ -117,6 +156,7 @@ def run_case(case):
             "runner": runner_record,
             "provider": provider_record,
             "audit": audit_record,
+            "network_isolation": network_record,
         }
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {
@@ -126,6 +166,7 @@ def run_case(case):
             "runner": runner_record,
             "provider": provider_record,
             "audit": audit_record,
+            "network_isolation": network_record,
         }
     finally:
         try:
