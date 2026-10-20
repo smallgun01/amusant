@@ -62,15 +62,11 @@ The CI production check verifies the `sticks3` sources do not define `JELLII_CJK
 
 ## Footprint and verification
 
-PlatformIO linker figures below are from the pinned production `sticks3` profile; image size is the resulting `firmware.bin`.
+The pinned production `sticks3` build passed in [integration workflow run #29](https://github.com/smallgun01/amusant/actions/runs/39424197184). The workflow uses placeholder secrets only and does not upload firmware or contact Gemini.
 
 | Profile | Firmware image | Program Flash | Static RAM |
 | --- | ---: | ---: | ---: |
-The last merged-main build measured the values below. CI is rebuilding the corrected lifecycle path in this PR; replace these figures with the PR build result before requesting review.
-
-| Profile | Firmware image | Program Flash | Static RAM |
-| --- | ---: | ---: | ---: |
-| `sticks3` (merged-main baseline) | 2,430,080 B | 2,396,099 / 3,342,336 B (71.7%) | 79,616 / 327,680 B (24.3%) |
+| `sticks3` | 2,430,192 B | 2,396,211 / 3,342,336 B (71.7%) | 79,616 / 327,680 B (24.3%) |
 
 Runtime free heap, battery draw, Android interoperability, and reconnection to a real AP are not measurable from this offline build and remain part of owner-supervised physical acceptance. The separate CJK diagnostic patch is not applied or built by this production workflow.
 
