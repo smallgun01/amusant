@@ -1,0 +1,94 @@
+name: Issue #56 H1.2 Offline Toolset Security Preflight
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/issue-56-h12-toolset-preflight.yml"
+      - "deploy/oci-a1/compose.yaml"
+      - "deploy/oci-a1/Dockerfile.facade"
+      - "deploy/oci-a1/Dockerfile.facade-smoke"
+      - "deploy/oci-a1/hermes-config.fragment.yaml"
+      - "deploy/oci-a1/hermes_entrypoint.py"
+      - "deploy/oci-a1/hermes_plugin/**"
+      - "deploy/oci-a1/preflight.py"
+      - "deploy/oci-a1/tests/test_facade_runtime_contract.py"
+      - "deploy/oci-a1/tests/test_offline_package.py"
+      - "deploy/oci-a1/tests/test_runtime_guards.py"
+      - "spikes/004-relay-facade-hermes-e2e/audit_toolset_preflight.py"
+      - "spikes/004-relay-facade-hermes-e2e/compose.yaml"
+      - "spikes/004-relay-facade-hermes-e2e/fake_mcp_server.py"
+      - "spikes/004-relay-facade-hermes-e2e/fake_provider.py"
+      - "spikes/004-relay-facade-hermes-e2e/hermes-config-toolset-*.yaml"
+      - "spikes/004-relay-facade-hermes-e2e/run_toolset_preflight.py"
+      - "spikes/004-relay-facade-hermes-e2e/seed_config.py"
+      - "spikes/004-relay-facade-hermes-e2e/test_toolset_preflight.py"
+      - "spikes/004-relay-facade-hermes-e2e/toolset_fake_provider.py"
+      - "spikes/004-relay-facade-hermes-e2e/toolset_runner.py"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/issue-56-h12-toolset-preflight.yml"
+      - "deploy/oci-a1/compose.yaml"
+      - "deploy/oci-a1/Dockerfile.facade"
+      - "deploy/oci-a1/Dockerfile.facade-smoke"
+      - "deploy/oci-a1/hermes-config.fragment.yaml"
+      - "deploy/oci-a1/hermes_entrypoint.py"
+      - "deploy/oci-a1/hermes_plugin/**"
+      - "deploy/oci-a1/preflight.py"
+      - "deploy/oci-a1/tests/test_facade_runtime_contract.py"
+      - "deploy/oci-a1/tests/test_offline_package.py"
+      - "deploy/oci-a1/tests/test_runtime_guards.py"
+      - "spikes/004-relay-facade-hermes-e2e/audit_toolset_preflight.py"
+      - "spikes/004-relay-facade-hermes-e2e/compose.yaml"
+      - "spikes/004-relay-facade-hermes-e2e/fake_mcp_server.py"
+      - "spikes/004-relay-facade-hermes-e2e/fake_provider.py"
+      - "spikes/004-relay-facade-hermes-e2e/hermes-config-toolset-*.yaml"
+      - "spikes/004-relay-facade-hermes-e2e/run_toolset_preflight.py"
+      - "spikes/004-relay-facade-hermes-e2e/seed_config.py"
+      - "spikes/004-relay-facade-hermes-e2e/test_toolset_preflight.py"
+      - "spikes/004-relay-facade-hermes-e2e/toolset_fake_provider.py"
+      - "spikes/004-relay-facade-hermes-e2e/toolset_runner.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: issue-56-h12-toolset-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  offline-toolset-preflight:
+    name: H1.2 effective toolset preflight (native ARM64, fake provider)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Verify Docker Compose is available
+        run: |
+          docker version --format '{{.Server.Version}}'
+          docker compose version
+
+      - name: Check the H1.2 preflight contract
+        run: python3 -m unittest discover -s spikes/004-relay-facade-hermes-e2e -p 'test_toolset_preflight.py' -v
+
+      - name: Run offline effective toolset preflight (fake provider only)
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: python3 spikes/004-relay-facade-hermes-e2e/run_toolset_preflight.py
+
+      - name: Upload sanitized effective-toolset evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-56-h12-toolset-preflight-${{ github.run_id }}
+          path: spikes/004-relay-facade-hermes-e2e/evidence/toolset-preflight.json
+          if-no-files-found: warn
+          retention-days: 30

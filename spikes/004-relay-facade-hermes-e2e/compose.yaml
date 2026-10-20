@@ -36,10 +36,13 @@ services:
     network_mode: none
     environment:
       HERMES_HOME: /opt/data
+      POC_TOOLSET_CASE: ${POC_TOOLSET_CASE:-e1}
     entrypoint: ["python3", "/poc/seed_config.py"]
     volumes:
       - hermes_home:/opt/data
       - ./hermes-config.yaml:/poc/hermes-config.yaml:ro
+      - ./hermes-config-toolset-a.yaml:/poc/hermes-config-toolset-a.yaml:ro
+      - ./hermes-config-toolset-b.yaml:/poc/hermes-config-toolset-b.yaml:ro
       - ./seed_config.py:/poc/seed_config.py:ro
     depends_on:
       state-init:
@@ -49,6 +52,7 @@ services:
     image: *hermes-image
     platform: linux/arm64
     user: "10000:10000"
+    group_add: ["20000"]
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=16m
@@ -59,10 +63,13 @@ services:
     entrypoint: ["python3", "/poc/fake_provider.py"]
     environment:
       POC_RUN_TAG: ${POC_RUN_TAG:?required unique synthetic marker}
+      POC_HERMES_KEY_FILE: /run/test-secrets/hermes_api_key
       FAKE_SLOW_DELAY_SECONDS: "8"
       FAKE_STOP_DELAY_SECONDS: "60"
     volumes:
       - ./fake_provider.py:/poc/fake_provider.py:ro
+      - ./toolset_fake_provider.py:/poc/toolset_fake_provider.py:ro
+      - test_secrets:/run/test-secrets:ro
       - ${E2E_EVIDENCE_DIR:?required temporary evidence directory}:/evidence
     networks:
       hermes_api:
@@ -106,6 +113,7 @@ services:
       - test_secrets:/run/test-secrets:ro
       - ../../deploy/oci-a1/hermes_plugin:/opt/data/plugins/amusant-option-d:ro
       - ../../deploy/oci-a1/hermes_entrypoint.py:/usr/local/bin/amusant-hermes-entrypoint.py:ro
+      - ./fake_mcp_server.py:/poc/fake_mcp_server.py:ro
     networks:
       hermes_api:
         ipv4_address: 172.30.64.3
@@ -225,6 +233,52 @@ services:
         condition: service_completed_successfully
       facade:
         condition: service_healthy
+
+  toolset-runner:
+    image: *hermes-image
+    platform: linux/arm64
+    user: "10000:10000"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    cpus: 0.5
+    entrypoint: ["python3", "/poc/toolset_runner.py"]
+    environment:
+      POC_TOOLSET_CASE: ${POC_TOOLSET_CASE:-case_a}
+      POC_RUN_TAG: ${POC_RUN_TAG:?required unique synthetic marker}
+      POC_FACADE_KEY: ${POC_FACADE_KEY:?required synthetic facade key}
+    volumes:
+      - ./toolset_runner.py:/poc/toolset_runner.py:ro
+      - ${E2E_EVIDENCE_DIR:?required temporary evidence directory}:/evidence
+    networks:
+      relay_api:
+        ipv4_address: 172.30.62.4
+    depends_on:
+      facade:
+        condition: service_healthy
+
+  toolset-audit:
+    image: *hermes-image
+    platform: linux/arm64
+    user: "10000:10000"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    cpus: 0.5
+    network_mode: none
+    entrypoint: ["python3", "/audit-src/audit_toolset_preflight.py"]
+    environment:
+      POC_TOOLSET_CASE: ${POC_TOOLSET_CASE:-case_a}
+    volumes:
+      - hermes_home:/audit-home:ro
+      - ./audit_toolset_preflight.py:/audit-src/audit_toolset_preflight.py:ro
+      - ${E2E_EVIDENCE_DIR:?required temporary evidence directory}:/evidence
 
   facade-audit:
     image: *hermes-image

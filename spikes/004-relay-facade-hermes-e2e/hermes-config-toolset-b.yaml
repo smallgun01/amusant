@@ -1,0 +1,65 @@
+model:
+  provider: custom
+  default: local-poc-model
+  base_url: http://fake-provider:8000/v1
+  api_key: ${POC_FAKE_MODEL_KEY}
+  api_mode: chat_completions
+  streaming: false
+  context_length: 65536
+agent:
+  disabled_toolsets:
+    - terminal
+    - process_manage
+    - file
+    - browser
+    - computer_use
+    - execute_code
+    - code_execution
+    - image_gen
+    - vision
+    - text_to_speech
+    - clarify
+    - video
+    - video_gen
+    - homeassistant
+    - spotify
+    - kanban
+    - todo
+    - memory
+    - skills
+    - session_search
+    - delegation
+    - cronjob
+    - context_engine
+    - connections
+approvals:
+  mode: manual
+  cron_mode: deny
+  unattended_mode: deny
+  single_query_mode: deny
+plugins:
+  enabled:
+    - amusant-option-d
+  hook_callback_timeout: 0.15
+platform_toolsets:
+  api_server:
+    - search
+    - amusant_option_d
+    - no_mcp
+web:
+  search_backend: ddgs
+tools:
+  tool_search:
+    enabled: "on"
+mcp_servers:
+  h12preflight:
+    command: python3
+    args:
+      - /poc/fake_mcp_server.py
+    enabled: true
+    timeout: 5
+    connect_timeout: 3
+    tools:
+      include:
+        - preflight_probe
+
