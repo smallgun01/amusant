@@ -98,8 +98,8 @@ jobs:
               for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
                   if "CONFIG_NETWORK_PROV_NETWORK_TYPE_WIFI" in line:
                       evidence.append(f"{path}: {line.strip()}")
-                      if line.strip() == "#define CONFIG_NETWORK_PROV_NETWORK_TYPE_WIFI 1" or \\
-                         line.strip() == "CONFIG_NETWORK_PROV_NETWORK_TYPE_WIFI=y":
+                      if line.strip() in ("#define CONFIG_NETWORK_PROV_NETWORK_TYPE_WIFI 1",
+                                          "CONFIG_NETWORK_PROV_NETWORK_TYPE_WIFI=y"):
                           active = True
           print("NETWORK_PROV_NETWORK_TYPE_WIFI config evidence:")
           for item in evidence:
