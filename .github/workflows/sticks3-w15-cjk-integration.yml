@@ -65,7 +65,7 @@ jobs:
           /tmp/pioenv/bin/pio run -d kai/firmware -e sticks3
           python3 - <<'PY'
           import json
-          import re
+          import json
           from pathlib import Path
 
           package_root = Path.home() / ".platformio/packages"
@@ -99,8 +99,8 @@ jobs:
               for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
                   if "CONFIG_NETWORK_PROV_NETWORK_TYPE_WIFI" in line:
                       evidence.append(f"{path}: {line.strip()}")
-                      if re.search(r"#define\\s+CONFIG_NETWORK_PROV_NETWORK_TYPE_WIFI\\s+1\\b", line) or \\
-                         re.search(r"CONFIG_NETWORK_PROV_NETWORK_TYPE_WIFI=y\\b", line):
+                      if line.strip() == "#define CONFIG_NETWORK_PROV_NETWORK_TYPE_WIFI 1" or \\
+                         line.strip() == "CONFIG_NETWORK_PROV_NETWORK_TYPE_WIFI=y":
                           active = True
           print("NETWORK_PROV_NETWORK_TYPE_WIFI config evidence:")
           for item in evidence:
