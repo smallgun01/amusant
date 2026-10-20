@@ -1,0 +1,646 @@
+diff --git a/firmware/src/main.cpp b/firmware/src/main.cpp
+index a79fccb..392515e 100644
+--- a/firmware/src/main.cpp
++++ b/firmware/src/main.cpp
+@@ -12,8 +12,10 @@
+ #include <WebSocketsClient.h>
+ #include <WiFi.h>
+ #include <driver/rtc_io.h>
++#include <esp_attr.h>
+ #include <esp_heap_caps.h>
+ #include <esp_sleep.h>
++#include <esp_system.h>
+ #ifdef KAI_TELEMETRY
+ #include <sys/time.h>
+ #endif
+@@ -26,6 +28,7 @@
+ #include "wifi_ble_provisioning.h"
+ #include "wifi_config.h"
+ #include "wifi_console.h"
++#include "wifi_setup_intent.h"
+ 
+ // libopus (fixed point) keeps sizeable frames on the stack; Arduino's default 8 KB loop stack is too tight.
+ SET_LOOP_TASK_STACK_SIZE(16 * 1024);
+@@ -83,11 +86,20 @@ RTC_DATA_ATTR static uint8_t cachedBssid[6];
+ RTC_DATA_ATTR static int32_t cachedChannel = 0;
+ RTC_DATA_ATTR static uint32_t cachedRelayIp = 0;
+ RTC_DATA_ATTR static uint8_t untouchedTimerWakes = 0;  // timer wakes in a row with no button press
++RTC_NOINIT_ATTR static uint32_t pendingWifiSetupIntent;
+ static wifi_config::Profile activeWifiProfile = {};
+ static wifi_config::LoadResult wifiProfileState = wifi_config::LoadResult::Missing;
+ static bool wifiConfigured = false;
+ static wifi_console::Parser wifiConsole;
+ static uint32_t lastRelayTry = 0;
++static bool ownerSetupBootActive = false;
++static bool setupReturnToNormal = false;
++static const char* setupReturnStatus = "Wi-Fi unchanged; restarting";
++static uint32_t setupReturnStartedAt = 0;
++static uint32_t lastSetupBatteryCheck = 0;
++static bool setupGestureTracking = false;
++static bool setupGestureHintShown = false;
++static uint32_t setupGestureStartedAt = 0;
+ #ifdef KAI_TELEMETRY
+ RTC_DATA_ATTR static int64_t sleptAtUs = 0;  // RTC wall clock keeps running through deep sleep
+ RTC_DATA_ATTR static int16_t sleptMv = 0;
+@@ -647,6 +659,20 @@ static void stopNetworkForProfileChange() {
+   WiFi.disconnect(true, false);
+ }
+ 
++static void markOwnerSetupReturn(const char* status) {
++  if (!setupReturnToNormal) setupReturnStartedAt = millis();
++  setupReturnToNormal = true;
++  setupReturnStatus = status;
++  face::setProvisioningHint(status);
++  face::setStatusText(status);
++}
++
++static void requestOwnerSetupExit(const char* status) {
++  if (!ownerSetupBootActive) return;
++  markOwnerSetupReturn(status);
++  wifi_ble_provisioning::stop();
++}
++
+ static void onWifiConsoleEvent(const wifi_console::Event& event) {
+   switch (event.type) {
+     case wifi_console::EventType::Status:
+@@ -673,6 +699,10 @@ static void onWifiConsoleEvent(const wifi_console::Event& event) {
+       setMode(Mode::Offline);
+       face::setStatusText("USB Wi-Fi setup");
+       Serial.println("WIFI OK CLEARED");
++      if (ownerSetupBootActive) {
++        requestOwnerSetupExit("Wi-Fi cleared; restarting");
++        break;
++      }
+       if (!bleWasActive && audio::onUsbPower()) {
+         if (wifi_ble_provisioning::start(false, true, millis())) {
+           face::showProvisioning(wifi_ble_provisioning::proofOfPossession());
+@@ -696,6 +726,11 @@ static void onWifiConsoleEvent(const wifi_console::Event& event) {
+       wifiProfileState = wifi_config::LoadResult::Valid;
+       stopNetworkForProfileChange();
+       invalidateNetworkHints();
++      if (ownerSetupBootActive) {
++        Serial.println("WIFI OK SAVED");
++        requestOwnerSetupExit("USB Wi-Fi saved; restarting");
++        break;
++      }
+       if (!bleWasActive) startWifi();  // Wait for NimBLE teardown if USB overrides an active session.
+       setMode(Mode::Offline);
+       face::setStatusText("connecting wifi...");
+@@ -768,19 +803,26 @@ static void serviceWifiBleProvisioning() {
+   switch (event) {
+     case wifi_ble_provisioning::Event::CredentialsSucceeded:
+       if (!wifi_config::save(profile)) {
+-        wifiConfigured = false;
+-        wifiProfileState = wifi_config::LoadResult::Missing;
+-        wifi_config::wipeSensitive(activeWifiProfile);
+-        wifi_ble_provisioning::stop();
+         Serial.println("WIFI ERR STORAGE");
+-        face::setStatusText("BLE save failed; use USB");
++        face::clearProvisioning();
++        if (ownerSetupBootActive) {
++          requestOwnerSetupExit("Save failed; saved Wi-Fi kept");
++        } else {
++          wifi_ble_provisioning::stop();
++          face::setStatusText("BLE save failed; use USB");
++        }
+       } else {
+         activeWifiProfile = profile;
+         wifiConfigured = true;
+         wifiProfileState = wifi_config::LoadResult::Valid;
++        invalidateNetworkHints();
+         Serial.println("WIFI OK SAVED BLE");
+-        face::clearProvisioning();
+-        face::setStatusText("BLE saved; finishing");
++        if (ownerSetupBootActive) {
++          markOwnerSetupReturn("Wi-Fi connected; saved");
++        } else {
++          face::clearProvisioning();
++          face::setStatusText("BLE saved; finishing");
++        }
+       }
+       break;
+ 
+@@ -792,12 +834,18 @@ static void serviceWifiBleProvisioning() {
+     case wifi_ble_provisioning::Event::TimedOut:
+       Serial.println("WIFI BLE TIMEOUT");
+       face::clearProvisioning();
+-      face::setStatusText("BLE timeout; use USB");
++      if (ownerSetupBootActive) {
++        requestOwnerSetupExit("Setup timed out; Wi-Fi kept");
++      } else {
++        face::setStatusText("BLE timeout; use USB");
++      }
+       break;
+ 
+     case wifi_ble_provisioning::Event::SessionEnded:
+       face::clearProvisioning();
+-      if (wifiConfigured) {
++      if (ownerSetupBootActive) {
++        if (!setupReturnToNormal) requestOwnerSetupExit("Setup ended; Wi-Fi kept");
++      } else if (wifiConfigured) {
+         invalidateNetworkHints();
+         startWifi();
+         setMode(Mode::Offline);
+@@ -812,7 +860,11 @@ static void serviceWifiBleProvisioning() {
+     case wifi_ble_provisioning::Event::Error:
+       Serial.println("WIFI BLE ERR SERVICE");
+       face::clearProvisioning();
+-      face::setStatusText("BLE unavailable; use USB");
++      if (ownerSetupBootActive) {
++        requestOwnerSetupExit("BLE failed; Wi-Fi kept");
++      } else {
++        face::setStatusText("BLE unavailable; use USB");
++      }
+       break;
+ 
+     case wifi_ble_provisioning::Event::None:
+@@ -822,6 +874,44 @@ static void serviceWifiBleProvisioning() {
+   wifi_config::wipeSensitive(profile);
+ }
+ 
++[[noreturn]] static void restartNormalAfterOwnerSetup() {
++  face::clearProvisioning();
++  face::setStatusText(setupReturnStatus);
++  face::render();
++  Serial.println("WIFI BLE SETUP RETURN");
++  delay(900);
++  esp_restart();
++  while (true) delay(1000);
++}
++
++static void serviceOwnerSetupBoot() {
++  serviceWifiConsole();
++  const uint32_t now = millis();
++  if (!setupReturnToNormal && M5.BtnB.wasClicked()) {
++    requestOwnerSetupExit("Setup cancelled; Wi-Fi kept");
++  }
++  if (!setupReturnToNormal && uint32_t(now - lastSetupBatteryCheck) >= 5000) {
++    lastSetupBatteryCheck = now;
++    if (wifi_setup_intent::abortForBattery(M5.Power.getBatteryLevel(), audio::onUsbPower())) {
++      requestOwnerSetupExit("Battery low; Wi-Fi kept");
++    }
++  }
++
++  serviceWifiBleProvisioning();
++  if (!setupReturnToNormal && !wifi_ble_provisioning::active()) {
++    requestOwnerSetupExit("Setup ended; Wi-Fi kept");
++  }
++  if (setupReturnToNormal && !wifi_ble_provisioning::active()) restartNormalAfterOwnerSetup();
++  if (setupReturnToNormal && uint32_t(now - setupReturnStartedAt) >= wifi_setup_intent::kManagerDrainTimeoutMs) {
++    Serial.println("WIFI BLE DRAIN TIMEOUT");
++    esp_restart();
++    while (true) delay(1000);
++  }
++
++  face::render();
++  delay(10);
++}
++
+ // ---- buttons ---------------------------------------------------------------
+ 
+ static void showStatus() {
+@@ -843,13 +933,36 @@ static void showStatus() {
+   showCard(c);
+ }
+ 
++static bool wifiSetupGestureAllowed() {
++  return !wifi_ble_provisioning::active() && wifi_setup_intent::setupGestureEligible(
++      mode == Mode::Idle, mode == Mode::Offline, earlyTalk, mode == Mode::Listening, audio::playbackIdle());
++}
++
++[[noreturn]] static void restartIntoOwnerSetupBoot() {
++  setupGestureTracking = false;
++  invalidateNetworkHints();
++  pendingWifiSetupIntent = wifi_setup_intent::kBootIntentMagic;
++  face::setStatusText("Starting secure Wi-Fi");
++  face::render();
++  Serial.println("WIFI BLE SETUP RESTART");
++  delay(250);
++  esp_restart();
++  while (true) delay(1000);
++}
++
+ static void handleButtons() {
++  bool setupStatusShown = false;
+   // With the screen off, the side button only wakes Kai (so it doesn't also scroll or open status).
+   if (screenOff && M5.BtnB.wasPressed()) {
+     wake();
+     return;
+   }
+   if (M5.BtnA.wasPressed() || M5.BtnB.wasPressed()) wake();
++  if (M5.BtnB.wasPressed()) {
++    setupGestureTracking = wifiSetupGestureAllowed();
++    setupGestureStartedAt = millis();
++    setupGestureHintShown = false;
++  }
+ 
+   // Front: push to talk (also barges in while Kai is talking).
+   if (M5.BtnA.wasPressed() && wsConnected && mode != Mode::Listening) {
+@@ -868,13 +981,37 @@ static void handleButtons() {
+     setMode(Mode::Thinking);
+   }
+ 
++  if (setupGestureTracking) {
++    if (!wifiSetupGestureAllowed()) {
++      setupGestureTracking = false;
++    } else if (!M5.BtnB.isPressed()) {
++      setupGestureTracking = false;
++      if (M5.BtnB.wasReleasedAfterHold()) {
++        showStatus();  // Preserve the existing short-hold status action.
++        setupStatusShown = true;
++      }
++    } else if (M5.BtnB.pressedFor(wifi_setup_intent::kPhysicalGestureHoldMs)) {
++      const bool usbPowered = audio::onUsbPower();
++      const int batteryPercent = M5.Power.getBatteryLevel();
++      if (wifi_setup_intent::batteryAllowsEntry(batteryPercent, usbPowered)) {
++        restartIntoOwnerSetupBoot();
++      }
++      setupGestureTracking = false;
++      face::setStatusText("Charge before Wi-Fi setup");
++    } else if (!setupGestureHintShown &&
++               uint32_t(millis() - setupGestureStartedAt) >= wifi_setup_intent::kPhysicalGestureHoldMs / 2) {
++      setupGestureHintShown = true;
++      face::setStatusText("Hold 5s; release cancels");
++    }
++  }
++
+   // Side: click = scroll, hold = hush while talking, otherwise status.
+   if (M5.BtnB.wasHold()) {
+     if (mode == Mode::Reply && !audio::playbackIdle()) {
+       audio::clearPlayback();
+       voice::dropQueued();
+       hushed = true;
+-    } else if (mode != Mode::Listening) {
++    } else if (mode != Mode::Listening && !setupGestureTracking && !setupStatusShown) {
+       showStatus();
+     }
+   } else if (M5.BtnB.wasClicked()) {
+@@ -894,6 +1031,10 @@ void setup() {
+   cfg.fallback_board = m5::board_t::board_M5StickS3;
+   M5.begin(cfg);
+   Serial.begin(115200);
++  ownerSetupBootActive = wifi_setup_intent::consume(pendingWifiSetupIntent, esp_reset_reason() == ESP_RST_SW);
++  setupReturnToNormal = false;
++  setupReturnStatus = "Wi-Fi unchanged; restarting";
++  setupReturnStartedAt = 0;
+ 
+   M5.Power.setExtOutput(false);  // 5V boost for Grove/Hat/IR: unused, and it was left running
+   M5.Imu.sleep();                // not used yet
+@@ -913,20 +1054,41 @@ void setup() {
+ 
+   wifiProfileState = wifi_config::load(activeWifiProfile);
+   wifiConfigured = wifiProfileState == wifi_config::LoadResult::Valid;
+-  if (wifiConfigured) startWifi();
++  if (wifiConfigured && !ownerSetupBootActive) startWifi();
+   face::begin();
+   backlight(BRIGHTNESS_AWAKE);
+-  if (!audio::begin()) log_e("PSRAM allocation failed: check board_build.arduino.memory_type");
+-  if (!voice::begin()) log_e("Opus codec init failed");
++  if (!ownerSetupBootActive) {
++    if (!audio::begin()) log_e("PSRAM allocation failed: check board_build.arduino.memory_type");
++    if (!voice::begin()) log_e("Opus codec init failed");
++  }
+   face::setBattery(M5.Power.getBatteryLevel());
+   lastInteraction = millis();
+ 
+-  const bool startBleForFirstBoot = !wokeToTalk && wifiProfileState == wifi_config::LoadResult::Missing &&
+-                                    audio::onUsbPower() && wifi_ble_provisioning::start(false, true, millis());
++  const bool usbPowered = audio::onUsbPower();
++  const int batteryPercent = M5.Power.getBatteryLevel();
++  const bool startBleForFirstBoot = !ownerSetupBootActive && !wokeToTalk &&
++                                    wifiProfileState == wifi_config::LoadResult::Missing && usbPowered &&
++                                    wifi_ble_provisioning::start(false, true, millis());
++  const bool startBleForOwnerSetup = ownerSetupBootActive &&
++                                     wifi_setup_intent::batteryAllowsEntry(batteryPercent, usbPowered) &&
++                                     wifi_ble_provisioning::start(wifiConfigured, usbPowered, millis(), true);
++  if (ownerSetupBootActive && !startBleForOwnerSetup) {
++    markOwnerSetupReturn(wifi_setup_intent::batteryAllowsEntry(batteryPercent, usbPowered)
++                             ? "BLE unavailable; Wi-Fi kept"
++                             : "Battery low; Wi-Fi kept");
++  }
+ 
+   M5.update();
+-  if (wokeToTalk && M5.BtnA.isPressed()) {
++  if (!ownerSetupBootActive && wokeToTalk && M5.BtnA.isPressed()) {
+     startEarlyTalk();
++  } else if (ownerSetupBootActive) {
++    setMode(Mode::Offline);
++    if (startBleForOwnerSetup) {
++      face::showProvisioning(wifi_ble_provisioning::proofOfPossession());
++      face::setProvisioningHint("B click cancels");
++    } else {
++      face::setStatusText(setupReturnStatus);
++    }
+   } else {
+     if (wifiConfigured)
+       face::setStatusText(wokeFromSleep ? "waking up..." : "connecting wifi...");
+@@ -943,6 +1105,10 @@ void setup() {
+ 
+ void loop() {
+   M5.update();
++  if (ownerSetupBootActive) {
++    serviceOwnerSetupBoot();
++    return;
++  }
+   serviceWifiConsole();
+   serviceWifiBleProvisioning();
+   maintainConnection();
+diff --git a/firmware/src/wifi_ble_flow.cpp b/firmware/src/wifi_ble_flow.cpp
+index 174cd8b..5ebdd55 100644
+--- a/firmware/src/wifi_ble_flow.cpp
++++ b/firmware/src/wifi_ble_flow.cpp
+@@ -10,20 +10,24 @@ const char kPopAlphabet[] = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+ }  // namespace
+ 
+ Session::Session()
+-    : state_(State::Stopped), startedAtMs_(0), candidate_(), candidateValid_(false), startConsumed_(false) {
++    : state_(State::Stopped), startedAtMs_(0), candidate_(), candidateValid_(false), startConsumed_(false),
++      ownerTriggered_(false), failedCredentialAttempts_(0), windowMs_(kProvisionWindowMs) {
+   clearCandidate();
+ }
+ 
+-bool Session::start(uint32_t nowMs, bool profileConfigured, bool usbPowered) {
++bool Session::start(uint32_t nowMs, bool profileConfigured, bool usbPowered, bool ownerTriggered, uint32_t windowMs) {
+   if (startConsumed_) return false;
+   clearCandidate();
+-  if (profileConfigured || !usbPowered) {
++  if ((profileConfigured && !ownerTriggered) || (!usbPowered && !ownerTriggered) || windowMs == 0) {
+     state_ = State::Stopped;
+     return false;
+   }
+   // The BLE scheme uses FREE_BLE. Conservatively allow one BLE start attempt per boot;
+   // the application can still use USB Serial after startup or session failure.
+   startConsumed_ = true;
++  ownerTriggered_ = ownerTriggered;
++  failedCredentialAttempts_ = 0;
++  windowMs_ = windowMs;
+   startedAtMs_ = nowMs;
+   state_ = State::Advertising;
+   return true;
+@@ -40,10 +44,16 @@ bool Session::credentialsReceived(const wifi_config::Profile& profile) {
+   return true;
+ }
+ 
+-void Session::credentialsFailed() {
+-  if (!active()) return;
++bool Session::credentialsFailed() {
++  if (!active()) return false;
+   clearCandidate();
++  if (failedCredentialAttempts_ < kMaxCredentialAttempts) ++failedCredentialAttempts_;
++  if (failedCredentialAttempts_ >= kMaxCredentialAttempts) {
++    state_ = State::Stopped;
++    return false;
++  }
+   state_ = State::Advertising;
++  return true;
+ }
+ 
+ bool Session::credentialsSucceeded(wifi_config::Profile& profile) {
+@@ -62,7 +72,12 @@ void Session::authenticationRejected() {
+ 
+ bool Session::expire(uint32_t nowMs, bool usbPowered) {
+   if (!active()) return false;
+-  if (usbPowered && uint32_t(nowMs - startedAtMs_) < kProvisionWindowMs) return false;
++  if (!ownerTriggered_ && !usbPowered) {
++    clearCandidate();
++    state_ = State::TimedOut;
++    return true;
++  }
++  if (uint32_t(nowMs - startedAtMs_) < windowMs_) return false;
+   clearCandidate();
+   state_ = State::TimedOut;
+   return true;
+@@ -115,7 +130,7 @@ bool splitPopForDisplay(const char* pop, char first[kPopLength / 2 + 1],
+ }
+ 
+ bool resetAfterCredentialsFailure(Session& session, ProvisioningManager& manager) {
+-  session.credentialsFailed();
++  if (!session.credentialsFailed()) return false;
+   return manager.resetWifiStateAfterFailure();
+ }
+ 
+diff --git a/firmware/src/wifi_ble_flow.h b/firmware/src/wifi_ble_flow.h
+index 3aaf52f..cb94fd9 100644
+--- a/firmware/src/wifi_ble_flow.h
++++ b/firmware/src/wifi_ble_flow.h
+@@ -8,6 +8,7 @@
+ namespace wifi_ble_flow {
+ 
+ constexpr uint32_t kProvisionWindowMs = 120000;
++constexpr uint8_t kMaxCredentialAttempts = 3;
+ constexpr size_t kPopEntropyBytes = 16;
+ constexpr size_t kPopLength = 26;
+ 
+@@ -23,10 +24,11 @@ class Session {
+  public:
+   Session();
+ 
+-  bool start(uint32_t nowMs, bool profileConfigured, bool usbPowered);
++  bool start(uint32_t nowMs, bool profileConfigured, bool usbPowered,
++             bool ownerTriggered = false, uint32_t windowMs = kProvisionWindowMs);
+   bool active() const;
+   bool credentialsReceived(const wifi_config::Profile& profile);
+-  void credentialsFailed();
++  bool credentialsFailed();
+   bool credentialsSucceeded(wifi_config::Profile& profile);
+   void authenticationRejected();
+   bool expire(uint32_t nowMs, bool usbPowered);
+@@ -42,6 +44,9 @@ class Session {
+   wifi_config::Profile candidate_;
+   bool candidateValid_;
+   bool startConsumed_;
++  bool ownerTriggered_;
++  uint8_t failedCredentialAttempts_;
++  uint32_t windowMs_;
+ };
+ 
+ bool formatPop(const uint8_t entropy[kPopEntropyBytes], char output[kPopLength + 1]);
+diff --git a/firmware/src/wifi_ble_provisioning.cpp b/firmware/src/wifi_ble_provisioning.cpp
+index fefef1c..3a1b8b3 100644
+--- a/firmware/src/wifi_ble_provisioning.cpp
++++ b/firmware/src/wifi_ble_provisioning.cpp
+@@ -11,6 +11,7 @@
+ 
+ #include "freertos/FreeRTOS.h"
+ #include "wifi_ble_flow.h"
++#include "wifi_setup_intent.h"
+ 
+ #if !defined(CONFIG_NIMBLE_ENABLED) || !CONFIG_NIMBLE_ENABLED
+ #error "The pinned StickS3 framework must enable NimBLE for BLE provisioning."
+@@ -24,6 +25,7 @@ namespace wifi_ble_provisioning {
+ namespace {
+ 
+ constexpr uint8_t kQueueCapacity = 4;
++constexpr uint32_t kAssociationTimeoutMs = 15000;
+ 
+ enum class ProviderEvent : uint8_t { CredentialsReceived, CredentialsFailed, CredentialsSucceeded, Deinitialized };
+ 
+@@ -47,6 +49,8 @@ portMUX_TYPE queueMux = portMUX_INITIALIZER_UNLOCKED;
+ bool managerActive = false;
+ bool stopRequested = false;
+ bool cancelRequested = false;
++bool credentialSuccessPending = false;
++uint32_t credentialSuccessAtMs = 0;
+ 
+ class NativeProvisioningManager : public wifi_ble_flow::ProvisioningManager {
+  public:
+@@ -157,11 +161,15 @@ bool buildProof() {
+ 
+ }  // namespace
+ 
+-bool start(bool profileConfigured, bool usbPowered, uint32_t nowMs) {
+-  if (managerActive || !session.start(nowMs, profileConfigured, usbPowered)) return false;
++bool start(bool profileConfigured, bool usbPowered, uint32_t nowMs, bool ownerTriggered) {
++  const uint32_t windowMs = ownerTriggered ? wifi_setup_intent::kPhysicalSetupWindowMs
++                                            : wifi_ble_flow::kProvisionWindowMs;
++  if (managerActive || !session.start(nowMs, profileConfigured, usbPowered, ownerTriggered, windowMs)) return false;
+   clearQueue();
+   wipeBytes(proofOfPossessionValue, sizeof(proofOfPossessionValue));
+   wipeBytes(serviceName, sizeof(serviceName));
++  credentialSuccessPending = false;
++  credentialSuccessAtMs = 0;
+ 
+   WiFi.persistent(false);
+   if (!WiFi.STA.begin(false) || esp_wifi_set_storage(WIFI_STORAGE_RAM) != ESP_OK) {
+@@ -217,6 +225,7 @@ bool start(bool profileConfigured, bool usbPowered, uint32_t nowMs) {
+ }
+ 
+ void stop() {
++  credentialSuccessPending = false;
+   if (managerActive) {
+     cancelRequested = true;
+     session.stop();
+@@ -232,7 +241,6 @@ void stop() {
+ void service(uint32_t nowMs, bool usbPowered, Event& event, wifi_config::Profile& profile) {
+   event = Event::None;
+   wifi_config::wipeSensitive(profile);
+-  if (!managerActive) return;
+ 
+   if (session.expire(nowMs, usbPowered)) {
+     requestStop();
+@@ -240,6 +248,29 @@ void service(uint32_t nowMs, bool usbPowered, Event& event, wifi_config::Profile
+     return;
+   }
+ 
++  if (credentialSuccessPending) {
++    const IPAddress address = WiFi.localIP();
++    const bool hasIpAddress = address[0] != 0 || address[1] != 0 || address[2] != 0 || address[3] != 0;
++    if (wifi_setup_intent::networkReady(true, WiFi.status() == WL_CONNECTED, hasIpAddress)) {
++      credentialSuccessPending = false;
++      if (session.credentialsSucceeded(profile)) {
++        event = Event::CredentialsSucceeded;
++      } else {
++        requestStop();
++        event = Event::Error;
++      }
++      return;
++    }
++    if (uint32_t(nowMs - credentialSuccessAtMs) >= kAssociationTimeoutMs) {
++      credentialSuccessPending = false;
++      session.stop();
++      requestStop();
++      event = Event::Error;
++      return;
++    }
++  }
++  if (!managerActive) return;
++
+   QueuedEvent queued = {};
+   bool overflowed = false;
+   const bool hasEvent = dequeue(queued, overflowed);
+@@ -269,27 +300,30 @@ void service(uint32_t nowMs, bool usbPowered, Event& event, wifi_config::Profile
+       }
+       break;
+     case ProviderEvent::CredentialsSucceeded:
+-      if (session.credentialsSucceeded(profile)) {
+-        event = Event::CredentialsSucceeded;
++      if (session.state() == wifi_ble_flow::State::CandidateReceived) {
++        credentialSuccessPending = true;
++        credentialSuccessAtMs = nowMs;
+       } else {
+         session.credentialsFailed();
+-        event = Event::CredentialsFailed;
++        event = Event::Error;
+       }
+       break;
+     case ProviderEvent::Deinitialized:
+       managerActive = false;
+       stopRequested = false;
+       cancelRequested = false;
+-      session.stop();
+-      wipeBytes(proofOfPossessionValue, sizeof(proofOfPossessionValue));
+-      clearQueue();
+-      event = Event::SessionEnded;
++      if (!credentialSuccessPending) {
++        session.stop();
++        wipeBytes(proofOfPossessionValue, sizeof(proofOfPossessionValue));
++        clearQueue();
++        event = Event::SessionEnded;
++      }
+       break;
+   }
+   wifi_config::wipeSensitive(queued.profile);
+ }
+ 
+-bool active() { return managerActive; }
++bool active() { return managerActive || session.active(); }
+ 
+ bool restartRequiresReboot() { return session.restartRequiresReboot(); }
+ 
+diff --git a/firmware/src/wifi_ble_provisioning.h b/firmware/src/wifi_ble_provisioning.h
+index 88a6eab..70e4a59 100644
+--- a/firmware/src/wifi_ble_provisioning.h
++++ b/firmware/src/wifi_ble_provisioning.h
+@@ -8,7 +8,7 @@ namespace wifi_ble_provisioning {
+ 
+ enum class Event : uint8_t { None, CredentialsFailed, CredentialsSucceeded, TimedOut, SessionEnded, Error };
+ 
+-bool start(bool profileConfigured, bool usbPowered, uint32_t nowMs);
++bool start(bool profileConfigured, bool usbPowered, uint32_t nowMs, bool ownerTriggered = false);
+ void stop();
+ void service(uint32_t nowMs, bool usbPowered, Event& event, wifi_config::Profile& profile);
+ bool active();
+diff --git a/firmware/src/wifi_setup_intent.h b/firmware/src/wifi_setup_intent.h
+new file mode 100644
+index 0000000..757219c
+--- /dev/null
++++ b/firmware/src/wifi_setup_intent.h
+@@ -0,0 +1,37 @@
++#pragma once
++
++#include <stdint.h>
++
++namespace wifi_setup_intent {
++
++constexpr uint32_t kBootIntentMagic = 0x57494649UL;
++constexpr uint32_t kPhysicalGestureHoldMs = 5000;
++constexpr uint32_t kPhysicalSetupWindowMs = 180000;
++constexpr uint32_t kManagerDrainTimeoutMs = 30000;
++constexpr uint8_t kMinimumEntryBatteryPercent = 20;
++constexpr uint8_t kAbortBatteryPercent = 15;
++
++inline bool consume(uint32_t& storedIntent, bool softwareRestart) {
++  const bool requested = softwareRestart && storedIntent == kBootIntentMagic;
++  storedIntent = 0;
++  return requested;
++}
++
++inline bool batteryAllowsEntry(int batteryPercent, bool usbPowered) {
++  return usbPowered || (batteryPercent >= kMinimumEntryBatteryPercent && batteryPercent <= 100);
++}
++
++inline bool abortForBattery(int batteryPercent, bool usbPowered) {
++  return !usbPowered && (batteryPercent < kAbortBatteryPercent || batteryPercent > 100);
++}
++
++inline bool setupGestureEligible(bool idle, bool offline, bool earlyTalk, bool listening,
++                                 bool voicePlaybackIdle) {
++  return (idle || offline) && !earlyTalk && !listening && voicePlaybackIdle;
++}
++
++inline bool networkReady(bool provisionerAccepted, bool wifiConnected, bool hasIpAddress) {
++  return provisionerAccepted && wifiConnected && hasIpAddress;
++}
++
++}  // namespace wifi_setup_intent
+
