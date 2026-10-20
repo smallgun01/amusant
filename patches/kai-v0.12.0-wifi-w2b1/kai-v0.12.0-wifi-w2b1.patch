@@ -458,19 +458,27 @@ diff --git a/firmware/src/wifi_ble_provisioning.cpp b/firmware/src/wifi_ble_prov
 index fefef1c..3a1b8b3 100644
 --- a/firmware/src/wifi_ble_provisioning.cpp
 +++ b/firmware/src/wifi_ble_provisioning.cpp
-@@ -11,6 +11,9 @@
+@@ -10,7 +10,10 @@
+ #include <string.h>
  
  #include "freertos/FreeRTOS.h"
- #include "wifi_ble_flow.h"
+-#include "wifi_ble_flow.h"
++#include "wifi_ble_flow.h"
 +#include "wifi_provisioning_commit_gate.h"
 +#include "wifi_provisioning_lifecycle.h"
 +#include "wifi_setup_intent.h"
  
  #if !defined(CONFIG_NIMBLE_ENABLED) || !CONFIG_NIMBLE_ENABLED
  #error "The pinned StickS3 framework must enable NimBLE for BLE provisioning."
-@@ -28,1 +31,1 @@
+@@ -25,7 +28,7 @@ namespace {
+ 
+ constexpr uint8_t kQueueCapacity = 4;
+ 
 -enum class ProviderEvent : uint8_t { CredentialsReceived, CredentialsFailed, CredentialsSucceeded, Deinitialized };
 +enum class ProviderEvent : uint8_t { CredentialsReceived, CredentialsFailed, CredentialsSucceeded, ServiceEnded, Deinitialized };
+ 
+ struct QueuedEvent {
+   ProviderEvent type;
 @@ -47,6 +50,6 @@ portMUX_TYPE queueMux = portMUX_INITIALIZER_UNLOCKED;
 -bool managerActive = false;
 -bool stopRequested = false;
@@ -513,17 +521,26 @@ index fefef1c..3a1b8b3 100644
  
    WiFi.persistent(false);
    if (!WiFi.STA.begin(false) || esp_wifi_set_storage(WIFI_STORAGE_RAM) != ESP_OK) {
-@@ -201,3 +208,2 @@
+@@ -198,16 +205,14 @@ bool start(bool profileConfigured, bool usbPowered, uint32_t nowMs) {
+     return false;
+   }
+ 
 -  managerActive = true;
 -  stopRequested = false;
 +  managerLifecycle.onInitialized();
    cancelRequested = false;
-@@ -208,3 +214,2 @@
+   const bool uuidSet = network_prov_scheme_ble_set_service_uuid(customServiceUuid) == ESP_OK;
+   const bool provisioningStarted =
+       uuidSet && network_prov_mgr_start_provisioning(NETWORK_PROV_SECURITY_1, proofOfPossessionValue, serviceName, NULL) == ESP_OK;
+   if (!provisioningStarted) {
 -    network_prov_mgr_deinit();
 -    managerActive = false;
 -    stopRequested = false;
 +    if (managerLifecycle.requestDeinitialize()) network_prov_mgr_deinit();
 +    managerLifecycle.onDeinitialized();
+     session.stop();
+     wipeBytes(proofOfPossessionValue, sizeof(proofOfPossessionValue));
+     clearQueue();
 @@ -217,6 +222,7 @@ bool start(bool profileConfigured, bool usbPowered, uint32_t nowMs) {
  }
  
@@ -533,8 +550,7 @@ index fefef1c..3a1b8b3 100644
 +  if (managerLifecycle.active()) {
      cancelRequested = true;
      session.stop();
-@@ -223,3 +229,2 @@
-     session.stop();
+@@ -223,2 +229,1 @@
 -    clearQueue();
      requestStop();
 @@ -226,3 +231,3 @@
@@ -588,7 +604,7 @@ index fefef1c..3a1b8b3 100644
 +  if (cancelRequested && queued.type != ProviderEvent::Deinitialized &&
 +      queued.type != ProviderEvent::ServiceEnded) {
      wifi_config::wipeSensitive(queued.profile);
-@@ -269,24 +300,30 @@ void service(uint32_t nowMs, bool usbPowered, Event& event, wifi_config::Profile
+@@ -269,26 +300,30 @@ void service(uint32_t nowMs, bool usbPowered, Event& event, wifi_config::Profile
        }
        break;
      case ProviderEvent::CredentialsSucceeded:
@@ -602,10 +618,12 @@ index fefef1c..3a1b8b3 100644
 +        event = Event::Error;
        }
        break;
-     case ProviderEvent::ServiceEnded:
++    case ProviderEvent::ServiceEnded:
 +      if (managerLifecycle.onServiceEnded()) network_prov_mgr_deinit();
 +      break;
-+    case ProviderEvent::Deinitialized:
+     case ProviderEvent::Deinitialized:
+-      managerActive = false;
+-      stopRequested = false;
 +      managerLifecycle.onDeinitialized();
        cancelRequested = false;
 -      session.stop();
