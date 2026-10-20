@@ -146,14 +146,28 @@ class OfflineToolsetPreflightContractTests(unittest.TestCase):
         self.assertIn("external_egress_disabled", runner)
         self.assertIn("internal: true", compose)
 
-    def test_existing_selective_arm64_workflow_keeps_e1_and_uploads_new_evidence(self):
-        workflow = (ROOT / ".github/workflows/issue-85-pr-b2-e2e.yml").read_text(encoding="utf-8")
+    def test_h12_workflow_is_narrow_path_selective_and_manual(self):
+        e1_workflow = (ROOT / ".github/workflows/issue-85-pr-b2-e2e.yml").read_text(encoding="utf-8")
+        workflow = (ROOT / ".github/workflows/issue-56-h12-toolset-preflight.yml").read_text(encoding="utf-8")
+        trigger = workflow.split("jobs:", 1)[0]
+
+        self.assertIn("run_e2e.py", e1_workflow)
+        self.assertNotIn("run_toolset_preflight.py", e1_workflow)
+        self.assertNotIn("evidence/toolset-preflight.json", e1_workflow)
         self.assertIn("runs-on: ubuntu-24.04-arm", workflow)
-        self.assertIn("run_e2e.py", workflow)
         self.assertIn("run_toolset_preflight.py", workflow)
-        self.assertIn("paths:", workflow)
-        self.assertIn("spikes/004-relay-facade-hermes-e2e/**", workflow)
         self.assertIn("evidence/toolset-preflight.json", workflow)
+        for event in ("pull_request:", "push:", "workflow_dispatch:"):
+            self.assertIn(event, trigger)
+        for relevant_path in (
+            '"deploy/oci-a1/hermes-config.fragment.yaml"',
+            '"deploy/oci-a1/hermes_plugin/**"',
+            '"spikes/004-relay-facade-hermes-e2e/hermes-config-toolset-*.yaml"',
+            '"spikes/004-relay-facade-hermes-e2e/test_toolset_preflight.py"',
+        ):
+            self.assertEqual(trigger.count(relevant_path), 2)
+        self.assertNotIn('"relay/**"', trigger)
+        self.assertNotIn('"spikes/004-relay-facade-hermes-e2e/**"', trigger)
 
     def test_provider_and_audit_store_only_sanitized_denial_profiles(self):
         source = (PROJECT / "toolset_fake_provider.py").read_text(encoding="utf-8")
@@ -175,4 +189,3 @@ class OfflineToolsetPreflightContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

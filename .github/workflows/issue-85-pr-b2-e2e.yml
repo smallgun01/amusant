@@ -61,25 +61,11 @@ jobs:
           PYTHONUNBUFFERED: "1"
         run: python3 spikes/004-relay-facade-hermes-e2e/run_e2e.py
 
-      - name: Run offline effective toolset preflight (fake provider only)
-        env:
-          PYTHONUNBUFFERED: "1"
-        run: python3 spikes/004-relay-facade-hermes-e2e/run_toolset_preflight.py
-
       - name: Upload sanitized integrated evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: issue-85-pr-b2-integrated-e2e-${{ github.run_id }}
           path: spikes/004-relay-facade-hermes-e2e/evidence/phase1b-e1.json
-          if-no-files-found: warn
-          retention-days: 30
-
-      - name: Upload sanitized effective-toolset evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: issue-56-h12-toolset-preflight-${{ github.run_id }}
-          path: spikes/004-relay-facade-hermes-e2e/evidence/toolset-preflight.json
           if-no-files-found: warn
           retention-days: 30
