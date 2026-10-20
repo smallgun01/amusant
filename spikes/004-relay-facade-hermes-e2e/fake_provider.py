@@ -227,6 +227,8 @@ class State:
         self.lock = threading.Lock()
         self.sequence = 0
         self.requests = []
+        self.toolset_cases = {}
+        self.browser_probe_hits = []
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -261,6 +263,11 @@ class Handler(BaseHTTPRequestHandler):
                 records = [dict(row) for row in self.server.state.requests]
             self.send_json(200, {"count": len(records), "requests": records})
             return
+        if self.path.startswith("/h12-preflight-"):
+            with self.server.state.lock:
+                self.server.state.browser_probe_hits.append(self.path)
+            self.send_json(404, {"error": {"message": "synthetic preflight probe recorded"}})
+            return
         self.send_json(404, {"error": {"message": "not found"}})
 
     def do_POST(self):
@@ -278,6 +285,10 @@ class Handler(BaseHTTPRequestHandler):
         tools = tool_names(payload)
         tools_field_type, tools_field_count = field_shape(payload, "tools")
         functions_field_type, functions_field_count = field_shape(payload, "functions")
+        if case in {"h12_toolset_case_a", "h12_toolset_case_b"}:
+            from toolset_fake_provider import handle_toolset_case
+            handle_toolset_case(self, payload, messages, tools, case)
+            return
         called = called_tools(messages)
         is_late_case = case == "late_mutation"
         next_tool = None
