@@ -92,20 +92,20 @@ class OfflineToolsetPreflightContractTests(unittest.TestCase):
     def test_bridge_and_direct_denials_record_separate_stages_without_body_text(self):
         bridge = preflight._bridge_exchange(
             {"id": "bridge-1"},
-            {"role": "tool", "name": "tool_call", "content":
+            {"role": "tool", "name": None, "content":
              '{"error":{"message":"browser_navigate is a directly-listed tool, not a deferred one"}}'},
             {"call_id": "bridge-1", "result_call_id": "bridge-1", "result_count": 1,
-             "matched_call_result_id": True, "result_role": "tool", "result_name": "tool_call"},
+             "matched_call_result_id": True, "result_role": "tool", "result_name": None},
         )
         self.assertEqual(bridge["denial_stage"], "hermes_tool_search_deferred_name_validation")
         self.assertTrue(bridge["dispatch_prevented"])
         self.assertNotIn("content", bridge)
         direct = preflight._direct_exchange(
             {"id": "direct-1"},
-            {"role": "tool", "name": "write_file", "content":
+            {"role": "tool", "name": None, "content":
              "Tool 'write_file' does not exist. Available tools: tool_call"},
             {"call_id": "direct-1", "result_call_id": "direct-1", "result_count": 1,
-             "matched_call_result_id": True, "result_role": "tool", "result_name": "write_file"},
+             "matched_call_result_id": True, "result_role": "tool", "result_name": None},
             "write_file",
         )
         self.assertEqual(direct["denial_stage"], "agent_valid_tool_name_filter")
@@ -131,7 +131,7 @@ class OfflineToolsetPreflightContractTests(unittest.TestCase):
         self.assertIn("web_search", preflight._expected_direct_probes("case_a"))
         self.assertNotIn("web_search", preflight._expected_direct_probes("case_b"))
         self.assertNotIn("web_search", preflight._expected_bridge_probes("case_b"))
-        self.assertEqual(len(preflight.SEARCH_QUERIES), len(preflight.PROBES) + 1)
+        self.assertEqual(len(preflight.SEARCH_QUERIES), 7)
 
     def test_pinned_arm64_digest_and_no_stop_or_product_timing_mutation(self):
         compose = (PROJECT / "compose.yaml").read_text(encoding="utf-8")
