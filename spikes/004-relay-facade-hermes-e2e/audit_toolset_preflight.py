@@ -86,7 +86,7 @@ def main():
         and set(provider.get("model_visible_tools", [])) == expected_visible
         and bool(provider.get("model_visible_tools_by_request"))
         and not provider.get("model_visible_tool_mismatches")
-        and all(set(row) == expected_visible for row in provider.get("model_visible_tools_by_request", []))
+        and all(not row or set(row) == expected_visible for row in provider.get("model_visible_tools_by_request", []))
         and provider.get("tool_search") == {"total_available": 1, "matches": ["save_report"]}
         and provider.get("tool_describe", {}).get("described_names") == ["save_report"]
         and provider.get("authorized_save_report") == "COMMITTED"

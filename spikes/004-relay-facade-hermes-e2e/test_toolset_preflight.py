@@ -41,6 +41,7 @@ class OfflineToolsetPreflightContractTests(unittest.TestCase):
     def test_model_visible_tool_allowlist_is_checked_per_provider_request(self):
         expected = {"tool_search", "tool_describe", "tool_call"}
         self.assertEqual(preflight._visibility_mismatch(expected, expected), {"extra": [], "missing": []})
+        self.assertEqual(preflight._visibility_mismatch(set(), expected), {"extra": [], "missing": []})
         self.assertEqual(
             preflight._visibility_mismatch(expected | {"web_extract"}, expected),
             {"extra": ["web_extract"], "missing": []},

@@ -35,6 +35,10 @@ SEARCH_QUERIES = [
 def _visibility_mismatch(observed, expected):
     observed = set(observed)
     expected = set(expected)
+    if not observed:
+        # Hermes may make a final model request with tools omitted; an empty
+        # schema grants less access and is therefore safe for this allowlist gate.
+        return {"extra": [], "missing": []}
     return {
         "extra": sorted(observed - expected),
         "missing": sorted(expected - observed),
