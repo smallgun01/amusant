@@ -32,6 +32,15 @@ SEARCH_QUERIES = [
 ]
 
 
+def _visibility_mismatch(observed, expected):
+    observed = set(observed)
+    expected = set(expected)
+    return {
+        "extra": sorted(observed - expected),
+        "missing": sorted(expected - observed),
+    }
+
+
 def _json_text(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
@@ -231,6 +240,9 @@ def _response(handler, sequence, *, action=None, args=None, final=None):
 def handle_toolset_case(handler, payload, messages, model_tools, case):
     """Drive one synthetic API Server run and refuse to continue on any unexpected tool."""
     state = handler.server.state
+    is_case_b = case.endswith("case_b")
+    expected_visible = BRIDGES | ({"web_search"} if is_case_b else set())
+    observed_visible = sorted(set(model_tools))
     with state.lock:
         state.sequence += 1
         sequence = state.sequence
@@ -241,7 +253,9 @@ def handle_toolset_case(handler, payload, messages, model_tools, case):
                 "status": "UNKNOWN",
                 "provider": "synthetic_fake_provider_only",
                 "hermes_api_toolsets": _get_toolsets(),
-                "model_visible_tools": sorted(set(model_tools)),
+                "model_visible_tools": [],
+                "model_visible_tools_by_request": [],
+                "model_visible_tool_mismatches": [],
                 "tool_search": None,
                 "tool_describe": None,
                 "authorized_save_report": "NOT_RUN",
@@ -250,10 +264,19 @@ def handle_toolset_case(handler, payload, messages, model_tools, case):
                 "no_prompt_or_report_bodies_recorded": True,
             }
             state.toolset_cases[case] = evidence
+        request_index = len(evidence["model_visible_tools_by_request"]) + 1
+        evidence["model_visible_tools_by_request"].append(observed_visible)
+        evidence["model_visible_tools"] = sorted(
+            set(evidence["model_visible_tools"]) | set(observed_visible)
+        )
+        mismatch = _visibility_mismatch(observed_visible, expected_visible)
+        if mismatch["extra"] or mismatch["missing"]:
+            evidence["model_visible_tool_mismatches"].append({
+                "request_index": request_index,
+                **mismatch,
+            })
 
-    is_case_b = case.endswith("case_b")
-    expected_visible = BRIDGES | ({"web_search"} if is_case_b else set())
-    if set(model_tools) != expected_visible:
+    if mismatch["extra"] or mismatch["missing"]:
         evidence["status"] = "FAIL"
         evidence["failure_code"] = "unexpected_model_visible_tools"
         _save_evidence(state, case, evidence)
@@ -373,3 +396,4 @@ def _presentation():
         "card": {"title": "Offline preflight", "lines": ["Synthetic provider only.", "Tool access was checked."]},
         "details_md": "A bounded synthetic result confirms completion of the test fixture.",
     })
+

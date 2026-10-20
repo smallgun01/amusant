@@ -23,8 +23,9 @@ class OfflineToolsetPreflightContractTests(unittest.TestCase):
             self.assertIn("preflight_probe", config)
             self.assertIn("enabled: true", config)
         self.assertNotIn("web:\n", case_a)
-        self.assertIn("    - web\n", case_b)
-        self.assertIn("    - web_extract", case_b)
+        self.assertIn("    - search\n", case_b)
+        self.assertNotIn("    - web\n", case_b)
+        self.assertNotIn("    - web_extract\n", case_b)
         self.assertIn("search_backend: ddgs", case_b)
 
     def test_bridge_catalog_gate_requires_exact_save_report_only(self):
@@ -36,6 +37,14 @@ class OfflineToolsetPreflightContractTests(unittest.TestCase):
             '{"total_available":2,"results":[{"matches":["save_report","mcp__bad__tool"]}]}'
         )
         self.assertNotEqual(extra, valid)
+
+    def test_model_visible_tool_allowlist_is_checked_per_provider_request(self):
+        expected = {"tool_search", "tool_describe", "tool_call"}
+        self.assertEqual(preflight._visibility_mismatch(expected, expected), {"extra": [], "missing": []})
+        self.assertEqual(
+            preflight._visibility_mismatch(expected | {"web_extract"}, expected),
+            {"extra": ["web_extract"], "missing": []},
+        )
 
     def test_describe_and_commit_evidence_are_bounded_summaries(self):
         described = preflight._tool_describe_summary(
@@ -86,6 +95,12 @@ class OfflineToolsetPreflightContractTests(unittest.TestCase):
         self.assertIn("spikes/004-relay-facade-hermes-e2e/**", workflow)
         self.assertIn("evidence/toolset-preflight.json", workflow)
 
+    def test_runner_logs_sanitized_case_evidence_for_failure_diagnosis(self):
+        runner = (PROJECT / "run_toolset_preflight.py").read_text(encoding="utf-8")
+        self.assertIn('"sanitized_cases": cases', runner)
+        self.assertIn("Printing them makes a failed preflight diagnosable", runner)
+
 
 if __name__ == "__main__":
     unittest.main()
+

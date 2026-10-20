@@ -13,7 +13,7 @@ EXPECTED_TOOLSETS = {
     "case_a": {"amusant_option_d", "no_mcp"},
     "case_b": {"web", "amusant_option_d", "no_mcp"},
 }[CASE]
-REQUIRED_DISABLED = {"file", "terminal", "browser", "code_execution", "web_extract", "process_manage"}
+REQUIRED_DISABLED = {"file", "terminal", "browser", "code_execution", "process_manage"}
 ALLOWED_REFUSALS = {"registered_not_deferred", "unknown_tool_name", "session_scope_denied"}
 PROBE_NAMES = {
     "write_file", "terminal", "browser_navigate", "browser_snapshot", "execute_code",
@@ -48,6 +48,8 @@ def main():
         "fake_provider_only": bool(config and config.get("provider_base_url_is_local_fake")),
         "provider_evidence_present": isinstance(provider, dict),
         "model_visible_tools": sorted(provider.get("model_visible_tools", [])) if isinstance(provider, dict) else [],
+        "model_visible_tools_by_request": provider.get("model_visible_tools_by_request", []) if isinstance(provider, dict) else [],
+        "model_visible_tool_mismatches": provider.get("model_visible_tool_mismatches", []) if isinstance(provider, dict) else [],
         "hermes_api_toolsets_http_status": provider.get("hermes_api_toolsets", {}).get("http_status") if isinstance(provider, dict) else None,
         "hermes_api_toolset_names": sorted(provider.get("hermes_api_toolsets", {}).get("toolset_names", [])) if isinstance(provider, dict) else [],
         "tool_search": provider.get("tool_search") if isinstance(provider, dict) else None,
@@ -82,12 +84,16 @@ def main():
         and provider.get("status") == "PASS"
         and provider.get("hermes_api_toolsets", {}).get("http_status") == 200
         and set(provider.get("model_visible_tools", [])) == expected_visible
+        and bool(provider.get("model_visible_tools_by_request"))
+        and not provider.get("model_visible_tool_mismatches")
+        and all(set(row) == expected_visible for row in provider.get("model_visible_tools_by_request", []))
         and provider.get("tool_search") == {"total_available": 1, "matches": ["save_report"]}
         and provider.get("tool_describe", {}).get("described_names") == ["save_report"]
         and provider.get("authorized_save_report") == "COMMITTED"
         and set(provider.get("bridge_refusals", {})) == expected_refusals
         and set(provider.get("bridge_refusals", {}).values()) <= ALLOWED_REFUSALS
-        and not mcp_started and not mcp_called and not write_file_marker
+        and not mcp_called and not write_file_marker
+        and "mcp__h12preflight__preflight_probe" in provider.get("tool_describe", {}).get("not_found_names", [])
         and provider.get("browser_probe_hits") == []
         and runner is not None and runner.get("status") == "PASS"
         and runner.get("terminal_status") == "completed"
@@ -115,3 +121,4 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

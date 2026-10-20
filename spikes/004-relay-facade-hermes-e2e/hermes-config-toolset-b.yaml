@@ -15,7 +15,6 @@ agent:
     - computer_use
     - execute_code
     - code_execution
-    - web_extract
     - image_gen
     - vision
     - text_to_speech
@@ -44,7 +43,7 @@ plugins:
   hook_callback_timeout: 0.15
 platform_toolsets:
   api_server:
-    - web
+    - search
     - amusant_option_d
     - no_mcp
 web:
@@ -63,3 +62,4 @@ mcp_servers:
     tools:
       include:
         - preflight_probe
+

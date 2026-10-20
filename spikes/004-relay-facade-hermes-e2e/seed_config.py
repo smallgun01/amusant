@@ -44,7 +44,7 @@ if case in {"case_a", "case_b"}:
         b"enabled:\n    - amusant-option-d",
         b"tool_search:",
         b'enabled: "on"',
-        (b"- web" if case == "case_b" else b"- no_mcp"),
+        (b"- search" if case == "case_b" else b"- no_mcp"),
         (b"search_backend: ddgs" if case == "case_b" else b"api_server:"),
         b"base_url: http://fake-provider:8000/v1",
     )
@@ -93,3 +93,4 @@ print(json.dumps({
     "config_sha256": hashlib.sha256(actual).hexdigest(),
     "bytes": len(actual),
 }, separators=(",", ":")))
+
