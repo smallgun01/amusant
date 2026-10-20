@@ -475,7 +475,7 @@ index fefef1c..3a1b8b3 100644
  constexpr uint8_t kQueueCapacity = 4;
  
 -enum class ProviderEvent : uint8_t { CredentialsReceived, CredentialsFailed, CredentialsSucceeded, Deinitialized };
-+enum class ProviderEvent : uint8_t { CredentialsReceived, CredentialsFailed, CredentialsSucceeded, ServiceEnded, Deinitialized };
++using ProviderEvent = wifi_provisioning_lifecycle::ProviderEvent;
  
  struct QueuedEvent {
    ProviderEvent type;
@@ -599,10 +599,9 @@ index fefef1c..3a1b8b3 100644
    QueuedEvent queued = {};
    bool overflowed = false;
    const bool hasEvent = dequeue(queued, overflowed);
-@@ -254,2 +284,3 @@
+@@ -254,2 +284,2 @@
 -  if (cancelRequested && queued.type != ProviderEvent::Deinitialized) {
-+  if (cancelRequested && queued.type != ProviderEvent::Deinitialized &&
-+      queued.type != ProviderEvent::ServiceEnded) {
++  if (cancelRequested && wifi_provisioning_lifecycle::discardOnCancel(queued.type)) {
      wifi_config::wipeSensitive(queued.profile);
 @@ -269,26 +300,30 @@ void service(uint32_t nowMs, bool usbPowered, Event& event, wifi_config::Profile
        }
@@ -619,7 +618,7 @@ index fefef1c..3a1b8b3 100644
        }
        break;
 +    case ProviderEvent::ServiceEnded:
-+      if (managerLifecycle.onServiceEnded()) network_prov_mgr_deinit();
++      managerLifecycle.onServiceEnded();  // Arduino-ESP32 owns deinit after NETWORK_PROV_END.
 +      break;
      case ProviderEvent::Deinitialized:
 -      managerActive = false;
@@ -784,7 +783,7 @@ new file mode 100644
 index 0000000..0000000
 --- /dev/null
 +++ b/firmware/src/wifi_provisioning_lifecycle.h
-@@ -0,0 +1,52 @@
+@@ -0,0 +1,70 @@
 +#pragma once
 +
 +#include <stdint.h>
@@ -797,7 +796,8 @@ index 0000000..0000000
 +    Inactive,
 +    Running,
 +    StopRequested,
-+    Deinitializing,
++    ServiceEnded,
++    ExplicitDeinitRequested,
 +  };
 +
 +  ManagerLifecycle() : state_(State::Inactive) {}
@@ -815,12 +815,16 @@ index 0000000..0000000
 +  }
 +
 +  bool requestDeinitialize() {
-+    if (state_ == State::Inactive || state_ == State::Deinitializing) return false;
-+    state_ = State::Deinitializing;
++    if (state_ != State::Running) return false;
++    state_ = State::ExplicitDeinitRequested;
 +    return true;
 +  }
 +
-+  bool onServiceEnded() { return requestDeinitialize(); }
++  void onServiceEnded() {
++    if (state_ == State::Inactive || state_ == State::ServiceEnded ||
++        state_ == State::ExplicitDeinitRequested) return;
++    state_ = State::ServiceEnded;
++  }
 +
 +  bool onDeinitialized() {
 +    if (state_ == State::Inactive) return false;
@@ -830,11 +834,24 @@ index 0000000..0000000
 +
 +  bool active() const { return state_ != State::Inactive; }
 +  bool stopRequested() const { return state_ == State::StopRequested; }
-+  bool deinitializationRequested() const { return state_ == State::Deinitializing; }
++  bool serviceEnded() const { return state_ == State::ServiceEnded; }
++  bool deinitializationRequested() const { return state_ == State::ExplicitDeinitRequested; }
 +
 + private:
 +  State state_;
 +};
++
++enum class ProviderEvent : uint8_t {
++  CredentialsReceived,
++  CredentialsFailed,
++  CredentialsSucceeded,
++  ServiceEnded,
++  Deinitialized,
++};
++
++inline bool discardOnCancel(ProviderEvent event) {
++  return event != ProviderEvent::ServiceEnded && event != ProviderEvent::Deinitialized;
++}
 +
 +}  // namespace wifi_provisioning_lifecycle
 

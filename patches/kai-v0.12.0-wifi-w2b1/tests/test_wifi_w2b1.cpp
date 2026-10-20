@@ -200,7 +200,7 @@ static void testCredentialSuccessThenDeinitThenIpTimeoutKeepsOldProfile() {
   wifi_config::wipeSensitive(oldProfile);
 }
 
-static void testSdkAutoStopThenEndDeinitializesManagerOnce() {
+static void testSdkAutoStopEndThenArduinoCoreDeinit() {
   Preferences::reset();
   wifi_config::Profile oldProfile = makeProfile("old-network", 'o');
   wifi_config::Profile candidate = makeProfile("new-network", 'n');
@@ -220,15 +220,19 @@ static void testSdkAutoStopThenEndDeinitializesManagerOnce() {
   assert(Preferences::profileWrites() == 2);
   assertSavedProfile(candidate);
 
-  // The success path leaves the default SDK auto-stop enabled so the phone app
-  // can fetch completion. NETWORK_PROV_END then requests exactly one deinit.
+  // SDK auto-stop leaves a window for the phone app. The application observes
+  // END but leaves deinit to Arduino-ESP32's default-event-loop handler.
   assert(!manager.stopRequested());
-  assert(manager.onServiceEnded());
-  assert(manager.deinitializationRequested());
+  manager.onServiceEnded();
+  assert(manager.serviceEnded());
+  assert(!manager.deinitializationRequested());
   assert(manager.active());
-  assert(!manager.onServiceEnded());
+  manager.onServiceEnded();
+  assert(manager.serviceEnded());
   assert(!manager.requestStop());
 
+  // Arduino's handler calls network_prov_mgr_deinit(); that external call
+  // delivers DEINIT back to the application callback.
   assert(manager.onDeinitialized());
   assert(!manager.active());
   assert(!manager.onDeinitialized());
@@ -246,12 +250,41 @@ static void testCancelStopAndEndAreIdempotent() {
   assert(!manager.requestStop());
   assert(manager.stopRequested());
 
-  assert(manager.onServiceEnded());
-  assert(!manager.onServiceEnded());
-  assert(manager.deinitializationRequested());
+  assert(!wifi_provisioning_lifecycle::discardOnCancel(
+      wifi_provisioning_lifecycle::ProviderEvent::ServiceEnded));
+  manager.onServiceEnded();
+  assert(manager.serviceEnded());
+  assert(!manager.deinitializationRequested());
+  assert(!wifi_provisioning_lifecycle::discardOnCancel(
+      wifi_provisioning_lifecycle::ProviderEvent::Deinitialized));
+  assert(wifi_provisioning_lifecycle::discardOnCancel(
+      wifi_provisioning_lifecycle::ProviderEvent::CredentialsReceived));
   assert(manager.onDeinitialized());
   assert(!manager.onDeinitialized());
   assert(!manager.active());
+}
+
+static void testStartupFailureIsTheOnlyApplicationOwnedDeinit() {
+  wifi_provisioning_lifecycle::ManagerLifecycle manager;
+  assert(manager.onInitialized());
+  assert(manager.requestDeinitialize());
+  assert(manager.deinitializationRequested());
+  assert(!manager.requestDeinitialize());
+  assert(manager.onDeinitialized());
+  assert(!manager.active());
+}
+
+static void testExternalDeinitMayBeDequeuedBeforeEnd() {
+  wifi_provisioning_lifecycle::ManagerLifecycle manager;
+  assert(manager.onInitialized());
+
+  // The core can invoke the application's DEINIT callback before the loop has
+  // consumed its queued END event. A late END must not reactivate the manager.
+  assert(manager.onDeinitialized());
+  assert(!manager.active());
+  manager.onServiceEnded();
+  assert(!manager.serviceEnded());
+  assert(!manager.deinitializationRequested());
 }
 
 static void testManagerDrainFallbackWaitsPastSdkAutostop() {
@@ -372,8 +405,10 @@ int main() {
   testNvsWriteFailureLeavesOldProfile();
   testCredentialSuccessThenDeinitThenIpCommitsOnce();
   testCredentialSuccessThenDeinitThenIpTimeoutKeepsOldProfile();
-  testSdkAutoStopThenEndDeinitializesManagerOnce();
+  testSdkAutoStopEndThenArduinoCoreDeinit();
   testCancelStopAndEndAreIdempotent();
+  testStartupFailureIsTheOnlyApplicationOwnedDeinit();
+  testExternalDeinitMayBeDequeuedBeforeEnd();
   testManagerDrainFallbackWaitsPastSdkAutostop();
   testCancelLowBatteryAndWindowExpiryDiscardPendingCandidate();
   testNvsFailureAfterAssociationDoesNotLoseOldProfile();

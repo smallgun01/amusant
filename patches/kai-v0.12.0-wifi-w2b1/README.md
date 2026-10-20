@@ -48,7 +48,7 @@ python3 patches/kai-v0.12.0-wifi-w2b1/tests/run_host_tests.py \
   --wifi-tests patches/kai-v0.12.0-wifi-w1.5/tests
 ```
 
-The W2b-1 C++ fake-NVS suite covers configured-profile entry, gesture/battery gates, credential commit ordering, cancellation, timeout, write failure, and teardown. `CredentialCommitGate` retains the existing NVS profile until Wi-Fi plus IP are verified. The shared `ManagerLifecycle` seam exercises the pinned SDK success path: leave SDK auto-stop enabled for the phone app, receive `NETWORK_PROV_END`, request manager deinit once, then become inactive on `NETWORK_PROV_DEINIT`. Tests cover idempotent stop/deinit, cancel teardown, exactly-once profile save, and a last-resort 45-second fallback (SDK's documented 30-second maximum plus 15 seconds of margin). This seam does not emulate Espressif's callback scheduler or replace hardware acceptance.
+The W2b-1 C++ fake-NVS suite covers configured-profile entry, gesture/battery gates, credential commit ordering, cancellation, timeout, write failure, and teardown. `CredentialCommitGate` retains the existing NVS profile until Wi-Fi plus IP are verified. The shared `ManagerLifecycle` seam leaves SDK auto-stop enabled for the phone app, records `NETWORK_PROV_END`, and waits for the Arduino core's external `NETWORK_PROV_DEINIT`; the application loop does not deinitialize again. Tests cover external DEINIT ordering, terminal-event preservation during cancellation, exactly-once profile save, and the last-resort 45-second fallback. A source contract check enforces a single guarded direct deinit for provisioning-start failure. This seam does not emulate Espressif's callback scheduler or replace hardware acceptance.
 
 For a local build, use only the placeholder secrets file and the production profile:
 
@@ -79,3 +79,4 @@ git -C kai apply -R ../patches/kai-v0.12.0-wifi-w2b1/kai-v0.12.0-wifi-w2b1.patch
 ```
 
 This source rollback does not flash a device, erase NVS, or alter the saved W1 profile. Restoring a device image is a separate owner-authorized action.
+
