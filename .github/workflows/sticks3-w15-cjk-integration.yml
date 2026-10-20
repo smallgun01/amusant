@@ -65,17 +65,8 @@ jobs:
           /tmp/pioenv/bin/pio run -d kai/firmware -e sticks3
           python3 - <<'PY'
           import json
+          import re
           from pathlib import Path
-
-          build = Path("kai/firmware/.pio/build/sticks3")
-          sdkconfigs = list(build.rglob("sdkconfig.h"))
-          wifi_enabled = any(
-              "#define CONFIG_NETWORK_PROV_NETWORK_TYPE_WIFI 1"
-              in path.read_text(encoding="utf-8", errors="replace")
-              for path in sdkconfigs
-          )
-          if not wifi_enabled:
-              raise SystemExit("Pinned sticks3 sdkconfig does not enable the Wi-Fi provisioning event handler.")
 
           package_root = Path.home() / ".platformio/packages"
           core_sources = list(package_root.glob(
@@ -95,7 +86,28 @@ jobs:
           )
           if not all(token in source for token in required):
               raise SystemExit("Pinned Arduino core is missing its NETWORK_PROV_END deinit handler.")
-          print("Pinned sticks3 sdkconfig enables NETWORK_PROV_NETWORK_TYPE_WIFI; Arduino-ESP32 3.3.12 owns END deinit.")
+
+          build = Path("kai/firmware/.pio/build/sticks3")
+          roots = [build, *package_root.glob("framework-arduinoespressif32*"),
+                   *package_root.glob("framework-espidf*")]
+          sdkconfigs = [p for root in roots if root.exists() for p in root.rglob("sdkconfig.h")]
+          config_files = [p for root in roots if root.exists() for p in root.rglob("sdkconfig")
+                          if p.is_file() and p.stat().st_size < 2_000_000]
+          active = False
+          evidence = []
+          for path in [*sdkconfigs, *config_files]:
+              for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                  if "CONFIG_NETWORK_PROV_NETWORK_TYPE_WIFI" in line:
+                      evidence.append(f"{path}: {line.strip()}")
+                      if re.search(r"#define\\s+CONFIG_NETWORK_PROV_NETWORK_TYPE_WIFI\\s+1\\b", line) or \\
+                         re.search(r"CONFIG_NETWORK_PROV_NETWORK_TYPE_WIFI=y\\b", line):
+                          active = True
+          print("NETWORK_PROV_NETWORK_TYPE_WIFI config evidence:")
+          for item in evidence:
+              print(item)
+          if not active:
+              raise SystemExit("Pinned sticks3 build did not expose an enabled NETWORK_PROV_NETWORK_TYPE_WIFI setting.")
+          print("Pinned Arduino-ESP32 3.3.12 source and sticks3 config enable core-owned END deinit.")
           PY
           image_bytes=$(stat -c %s kai/firmware/.pio/build/sticks3/firmware.bin)
           echo "Production W1.5 + CJK + W2b-1 firmware binary: $image_bytes / 3342336 bytes"
