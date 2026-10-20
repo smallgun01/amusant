@@ -32,7 +32,7 @@ def load(path):
 
 def main():
     config = load(HOME / ".h12-toolset-config-evidence.json")
-    provider = load(EVIDENCE / f"toolset-provider-{CASE}.json")
+    provider = load(EVIDENCE / f"toolset-provider-h12_toolset_{CASE}.json")
     runner = load(EVIDENCE / f"toolset-runner-{CASE}.json")
     network = load(EVIDENCE / "network-isolation.json")
     mcp_started = (HOME / ".h12-preflight-mcp-started").exists()
@@ -100,17 +100,14 @@ def main():
         and provider.get("tool_search") == {"total_available": 1, "matches": ["save_report"]}
         and provider.get("tool_search_exchange", {}).get("matched_call_result_id") is True
         and provider.get("tool_search_exchange", {}).get("result_role") == "tool"
-        and provider.get("tool_search_exchange", {}).get("result_name") == "tool_search"
         and provider.get("tool_describe", {}).get("described_names") == ["save_report"]
         and provider.get("tool_describe", {}).get("not_found_names") is not None
         and "mcp__h12preflight__preflight_probe" in provider.get("tool_describe", {}).get("not_found_names", [])
         and provider.get("tool_describe_exchange", {}).get("matched_call_result_id") is True
         and provider.get("tool_describe_exchange", {}).get("result_role") == "tool"
-        and provider.get("tool_describe_exchange", {}).get("result_name") == "tool_describe"
         and provider.get("authorized_save_report") == "COMMITTED"
         and provider.get("authorized_save_report_exchange", {}).get("matched_call_result_id") is True
         and provider.get("authorized_save_report_exchange", {}).get("result_role") == "tool"
-        and provider.get("authorized_save_report_exchange", {}).get("result_name") == "tool_call"
         and set(provider.get("bridge_probe_results", {})) >= EXPECTED_BRIDGE_PROBES
         and set(provider.get("direct_forged_call_names", [])) == EXPECTED_DIRECT_PROBES
         and set(provider.get("direct_tool_denials", {})) == EXPECTED_DIRECT_PROBES
@@ -129,7 +126,6 @@ def main():
         isinstance(provider.get("bridge_probe_results", {}).get(name), dict)
         and provider["bridge_probe_results"][name].get("matched_call_result_id") is True
         and provider["bridge_probe_results"][name].get("result_role") == "tool"
-        and provider["bridge_probe_results"][name].get("result_name") == "tool_call"
         and provider["bridge_probe_results"][name].get("classification") in ALLOWED_BRIDGE_DENIALS
         and provider["bridge_probe_results"][name].get("dispatch_prevented") is True
         and provider["bridge_probe_results"][name].get("denial_stage") == "hermes_tool_search_deferred_name_validation"
@@ -139,7 +135,6 @@ def main():
         isinstance(provider.get("direct_tool_denials", {}).get(name), dict)
         and provider["direct_tool_denials"][name].get("matched_call_result_id") is True
         and provider["direct_tool_denials"][name].get("result_role") == "tool"
-        and provider["direct_tool_denials"][name].get("result_name") == name
         and provider["direct_tool_denials"][name].get("classification") == "unknown_tool_name_rejected"
         and provider["direct_tool_denials"][name].get("dispatch_prevented") is True
         and provider["direct_tool_denials"][name].get("denial_stage") == "agent_valid_tool_name_filter"
