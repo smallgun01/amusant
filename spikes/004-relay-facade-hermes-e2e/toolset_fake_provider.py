@@ -29,7 +29,10 @@ PROBES = [
     ("web_search", "web_search"),
     ("mcp__h12preflight__preflight_probe", "mcp__h12preflight__preflight_probe"),
 ]
-SEARCH_QUERIES = ["save_report", *(target for target, _ in PROBES)]
+SEARCH_QUERIES = [
+    "save_report", "write_file", "browser_navigate", "terminal",
+    "web_search", "web_extract", "mcp__h12preflight__preflight_probe",
+]
 
 
 def _expected_bridge_probes(case):
@@ -291,7 +294,7 @@ def _bridge_exchange(call, row, match):
     record["denial_stage"] = None
     record["classification"] = "missing_or_ambiguous_result"
     record["dispatch_prevented"] = False
-    if row and row.get("name") == "tool_call":
+    if row and record.get("matched_call_result_id") and record.get("result_role") == "tool":
         refusal = _bridge_rejection(_result_payload(row))
         if refusal:
             record["classification"] = refusal
@@ -311,7 +314,8 @@ def _direct_exchange(call, row, match, target):
     record["denial_stage"] = None
     record["classification"] = "missing_or_ambiguous_result"
     record["dispatch_prevented"] = False
-    if row and row.get("name") == target and _direct_tool_filter_rejection(_result_payload(row), target):
+    if (row and record.get("matched_call_result_id") and record.get("result_role") == "tool"
+            and _direct_tool_filter_rejection(_result_payload(row), target)):
         record["classification"] = "unknown_tool_name_rejected"
         record["denial_stage"] = "agent_valid_tool_name_filter"
         record["dispatch_prevented"] = True
