@@ -508,7 +508,7 @@ index fefef1c..3a1b8b3 100644
    if (session.expire(nowMs, usbPowered)) {
 +    credentialCommitGate.cancel();
      requestStop();
-@@ -240,3 +247,28 @@ void service(uint32_t nowMs, bool usbPowered, Event& event, wifi_config::Profile
+@@ -240,6 +247,31 @@ void service(uint32_t nowMs, bool usbPowered, Event& event, wifi_config::Profile
      return;
    }
  
@@ -537,6 +537,9 @@ index fefef1c..3a1b8b3 100644
 +    }
 +  }
 +  if (!managerActive) return;
+   QueuedEvent queued = {};
+   bool overflowed = false;
+   const bool hasEvent = dequeue(queued, overflowed);
 @@ -269,26 +301,28 @@ void service(uint32_t nowMs, bool usbPowered, Event& event, wifi_config::Profile
        }
        break;
