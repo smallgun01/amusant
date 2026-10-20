@@ -2,7 +2,7 @@
 
 This downstream firmware patch implements Issue #91 on the exact Kai v0.12.0 pin. It adds a 5-second Button B setup gesture and a controlled, one-shot reboot into authenticated BLE provisioning. The existing `amu_wifi/profile` record remains unchanged until the replacement has joined Wi-Fi and acquired a nonzero IP address. USB Serial remains the recovery path.
 
-The architecture and owner review points are in [DESIGN.md](DESIGN.md). This package does not change AWS, Relay, cloud ingress, the PTT/Opus/TLS-PSK/Bearer path, or normal deep-sleep behavior. It does not flash a device or make a paid/live call.
+The architecture and owner review points are in [DESIGN.md](DESIGN.md); the separate future physical procedure is [HARDWARE_ACCEPTANCE.md](HARDWARE_ACCEPTANCE.md). This package does not change AWS, Relay, cloud ingress, the PTT/Opus/TLS-PSK/Bearer path, or normal deep-sleep behavior. It does not flash a device or make a paid/live call.
 
 ## Pinned baseline and layer order
 
