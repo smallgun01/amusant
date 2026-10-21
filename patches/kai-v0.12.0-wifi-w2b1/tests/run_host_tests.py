@@ -20,6 +20,19 @@ def main():
     parser.add_argument("--compiler", default="g++")
     args = parser.parse_args()
     source = args.firmware_root.resolve() / "src"
+    main_cpp = (source / "main.cpp").read_text(encoding="utf-8")
+    owner_start = main_cpp.find("static void serviceOwnerSetupBoot() {")
+    owner_end = main_cpp.find("// ---- buttons", owner_start)
+    if owner_start < 0 or owner_end <= owner_start:
+        raise SystemExit("The owner-setup service loop could not be isolated for its fallback timing check.")
+    owner_setup = main_cpp[owner_start:owner_end]
+    service_at = owner_setup.find("serviceWifiBleProvisioning();")
+    drain_now_at = owner_setup.find("const uint32_t drainNow = millis();", service_at)
+    fallback_at = owner_setup.find("managerDrainFallbackExpired(drainNow,", drain_now_at)
+    if service_at < 0 or drain_now_at <= service_at or fallback_at <= drain_now_at:
+        raise SystemExit("The fallback must use a fresh millis() snapshot taken after BLE service can set the return timestamp.")
+    if "managerDrainFallbackExpired(now," in owner_setup:
+        raise SystemExit("The pre-service loop timestamp must not drive the BLE manager-drain fallback.")
     required = (source / "wifi_config.cpp", source / "wifi_ble_flow.cpp",
                 source / "wifi_setup_intent.h", source / "wifi_provisioning_commit_gate.h",
                 source / "wifi_provisioning_event_queue.h",

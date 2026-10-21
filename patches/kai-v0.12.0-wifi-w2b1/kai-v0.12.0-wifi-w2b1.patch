@@ -161,7 +161,7 @@ index 1b744ff..39db973 100644
        break;
  
      case wifi_ble_provisioning::Event::None:
-@@ -787,6 +846,49 @@ static void serviceWifiBleProvisioning() {
+@@ -787,6 +846,50 @@ static void serviceWifiBleProvisioning() {
    wifi_config::wipeSensitive(profile);
  }
  
@@ -193,7 +193,8 @@ index 1b744ff..39db973 100644
 +    requestOwnerSetupExit("Setup ended; Wi-Fi kept");
 +  }
 +  if (setupReturnToNormal && !wifi_ble_provisioning::active()) restartNormalAfterOwnerSetup();
-+  if (wifi_setup_intent::managerDrainFallbackExpired(now, setupReturnStartedAt,
++  const uint32_t drainNow = millis();
++  if (wifi_setup_intent::managerDrainFallbackExpired(drainNow, setupReturnStartedAt,
 +                                                      setupReturnToNormal && wifi_ble_provisioning::active(),
 +                                                      wifi_ble_provisioning::sdkAutoStopTimeoutMs())) {
 +#if defined(AMUSANT_WIFI_BLE_DIAGNOSTICS) && AMUSANT_WIFI_BLE_DIAGNOSTICS
@@ -211,7 +212,7 @@ index 1b744ff..39db973 100644
  // ---- buttons ---------------------------------------------------------------
  
  static void showStatus() {
-@@ -808,13 +910,36 @@ static void showStatus() {
+@@ -808,13 +911,36 @@ static void showStatus() {
    showCard(c);
  }
  
@@ -248,7 +249,7 @@ index 1b744ff..39db973 100644
  
    // Front: push to talk (also barges in while Kai is talking).
    if (M5.BtnA.wasPressed() && wsConnected && mode != Mode::Listening) {
-@@ -833,13 +958,37 @@ static void handleButtons() {
+@@ -833,13 +959,37 @@ static void handleButtons() {
      setMode(Mode::Thinking);
    }
  
@@ -287,7 +288,7 @@ index 1b744ff..39db973 100644
        showStatus();
      }
    } else if (M5.BtnB.wasClicked()) {
-@@ -859,6 +1008,10 @@ void setup() {
+@@ -859,6 +1009,10 @@ void setup() {
    cfg.fallback_board = m5::board_t::board_M5StickS3;
    M5.begin(cfg);
    Serial.begin(115200);
@@ -298,7 +299,7 @@ index 1b744ff..39db973 100644
  
    M5.Power.setExtOutput(false);  // 5V boost for Grove/Hat/IR: unused, and it was left running
    M5.Imu.sleep();                // not used yet
-@@ -878,20 +1031,41 @@ void setup() {
+@@ -878,20 +1032,41 @@ void setup() {
  
    wifiProfileState = wifi_config::load(activeWifiProfile);
    wifiConfigured = wifiProfileState == wifi_config::LoadResult::Valid;
@@ -346,7 +347,7 @@ index 1b744ff..39db973 100644
    } else {
      if (wifiConfigured)
        face::setStatusText(wokeFromSleep ? "waking up..." : "connecting wifi...");
-@@ -908,6 +1082,10 @@ void setup() {
+@@ -908,6 +1083,10 @@ void setup() {
  
  void loop() {
    M5.update();

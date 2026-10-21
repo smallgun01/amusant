@@ -406,23 +406,42 @@ static void testTerminalQueuePreservesDeinitBeforeEndAndDeduplicatesPendingEvent
 }
 
 static void testManagerDrainFallbackUsesCompiledSdkTimeout() {
-  const uint32_t startedAt = 1000;
-  const uint32_t sdkAutoStopMs = 90000;
+  const uint32_t loopStartSnapshot = 100;
+  const uint32_t setupReturnStartedAt = 101;  // CRED_SUCCESS is serviced after the loop snapshot.
+  const uint32_t sdkAutoStopMs = 30000;
   const uint32_t fallbackMs = wifi_setup_intent::managerDrainTimeoutMs(sdkAutoStopMs);
-  assert(fallbackMs == 105000);
-  assert(!wifi_setup_intent::managerDrainFallbackExpired(
-      startedAt + sdkAutoStopMs, startedAt, true, sdkAutoStopMs));
-  assert(!wifi_setup_intent::managerDrainFallbackExpired(
-      startedAt + fallbackMs - 1, startedAt, true, sdkAutoStopMs));
-  assert(wifi_setup_intent::managerDrainFallbackExpired(
-      startedAt + fallbackMs, startedAt, true, sdkAutoStopMs));
-  assert(!wifi_setup_intent::managerDrainFallbackExpired(
-      startedAt + fallbackMs, startedAt, false, sdkAutoStopMs));
+  assert(setupReturnStartedAt == loopStartSnapshot + 1U);
+  assert(fallbackMs == 45000);
 
-  // Unsigned subtraction keeps the watchdog correct when millis() wraps.
-  const uint32_t wrappedStart = UINT32_MAX - 50000U;
+  // The integration source check verifies serviceOwnerSetupBoot refreshes millis()
+  // after serviceWifiBleProvisioning(); that fresh sample is 101ms in this regression.
+  const uint32_t drainNowAfterService = 101;
+  assert(!wifi_setup_intent::managerDrainFallbackExpired(
+      drainNowAfterService, setupReturnStartedAt, true, sdkAutoStopMs));
+  assert(!wifi_setup_intent::managerDrainFallbackExpired(
+      drainNowAfterService + 44999U, setupReturnStartedAt, true, sdkAutoStopMs));
   assert(wifi_setup_intent::managerDrainFallbackExpired(
-      wrappedStart + fallbackMs, wrappedStart, true, sdkAutoStopMs));
+      drainNowAfterService + 45000U, setupReturnStartedAt, true, sdkAutoStopMs));
+  assert(!wifi_setup_intent::managerDrainFallbackExpired(
+      drainNowAfterService, setupReturnStartedAt, false, sdkAutoStopMs));
+  assert(!wifi_setup_intent::managerDrainFallbackExpired(0, 0, true, sdkAutoStopMs));
+
+  // Unsigned subtraction remains correct when millis() wraps during a real wait.
+  const uint32_t wrappedStart = UINT32_MAX - 1000U;
+  assert(!wifi_setup_intent::managerDrainFallbackExpired(
+      wrappedStart + 44999U, wrappedStart, true, sdkAutoStopMs));
+  assert(wifi_setup_intent::managerDrainFallbackExpired(
+      wrappedStart + 45000U, wrappedStart, true, sdkAutoStopMs));
+
+  const uint32_t longSdkAutoStopMs = 90000;
+  const uint32_t longFallbackMs = wifi_setup_intent::managerDrainTimeoutMs(longSdkAutoStopMs);
+  assert(longFallbackMs == 105000);
+  assert(!wifi_setup_intent::managerDrainFallbackExpired(
+      1000U + longSdkAutoStopMs, 1000U, true, longSdkAutoStopMs));
+  assert(!wifi_setup_intent::managerDrainFallbackExpired(
+      1000U + longFallbackMs - 1U, 1000U, true, longSdkAutoStopMs));
+  assert(wifi_setup_intent::managerDrainFallbackExpired(
+      1000U + longFallbackMs, 1000U, true, longSdkAutoStopMs));
 }
 
 enum class PendingInterruption { ButtonCancel, LowBattery, SetupWindowExpired };
