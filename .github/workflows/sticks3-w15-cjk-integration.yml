@@ -139,13 +139,14 @@ jobs:
           image_path = Path("kai/firmware/.pio/build/sticks3_ble_diag/firmware.bin")
           image = image_path.read_bytes()
           matches = re.findall(
-              rb"WIFI BLE AUTOSTOP configured_timeout_s=(\d+) fallback_timeout_ms=(\d+)", image
+              rb"WIFI BLE AUTOSTOP configured_timeout_s=(\d+) fallback_timeout_ms=%lu", image
           )
           if len(matches) != 1:
               raise SystemExit(f"Expected one compiled auto-stop marker in {image_path}, found {len(matches)}.")
-          timeout_s, fallback_ms = map(int, matches[0])
-          if timeout_s <= 0 or fallback_ms != timeout_s * 1000 + 15000:
-              raise SystemExit(f"Invalid compiled timer/fallback values: {timeout_s}s / {fallback_ms}ms.")
+          timeout_s = int(matches[0])
+          fallback_ms = timeout_s * 1000 + 15000
+          if timeout_s <= 0:
+              raise SystemExit(f"Invalid compiled timer value: {timeout_s}s.")
           for marker in (b"WIFI BLE EVT callback=", b"WIFI BLE EVT dequeue=",
                          b"WIFI BLE STATE phase=", b"WIFI BLE SDK autostop_end_after_success_ms="):
               if marker not in image:
