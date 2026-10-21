@@ -1,4 +1,4 @@
-name: StickS3 W1.5 BLE + production CJK + W2b-1
+name: StickS3 W1.5 BLE + production CJK + W2b-1 + W2b-QR optical experiment
 
 on:
   pull_request:
@@ -10,6 +10,7 @@ on:
       - "patches/kai-v0.12.0-wifi-w1.5/**"
       - "patches/kai-v0.12.0-cjk-display/**"
       - "patches/kai-v0.12.0-wifi-w2b1/**"
+      - "patches/kai-v0.12.0-wifi-w2bqr/**"
 
 permissions:
   contents: read
@@ -17,7 +18,7 @@ permissions:
 jobs:
   integrate-and-build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4
         with:
@@ -56,14 +57,49 @@ jobs:
             patches/kai-v0.12.0-cjk-display/tests/test_cjk_layout.cpp \
             -o /tmp/jellii-cjk-test
           /tmp/jellii-cjk-test
+      - name: Install independent QR decoder
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zbar-tools
+          zbarimg --version
       - name: Install PlatformIO
         run: |
           python3 -m venv /tmp/pioenv
           /tmp/pioenv/bin/pip install --disable-pip-version-check "platformio==6.2.0"
-      - name: Build production StickS3 firmware with placeholder secrets ONLY
+      - name: Build merged PR #95 W2b-1 footprint baseline
         run: |
+          set -o pipefail
           cp kai/firmware/src/secrets.example.h kai/firmware/src/secrets.h
-          /tmp/pioenv/bin/pio run -d kai/firmware -e sticks3
+          trap 'rm -f kai/firmware/src/secrets.h' EXIT
+          /tmp/pioenv/bin/pio run -d kai/firmware -e sticks3 | tee /tmp/pio-w2b1.log
+          cp kai/firmware/.pio/build/sticks3/firmware.bin /tmp/w2b1-firmware.bin
+          image_bytes=$(stat -c %s /tmp/w2b1-firmware.bin)
+          echo "Merged PR #95 W2b-1 baseline: $image_bytes / 3342336 bytes"
+          test "$image_bytes" -le 3342336
+
+      - name: Apply W2b-QR optical revision and run offline regression suites
+        run: |
+          git -C kai apply --check "$GITHUB_WORKSPACE/patches/kai-v0.12.0-wifi-w2bqr/kai-v0.12.0-wifi-w2bqr.patch"
+          git -C kai apply "$GITHUB_WORKSPACE/patches/kai-v0.12.0-wifi-w2bqr/kai-v0.12.0-wifi-w2bqr.patch"
+          git -C kai diff --check
+          python3 patches/kai-v0.12.0-wifi-w1.5/tests/run_host_tests.py --firmware-root kai/firmware
+          python3 patches/kai-v0.12.0-wifi-w1/tests/run_host_tests.py --firmware-root kai/firmware
+          python3 patches/kai-v0.12.0-wifi-w2b1/tests/run_host_tests.py \
+            --firmware-root kai/firmware \
+            --wifi-tests patches/kai-v0.12.0-wifi-w1.5/tests
+          python3 patches/kai-v0.12.0-wifi-w2bqr/tests/run_host_tests.py --firmware-root kai/firmware
+          python3 patches/kai-v0.12.0-wifi-w2bqr/tests/check_owner_setup_wiring.py --firmware-root kai/firmware
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -Ikai/firmware/src \
+            patches/kai-v0.12.0-cjk-display/tests/test_cjk_layout.cpp \
+            -o /tmp/jellii-cjk-final-test
+          /tmp/jellii-cjk-final-test
+
+      - name: Build integrated production firmware and report footprint delta
+        run: |
+          set -o pipefail
+          cp kai/firmware/src/secrets.example.h kai/firmware/src/secrets.h
+          trap 'rm -f kai/firmware/src/secrets.h' EXIT
+          /tmp/pioenv/bin/pio run -d kai/firmware -e sticks3 | tee /tmp/pio-w2bqr.log
           python3 - <<'PY'
           import json
           from pathlib import Path
@@ -109,9 +145,6 @@ jobs:
               raise SystemExit("Pinned sticks3 build did not expose an enabled NETWORK_PROV_NETWORK_TYPE_WIFI setting.")
           print("Pinned Arduino-ESP32 3.3.12 source and sticks3 config enable core-owned END deinit.")
           PY
-          image_bytes=$(stat -c %s kai/firmware/.pio/build/sticks3/firmware.bin)
-          echo "Production W1.5 + CJK + W2b-1 firmware binary: $image_bytes / 3342336 bytes"
-          test "$image_bytes" -le 3342336
           python3 - <<'PY'
           from pathlib import Path
 
@@ -128,9 +161,43 @@ jobs:
           if present:
               raise SystemExit("production firmware exposes opt-in CJK diagnostics: " + ", ".join(present))
           print("Production sticks3 excludes JELLII_CJK_DIAGNOSTICS and CJK Serial diagnostics.")
+
+          import re
+          import os
+
+          def metric(label, path):
+              text = Path(path).read_text(encoding="utf-8", errors="replace")
+              matches = re.findall(
+                  rf"(?m)^{label}:\s+\[[^\]]*\]\s+([\d.]+)%\s+\(used\s+([\d,]+) bytes from\s+([\d,]+) bytes\)",
+                  text,
+              )
+              if not matches:
+                  raise SystemExit(f"Could not parse PlatformIO {label} footprint from {path}.")
+              percent, used, total = matches[-1]
+              return float(percent), int(used.replace(",", "")), int(total.replace(",", ""))
+
+          before_bin = Path("/tmp/w2b1-firmware.bin").stat().st_size
+          after_bin = len(image)
+          before_flash, after_flash = metric("Flash", "/tmp/pio-w2b1.log"), metric("Flash", "/tmp/pio-w2bqr.log")
+          before_ram, after_ram = metric("RAM", "/tmp/pio-w2b1.log"), metric("RAM", "/tmp/pio-w2bqr.log")
+          rows = [
+              "| Variant | Firmware image | Program flash | Static RAM |",
+              "| --- | ---: | ---: | ---: |",
+              f"| Merged PR #95 W2b-1 | {before_bin:,} B | {before_flash[1]:,} / {before_flash[2]:,} B ({before_flash[0]:.1f}%) | {before_ram[1]:,} / {before_ram[2]:,} B ({before_ram[0]:.1f}%) |",
+              f"| W2b-QR optical experiment | {after_bin:,} B | {after_flash[1]:,} / {after_flash[2]:,} B ({after_flash[0]:.1f}%) | {after_ram[1]:,} / {after_ram[2]:,} B ({after_ram[0]:.1f}%) |",
+              f"| Delta | {after_bin - before_bin:+,} B | {after_flash[1] - before_flash[1]:+,} B | {after_ram[1] - before_ram[1]:+,} B |",
+          ]
+          summary = "\n".join(rows) + "\n\nQR encoder fixed storage: 346 B, with a 128 B stack payload and no heap allocation. Device free-heap margin remains a hardware measurement. Physical QR acceptance is pending owner-supervised testing.\n"
+          print(summary)
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as report:
+              report.write("## StickS3 W2b-QR optical experiment footprint vs merged PR #95\n\n" + summary)
+          if after_bin > 3342336:
+              raise SystemExit("W2b-QR firmware image exceeds the StickS3 application partition limit.")
           PY
       - name: Build opt-in, secret-free BLE lifecycle diagnostics
         run: |
+          cp kai/firmware/src/secrets.example.h kai/firmware/src/secrets.h
+          trap 'rm -f kai/firmware/src/secrets.h' EXIT
           /tmp/pioenv/bin/pio run -d kai/firmware -e sticks3_ble_diag
           python3 - <<'PY'
           import re
@@ -170,4 +237,4 @@ jobs:
             patches/kai-v0.12.0-cjk-display/tests/test_cjk_font_width.cpp \
             -o /tmp/jellii-cjk-font-test
           /tmp/jellii-cjk-font-test
-          rm kai/firmware/src/secrets.h
+          rm -f kai/firmware/src/secrets.h
