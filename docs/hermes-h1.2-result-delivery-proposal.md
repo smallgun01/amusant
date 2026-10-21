@@ -2,6 +2,8 @@
 
 **Status (2026-10-20):** [PR #71](https://github.com/smallgun01/amusant/pull/71) merged this **design proposal**; [#75](https://github.com/smallgun01/amusant/pull/75)/[#80](https://github.com/smallgun01/amusant/pull/80) proved the isolated Option D PoC. [#87](https://github.com/smallgun01/amusant/pull/87) runtime B1 and [#90](https://github.com/smallgun01/amusant/pull/90) pinned native ARM64 B2 are now **merged E1 GO** ([evidence](https://github.com/smallgun01/amusant/actions/runs/39240814687)), but not a live OCI deployment, real-provider test, accepted full section-read/v2 envelope, retention policy or artifact-hosting approval. [SPEC v0.5](../SPEC.md) and [ADR-0003](adr/0003-oci-a1-hermes-sqlite.md) govern the target. This proposal alone authorizes no external actions.
 
+**Separate H1.2 toolset evidence (2026-10-20):** merged [PR #94](https://github.com/smallgun01/amusant/pull/94) adds a pinned native ARM64 **offline effective-toolset preflight** ([CI PASS](https://github.com/smallgun01/amusant/actions/runs/39426021105)). Case A authorized the deferred Option D report tool; Case B added direct `web_search`; prohibited direct/bridge probes were denied in fake-provider, Docker-internal networks. This is **not** live web/provider tool safety, real host sandbox acceptance, typed-input/v2/section-read completion or permission to run a real-provider smoke.
+
 ## Decision boundary
 
 Hermes owns long-form reasoning, tools, report creation, summarization, and content transformation. Gemini Live handles conversational FAST turns and reads only a short, already prepared answer. Relay stays deterministic: authenticate, admit, route, validate bounds and ownership, persist task state and a pointer, and report delivery truth.
