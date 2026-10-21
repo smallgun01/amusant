@@ -13,9 +13,9 @@
 
 **Privacy and security:** Do not commit public IPs, client source IPs, private keys, credential filenames/contents, tokens, PoP, public endpoint details or machine-specific `.env` values. SSH public keys may be distributed through an operator-approved channel, not embedded in this repository. Preserve both Owner and Agent access while applying access controls.
 
-## Read-only H2 inventory (safe next action)
+## Proposed read-only H2 inventory (requires explicit Owner instruction)
 
-From N100, use the **existing dedicated Agent SSH key** and the existing remote unprivileged account; never ask OpenClaw to print or transfer the key. Confirm which Unix/service or container identity actually launches OpenClaw and what SSH config it can access. A successful human-terminal `ssh` is not proof of an agent tool permission; the owner's one-time OpenClaw BatchMode smoke did pass.
+Only run the following after the Owner delegates this scoped inventory; editing or reading this document is **not** permission to log in or execute commands. From N100, use the **existing dedicated Agent SSH key** and the existing remote unprivileged account; never ask OpenClaw to print or transfer the key. Confirm which Unix/service or container identity actually launches OpenClaw and what SSH config it can access. A successful human-terminal `ssh` is not proof of an agent tool permission; the owner's one-time OpenClaw BatchMode smoke did pass.
 
 Inside that SSH session, collect and redact the results of:
 

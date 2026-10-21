@@ -14,7 +14,7 @@
 ## Required order (no new feature branches on the critical path)
 
 1. **H5-P1B E1 COMPLETE:** #87/#90 merged and pinned native ARM64 offline Relay→Facade→Hermes→Artifact→Inbox proof passed. **Not** a live OCI test, actual provider-cancellation confirmation, paid-model test or full host reboot.
-2. **OCI H2 inventory → reviewed setup → separately approved E3 canary (active):** [#62](https://github.com/smallgun01/amusant/issues/62) existing SSH-reachable VM is **not** yet Docker/Compose/volume/backup-ready by evidence. Start with read-only [host readiness](../../deploy/oci-a1/HOST-READINESS.md), then request narrow Owner approval for each host mutation and live canary. [#27](https://github.com/smallgun01/amusant/issues/27) G1 transport design runs in parallel; do not open public 8443 merely because SSH works.
+2. **OCI H2 inventory → reviewed setup → separately approved E3 canary (active):** [#62](https://github.com/smallgun01/amusant/issues/62) existing SSH-reachable VM is **not** yet Docker/Compose/volume/backup-ready by evidence. Have the Owner explicitly delegate the read-only [host readiness](../../deploy/oci-a1/HOST-READINESS.md) step first; request narrow Owner approval for each host mutation and live canary. [#27](https://github.com/smallgun01/amusant/issues/27) G1 transport design runs in parallel; do not open public 8443 merely because SSH works.
 3. **S1 / #46:** Genuine software Gemini FAST → durable Hermes SLOW → bounded Inbox → new tool-disabled Live spoken session, including restart/negative paths. Real traffic needs separate Owner approval.
 4. **G2 FAST then G3a SLOW:** secure device connection on a known Wi-Fi; S1 must be satisfied for G3a. G3b mobility, scheduling, proactive cues and Kai feature parity are post-M1 backlogs.
 
