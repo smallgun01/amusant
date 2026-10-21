@@ -48,7 +48,7 @@ python3 patches/kai-v0.12.0-wifi-w2b1/tests/run_host_tests.py \
   --wifi-tests patches/kai-v0.12.0-wifi-w1.5/tests
 ```
 
-The W2b-1 C++ fake-NVS suite covers configured-profile entry, gesture/battery gates, credential commit ordering, cancellation, timeout, write failure, and teardown. `CredentialCommitGate` retains the existing NVS profile until Wi-Fi plus IP are verified. The shared `ManagerLifecycle` seam leaves SDK auto-stop enabled for the phone app, records `NETWORK_PROV_END`, and waits for the Arduino core's external `NETWORK_PROV_DEINIT`; the application loop does not deinitialize again. Tests cover external DEINIT ordering, terminal-event preservation during cancellation, exactly-once profile save, and the last-resort 45-second fallback. A source contract check enforces a single guarded direct deinit for provisioning-start failure. This seam does not emulate Espressif's callback scheduler or replace hardware acceptance.
+The W2b-1 C++ fake-NVS suite covers configured-profile entry, gesture/battery gates, credential commit ordering, cancellation, timeout, write failure, and teardown. `CredentialCommitGate` retains the existing NVS profile until Wi-Fi plus IP are verified. The shared `ManagerLifecycle` seam leaves SDK auto-stop enabled for the phone app, records `NETWORK_PROV_END`, and waits for the Arduino core's external `NETWORK_PROV_DEINIT`; the application loop does not deinitialize again. Queue overflow is handled before any event is dequeued: the shared `serviceStep` used by firmware and tests wipes credential entries, requests stop once, and retains pending END/DEINIT events for ordered lifecycle processing. Regression tests exercise END-first plus credential overflow and DEINIT-first plus overflow, then verify the terminal callbacks drain and the manager becomes inactive. Other tests cover external DEINIT ordering, cancellation, exactly-once profile save, and the last-resort 45-second fallback. A source contract check enforces a single guarded direct deinit for provisioning-start failure. This seam does not emulate Espressif's callback scheduler or replace hardware acceptance.
 
 For a local build, use only the placeholder secrets file and the production profile:
 
@@ -63,12 +63,12 @@ The CI checks that the production `sticks3` image excludes BLE lifecycle and CJK
 
 ## Footprint and verification
 
-Both pinned builds passed in [integration workflow run #40](https://github.com/smallgun01/amusant/actions/runs/39522051614). The production firmware excludes lifecycle diagnostics. The opt-in build compiled `CONFIG_NETWORK_PROV_AUTOSTOP_TIMEOUT=30s` and derives its 45,000 ms drain fallback from that SDK value plus a 15-second margin. CI uses placeholder secrets only and does not upload firmware or contact Gemini.
+Both pinned builds passed in the latest [integration workflow run](https://github.com/smallgun01/amusant/actions/workflows/sticks3-w15-cjk-integration.yml) for this PR. The production firmware excludes lifecycle diagnostics. The opt-in build compiled `CONFIG_NETWORK_PROV_AUTOSTOP_TIMEOUT=30s` and derives its 45,000 ms drain fallback from that SDK value plus a 15-second margin. CI uses placeholder secrets only and does not upload firmware or contact Gemini.
 
 | Profile | Firmware image | Program Flash | RAM |
 | --- | ---: | ---: | ---: |
-| `sticks3` | 2,430,896 B | 2,396,851 / 3,342,336 B (71.7%) | 79,800 / 327,680 B (24.4%) |
-| `sticks3_ble_diag` | 2,433,488 B | 2,399,363 / 3,342,336 B (71.8%) | 79,936 / 327,680 B (24.4%) |
+| `sticks3` | 2,430,761 B | 2,396,903 / 3,342,336 B (71.7%) | 79,800 / 327,680 B (24.4%) |
+| `sticks3_ble_diag` | 2,433,653 B | 2,399,723 / 3,342,336 B (71.8%) | 79,952 / 327,680 B (24.4%) |
 
 Runtime free heap, battery draw, Android status delivery, and reconnection to a real AP are not measurable from this offline build. The owner-supervised physical acceptance procedure remains pending; the CI run does not establish successful Android provisioning.
 
