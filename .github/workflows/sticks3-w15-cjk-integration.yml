@@ -123,7 +123,7 @@ jobs:
           image = (root / ".pio/build/sticks3/firmware.bin").read_bytes()
           forbidden = (b"CJK SHOW", b"CJK MISSING", b"CJK FORMAT", b"CJK NONBMP", b"CJK INVALID",
                        b"WIFI BLE STATE phase=", b"WIFI BLE AUTOSTOP configured_timeout_s=",
-                       b"WIFI BLE EVT callback=")
+                       b"WIFI BLE EVT callback=", b"WIFI BLE SDK AUTOSTOP missing_END")
           present = [marker.decode("ascii") for marker in forbidden if marker in image]
           if present:
               raise SystemExit("production firmware exposes opt-in CJK diagnostics: " + ", ".join(present))
@@ -148,7 +148,9 @@ jobs:
           if timeout_s <= 0:
               raise SystemExit(f"Invalid compiled timer value: {timeout_s}s.")
           for marker in (b"WIFI BLE EVT callback=", b"WIFI BLE EVT dequeue=",
-                         b"WIFI BLE STATE phase=", b"WIFI BLE SDK autostop_end_after_success_ms="):
+                         b"WIFI BLE STATE phase=", b"WIFI BLE SDK AUTOSTOP CRED_SUCCESS_callback_observed_ms=",
+                         b"WIFI BLE SDK AUTOSTOP END_callback_after_CRED_SUCCESS_observed_ms=",
+                         b"WIFI BLE SDK AUTOSTOP missing_END after_CRED_SUCCESS_callback_ms="):
               if marker not in image:
                   raise SystemExit(f"Diagnostic firmware is missing lifecycle marker {marker!r}.")
           image_bytes = len(image)

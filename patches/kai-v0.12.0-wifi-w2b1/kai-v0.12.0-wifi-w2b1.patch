@@ -534,7 +534,7 @@ index fefef1c..9df10ee 100644
  
  class NativeProvisioningManager : public wifi_ble_flow::ProvisioningManager {
   public:
-@@ -57,6 +60,122 @@ class NativeProvisioningManager : public wifi_ble_flow::ProvisioningManager {
+@@ -57,6 +60,133 @@ class NativeProvisioningManager : public wifi_ble_flow::ProvisioningManager {
  
  NativeProvisioningManager nativeProvisioningManager;
  
@@ -591,7 +591,7 @@ index fefef1c..9df10ee 100644
 +                    static_cast<unsigned long>(current.lastCallbackAtMs[i]), current.credentialDepth,
 +                    static_cast<unsigned long>(current.dropped[i]));
 +      if (event == ProviderEvent::CredentialsSucceeded) {
-+        Serial.printf("WIFI BLE SDK AUTOSTOP timer_start_observed_ms=%lu configured_timeout_ms=%lu\n",
++        Serial.printf("WIFI BLE SDK AUTOSTOP CRED_SUCCESS_callback_observed_ms=%lu configured_timeout_ms=%lu timer_start=unobserved\n",
 +                      static_cast<unsigned long>(current.lastCallbackAtMs[i]),
 +                      static_cast<unsigned long>(kSdkAutoStopTimeoutMs));
 +      }
@@ -615,11 +615,22 @@ index fefef1c..9df10ee 100644
 +  }
 +  const size_t successIndex = wifi_provisioning_event_queue::Queue::eventIndex(ProviderEvent::CredentialsSucceeded);
 +  const size_t endIndex = wifi_provisioning_event_queue::Queue::eventIndex(ProviderEvent::ServiceEnded);
-+  if (current.callbacks[endIndex] != previous.callbacks[endIndex] && current.callbacks[successIndex] > 0) {
-+    Serial.printf("WIFI BLE SDK autostop_end_after_success_ms=%lu configured_timeout_ms=%lu\n",
-+                  static_cast<unsigned long>(current.lastCallbackAtMs[endIndex] -
-+                                             current.lastCallbackAtMs[successIndex]),
++  static uint32_t missingEndReportedAfterSuccessMs = UINT32_MAX;
++  const uint32_t successObservedAtMs = current.lastCallbackAtMs[successIndex];
++  if (current.callbacks[endIndex] > 0 && current.callbacks[endIndex] != previous.callbacks[endIndex] &&
++      current.callbacks[successIndex] > 0) {
++    Serial.printf("WIFI BLE SDK AUTOSTOP END_callback_after_CRED_SUCCESS_observed_ms=%lu configured_timeout_ms=%lu timer_start=unobserved\n",
++                  static_cast<unsigned long>(current.lastCallbackAtMs[endIndex] - successObservedAtMs),
 +                  static_cast<unsigned long>(kSdkAutoStopTimeoutMs));
++  }
++  if (current.callbacks[successIndex] > 0 && current.callbacks[endIndex] == 0 &&
++      static_cast<uint32_t>(millis() - successObservedAtMs) >= kSdkAutoStopTimeoutMs &&
++      missingEndReportedAfterSuccessMs != successObservedAtMs) {
++    Serial.printf("WIFI BLE SDK AUTOSTOP missing_END after_CRED_SUCCESS_callback_ms=%lu elapsed_since_callback_ms=%lu configured_timeout_ms=%lu timer_start=unobserved\n",
++                  static_cast<unsigned long>(successObservedAtMs),
++                  static_cast<unsigned long>(static_cast<uint32_t>(millis() - successObservedAtMs)),
++                  static_cast<unsigned long>(kSdkAutoStopTimeoutMs));
++    missingEndReportedAfterSuccessMs = successObservedAtMs;
 +  }
 +  previous = current;
 +}
@@ -657,7 +668,7 @@ index fefef1c..9df10ee 100644
  void wipeBytes(void* data, size_t length) {
    volatile uint8_t* bytes = static_cast<volatile uint8_t*>(data);
    while (length--) *bytes++ = 0;
-@@ -81,68 +200,59 @@ bool makeProfile(const wifi_sta_config_t& config, wifi_config::Profile& profile)
+@@ -81,68 +200,60 @@ bool makeProfile(const wifi_sta_config_t& config, wifi_config::Profile& profile)
    return false;
  }
  
@@ -681,8 +692,8 @@ index fefef1c..9df10ee 100644
  
 -bool dequeue(QueuedEvent& event, bool& overflowed) {
 -  bool available = false;
-+bool dequeue(wifi_provisioning_event_queue::Event& event, bool& overflowed, uint32_t nowMs,
-+             bool terminalOnly = false) {
++wifi_provisioning_event_queue::ServiceStep serviceQueueStep(
++    wifi_provisioning_event_queue::Event& event, uint32_t nowMs, bool terminalOnly = false) {
    portENTER_CRITICAL(&queueMux);
 -  overflowed = queueOverflow;
 -  queueOverflow = false;
@@ -694,9 +705,11 @@ index fefef1c..9df10ee 100644
 -    --queueCount;
 -    available = true;
 -  }
-+  const bool available = providerEvents.dequeue(event, overflowed, nowMs, terminalOnly);
+-  const bool available = providerEvents.dequeue(event, overflowed, nowMs, terminalOnly);
++  const wifi_provisioning_event_queue::ServiceStep step =
++      wifi_provisioning_event_queue::serviceStep(providerEvents, event, managerLifecycle, nowMs, terminalOnly);
    portEXIT_CRITICAL(&queueMux);
-   return available;
++  return step;
  }
  
  void clearQueue() {
@@ -820,7 +833,7 @@ index fefef1c..9df10ee 100644
      session.stop();
      wipeBytes(proofOfPossessionValue, sizeof(proofOfPossessionValue));
    }
-@@ -232,18 +350,49 @@ void stop() {
+@@ -232,15 +350,48 @@ void stop() {
  void service(uint32_t nowMs, bool usbPowered, Event& event, wifi_config::Profile& profile) {
    event = Event::None;
    wifi_config::wipeSensitive(profile);
@@ -865,24 +878,24 @@ index fefef1c..9df10ee 100644
 +  const bool managerActive = managerLifecycle.active();
 +  if (!managerActive && !hasTerminalEventPending()) return;
 +  wifi_provisioning_event_queue::Event queued = {};
-   bool overflowed = false;
--  const bool hasEvent = dequeue(queued, overflowed);
-+  const bool hasEvent = dequeue(queued, overflowed, nowMs, !managerActive);
-   if (overflowed) {
-+    clearCredentialQueue();
++  const wifi_provisioning_event_queue::ServiceStep queueStep =
++      serviceQueueStep(queued, nowMs, !managerActive);
++  if (queueStep.result == wifi_provisioning_event_queue::ServiceResult::Overflow) {
      session.credentialsFailed();
-     requestStop();
+-    requestStop();
++    if (queueStep.requestStop) network_prov_mgr_stop_provisioning();
      event = Event::CredentialsFailed;
-@@ -251,7 +400,7 @@ void service(uint32_t nowMs, bool usbPowered, Event& event, wifi_config::Profile
+@@ -251,7 +400,8 @@ void service(uint32_t nowMs, bool usbPowered, Event& event, wifi_config::Profile
    }
-   if (!hasEvent) return;
+ -  if (!hasEvent) return;
++  if (queueStep.result == wifi_provisioning_event_queue::ServiceResult::Empty) return;
  
 -  if (cancelRequested && queued.type != ProviderEvent::Deinitialized) {
 +  if (cancelRequested && wifi_provisioning_lifecycle::discardOnCancel(queued.type)) {
      wifi_config::wipeSensitive(queued.profile);
      return;
    }
-@@ -269,30 +418,48 @@ void service(uint32_t nowMs, bool usbPowered, Event& event, wifi_config::Profile
+@@ -269,28 +418,46 @@ void service(uint32_t nowMs, bool usbPowered, Event& event, wifi_config::Profile
        }
        break;
      case ProviderEvent::CredentialsSucceeded:
@@ -897,12 +910,8 @@ index fefef1c..9df10ee 100644
        }
        break;
 +    case ProviderEvent::ServiceEnded:
-+      managerLifecycle.onServiceEnded();  // Arduino-ESP32 owns deinit after NETWORK_PROV_END.
-+      break;
++      break;  // serviceQueueStep records END before dispatch.
      case ProviderEvent::Deinitialized:
--      managerActive = false;
--      stopRequested = false;
-+      managerLifecycle.onDeinitialized();
        cancelRequested = false;
 -      session.stop();
 -      wipeBytes(proofOfPossessionValue, sizeof(proofOfPossessionValue));
@@ -1037,7 +1046,7 @@ new file mode 100644
 index 0000000..539c6f2
 --- /dev/null
 +++ b/firmware/src/wifi_provisioning_event_queue.h
-@@ -0,0 +1,197 @@
+@@ -0,0 +1,226 @@
 +#pragma once
 +
 +#include <stddef.h>
@@ -1069,6 +1078,13 @@ index 0000000..539c6f2
 +  uint8_t credentialDepth;
 +  bool serviceEndedPending;
 +  bool deinitializedPending;
++};
++
++enum class ServiceResult : uint8_t { Empty, Overflow, Event };
++
++struct ServiceStep {
++  ServiceResult result;
++  bool requestStop;
 +};
 +
 +class Queue {
@@ -1133,6 +1149,9 @@ index 0000000..539c6f2
 +  bool dequeue(Event& event, bool& overflowed, uint32_t dequeuedAtMs, bool terminalOnly = false) {
 +    overflowed = overflowCount_ != overflowHandled_;
 +    overflowHandled_ = overflowCount_;
++    // Report overflow without consuming any event. Service clears credentials
++    // first, then dispatches retained terminal events on a later pass.
++    if (overflowed) return false;
 +
 +    const bool credentialAvailable = !terminalOnly && credentialCount_ > 0;
 +    const bool takeServiceEnd = serviceEndedPending_ &&
@@ -1233,6 +1252,25 @@ index 0000000..539c6f2
 +  uint32_t overflowCount_ = 0;
 +  uint32_t overflowHandled_ = 0;
 +};
++
++inline ServiceStep serviceStep(Queue& queue, Event& event,
++                              wifi_provisioning_lifecycle::ManagerLifecycle& manager,
++                              uint32_t dequeuedAtMs, bool terminalOnly = false) {
++  bool overflowed = false;
++  const bool hasEvent = queue.dequeue(event, overflowed, dequeuedAtMs, terminalOnly);
++  if (overflowed) {
++    queue.clearCredentialEvents();
++    return ServiceStep{ServiceResult::Overflow, manager.requestStop()};
++  }
++  if (!hasEvent) return ServiceStep{ServiceResult::Empty, false};
++
++  if (event.type == wifi_provisioning_lifecycle::ProviderEvent::ServiceEnded) {
++    manager.onServiceEnded();
++  } else if (event.type == wifi_provisioning_lifecycle::ProviderEvent::Deinitialized) {
++    manager.onDeinitialized();
++  }
++  return ServiceStep{ServiceResult::Event, false};
++}
 +
 +}  // namespace wifi_provisioning_event_queue
 diff --git a/firmware/src/wifi_provisioning_lifecycle.h b/firmware/src/wifi_provisioning_lifecycle.h

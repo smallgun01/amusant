@@ -287,39 +287,43 @@ static void testExternalDeinitMayBeDequeuedBeforeEnd() {
   assert(!manager.deinitializationRequested());
 }
 
-static void testTerminalCallbacksSurviveCredentialQueueOverflow() {
+static void testServiceOverflowPreservesEndBeforeCredentials() {
   using wifi_provisioning_event_queue::Event;
   using wifi_provisioning_event_queue::Queue;
+  using wifi_provisioning_event_queue::ServiceResult;
+  using wifi_provisioning_lifecycle::ManagerLifecycle;
   using wifi_provisioning_lifecycle::ProviderEvent;
   Queue queue;
-  wifi_config::Profile profile = makeProfile("host-test-network", 't');
-
-  for (uint32_t i = 0; i < wifi_provisioning_event_queue::kCredentialQueueCapacity; ++i) {
-    assert(queue.enqueue(ProviderEvent::CredentialsReceived, &profile, 100 + i));
-  }
-  assert(!queue.enqueue(ProviderEvent::CredentialsSucceeded, NULL, 104));
-  assert(queue.enqueue(ProviderEvent::ServiceEnded, NULL, 200));
-  assert(queue.enqueue(ProviderEvent::Deinitialized, NULL, 201));
-
-  wifi_provisioning_lifecycle::ManagerLifecycle manager;
+  ManagerLifecycle manager;
   assert(manager.onInitialized());
-  Event event = {};
-  bool overflowed = false;
-  assert(queue.dequeue(event, overflowed, 205));
-  assert(overflowed);
-  assert(event.type == ProviderEvent::CredentialsReceived);
-  manager.requestStop();
-  queue.clearCredentialEvents();
 
-  assert(queue.dequeue(event, overflowed, 206));
-  assert(!overflowed && event.type == ProviderEvent::ServiceEnded);
-  manager.onServiceEnded();
-  assert(queue.dequeue(event, overflowed, 207));
-  assert(!overflowed && event.type == ProviderEvent::Deinitialized);
-  manager.onDeinitialized();
+  wifi_config::Profile profile = makeProfile("host-test-network", 't');
+  assert(queue.enqueue(ProviderEvent::ServiceEnded, NULL, 100));
+  for (uint32_t i = 0; i < wifi_provisioning_event_queue::kCredentialQueueCapacity; ++i) {
+    assert(queue.enqueue(ProviderEvent::CredentialsReceived, &profile, 101 + i));
+  }
+  assert(!queue.enqueue(ProviderEvent::CredentialsSucceeded, NULL, 105));
+
+  // Exercise the exact portable service step called by wifi_ble_provisioning::service().
+  Event event = {};
+  wifi_provisioning_event_queue::ServiceStep step =
+      wifi_provisioning_event_queue::serviceStep(queue, event, manager, 200);
+  assert(step.result == ServiceResult::Overflow && step.requestStop);
+  assert(manager.stopRequested());
+  wifi_provisioning_event_queue::Snapshot snapshot = {};
+  queue.snapshot(snapshot);
+  assert(snapshot.credentialDepth == 0);
+  assert(snapshot.serviceEndedPending && !snapshot.deinitializedPending);
+  assert(snapshot.dequeued[Queue::eventIndex(ProviderEvent::ServiceEnded)] == 0);
+
+  step = wifi_provisioning_event_queue::serviceStep(queue, event, manager, 201);
+  assert(step.result == ServiceResult::Event && event.type == ProviderEvent::ServiceEnded);
+  assert(manager.serviceEnded() && manager.active());
+  assert(queue.enqueue(ProviderEvent::Deinitialized, NULL, 202));
+  step = wifi_provisioning_event_queue::serviceStep(queue, event, manager, 203);
+  assert(step.result == ServiceResult::Event && event.type == ProviderEvent::Deinitialized);
   assert(!manager.active());
 
-  wifi_provisioning_event_queue::Snapshot snapshot = {};
   queue.snapshot(snapshot);
   assert(snapshot.callbacks[Queue::eventIndex(ProviderEvent::CredentialsReceived)] ==
          wifi_provisioning_event_queue::kCredentialQueueCapacity);
@@ -330,7 +334,49 @@ static void testTerminalCallbacksSurviveCredentialQueueOverflow() {
   assert(snapshot.dequeued[Queue::eventIndex(ProviderEvent::Deinitialized)] == 1);
   assert(snapshot.overflowCount == 1);
   assert(!snapshot.serviceEndedPending && !snapshot.deinitializedPending);
+  wifi_config::wipeSensitive(profile);
+  wifi_config::wipeSensitive(event.profile);
+}
 
+static void testServiceOverflowPreservesDeinitBeforeEnd() {
+  using wifi_provisioning_event_queue::Event;
+  using wifi_provisioning_event_queue::Queue;
+  using wifi_provisioning_event_queue::ServiceResult;
+  using wifi_provisioning_lifecycle::ManagerLifecycle;
+  using wifi_provisioning_lifecycle::ProviderEvent;
+  Queue queue;
+  ManagerLifecycle manager;
+  assert(manager.onInitialized());
+
+  assert(queue.enqueue(ProviderEvent::Deinitialized, NULL, 300));
+  assert(queue.enqueue(ProviderEvent::ServiceEnded, NULL, 301));
+  wifi_config::Profile profile = makeProfile("host-test-network", 't');
+  for (uint32_t i = 0; i < wifi_provisioning_event_queue::kCredentialQueueCapacity; ++i) {
+    assert(queue.enqueue(ProviderEvent::CredentialsReceived, &profile, 302 + i));
+  }
+  assert(!queue.enqueue(ProviderEvent::CredentialsFailed, NULL, 306));
+
+  Event event = {};
+  wifi_provisioning_event_queue::ServiceStep step =
+      wifi_provisioning_event_queue::serviceStep(queue, event, manager, 400);
+  assert(step.result == ServiceResult::Overflow && step.requestStop);
+  assert(manager.stopRequested());
+  wifi_provisioning_event_queue::Snapshot snapshot = {};
+  queue.snapshot(snapshot);
+  assert(snapshot.deinitializedPending && snapshot.serviceEndedPending);
+  assert(snapshot.credentialDepth == 0);
+
+  step = wifi_provisioning_event_queue::serviceStep(queue, event, manager, 401);
+  assert(step.result == ServiceResult::Event && event.type == ProviderEvent::Deinitialized);
+  assert(!manager.active());
+  step = wifi_provisioning_event_queue::serviceStep(queue, event, manager, 402, true);
+  assert(step.result == ServiceResult::Event && event.type == ProviderEvent::ServiceEnded);
+  assert(!manager.active());
+  queue.snapshot(snapshot);
+  assert(!snapshot.deinitializedPending && !snapshot.serviceEndedPending);
+  assert(snapshot.dequeued[Queue::eventIndex(ProviderEvent::Deinitialized)] == 1);
+  assert(snapshot.dequeued[Queue::eventIndex(ProviderEvent::ServiceEnded)] == 1);
+  assert(snapshot.overflowCount == 1);
   wifi_config::wipeSensitive(profile);
   wifi_config::wipeSensitive(event.profile);
 }
@@ -489,7 +535,8 @@ int main() {
   testCancelStopAndEndAreIdempotent();
   testStartupFailureIsTheOnlyApplicationOwnedDeinit();
   testExternalDeinitMayBeDequeuedBeforeEnd();
-  testTerminalCallbacksSurviveCredentialQueueOverflow();
+  testServiceOverflowPreservesEndBeforeCredentials();
+  testServiceOverflowPreservesDeinitBeforeEnd();
   testTerminalQueuePreservesDeinitBeforeEndAndDeduplicatesPendingEvents();
   testManagerDrainFallbackUsesCompiledSdkTimeout();
   testCancelLowBatteryAndWindowExpiryDiscardPendingCandidate();

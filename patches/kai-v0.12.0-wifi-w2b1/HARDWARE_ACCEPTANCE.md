@@ -5,7 +5,8 @@ Use this checklist only after PR review and separate owner authorization for the
 ## Before the session
 
 - [ ] Confirm the exact reviewed firmware and that the device is still on the known-good W1 recovery baseline.
-- [ ] Preserve the existing W1 firmware recovery image and current NVS state. Do not erase NVS or use a full-chip erase.
+- [ ] Preserve the known-good W1 app image, current NVS state, and an 8 MiB full-device backup before the session. Do not erase NVS or use a full-chip erase.
+- [ ] For a separately authorized flash, use `sticks3_ble_diag` and write only the app image at offset `0x10000`; preserve the bootloader, partition table, and NVS.
 - [ ] Record battery level, USB power state, free internal/PSRAM heap if available, and the connected Wi-Fi state without recording SSID passwords or PoP in shared logs.
 - [ ] Use an isolated test AP or the owner-selected phone hotspot. Do not infer Relay/cloud reachability from a Wi-Fi association.
 
@@ -28,9 +29,9 @@ Use this checklist only after PR review and separate owner authorization for the
 
 ## Post-success BLE teardown regression
 
-For a diagnostic run, build the opt-in `sticks3_ble_diag` environment and use it only under separate owner authorization. The firmware reports the actual compiled SDK auto-stop timeout, terminal callback/dequeue timestamps, queue overflow/drop counts, and manager/session state. It does not log Wi-Fi credentials or PoP. Do not retain raw Android Logcat output; record only whether the provisioning activity received its Connected status response and showed success or reported a disconnect.
+For a diagnostic run, use the separately authorized `sticks3_ble_diag` image, not normal `sticks3`. It reports the compiled SDK auto-stop timeout, callback/dequeue timestamps, queue overflow/drop counts, and manager/session state without credentials or PoP. The CRED_SUCCESS timestamp is when its callback was observed; it does not reveal the SDK's internal timer start or firing. If no END callback arrives after the configured timeout, the log labels it “missing END.” Do not retain raw Android Logcat; record only whether the activity showed success or reported a disconnect. Do not repeat an owner provisioning loop solely to reproduce the unchanged fallback symptom.
 
-- On an owner-approved test session, use the Android Espressif provisioning app and a designated 2.4 GHz test AP. Correlate the phone's status response outcome with the diagnostic firmware's CRED_SUCCESS, END, and DEINIT timestamps. Confirm the app receives its successful completion; keep PoP and Wi-Fi credentials out of logs and notes.
+- On an owner-approved test session after review of this queue correction, use the Android Espressif provisioning app and a designated 2.4 GHz test AP. Correlate the phone's status response outcome with the CRED_SUCCESS callback observation and END/DEINIT timestamps. Record the `WIFI BLE AUTOSTOP`, `WIFI BLE EVT callback/dequeue`, `WIFI BLE STATE`, save, setup-return/fallback lines, and whether Android displayed success. Keep PoP and Wi-Fi credentials out of logs and notes.
 - After valid credentials, confirm Serial reports `WIFI OK SAVED BLE`, then `WIFI BLE SETUP RETURN` and a normal software restart. `WIFI BLE DRAIN FALLBACK` must not appear on the successful path.
 - Verify the replacement profile reconnects after normal boot. Also cancel a separate setup attempt and confirm the old profile remains and normal boot returns.
 - If END/deinit does not complete before the fallback, record which active-state term remains true and whether each terminal callback was observed versus dequeued. If the app does not receive completion, record the app result relative to its first status poll and device END/DEINIT timestamps. Stop testing and preserve only the redacted Serial sequence; do not erase NVS or flash automatically.

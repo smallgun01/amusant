@@ -30,13 +30,9 @@ def main():
 
     native = (source / "wifi_ble_provisioning.cpp").read_text(encoding="utf-8")
     service_body = native[native.find("void service("):]
-    service_end = re.search(
-        r"case ProviderEvent::ServiceEnded:(.*?)case ProviderEvent::Deinitialized:",
-        service_body, re.DOTALL
-    )
-    if service_end is None or "managerLifecycle.onServiceEnded()" not in service_end.group(1):
-        raise SystemExit("The native service must record NETWORK_PROV_END before waiting for external DEINIT.")
-    if "network_prov_mgr_deinit()" in service_end.group(1):
+    if "serviceQueueStep(queued, nowMs, !managerActive)" not in service_body:
+        raise SystemExit("The native service must use the tested service-level overflow/terminal-event drain.")
+    if "network_prov_mgr_deinit()" in service_body[service_body.find("case ProviderEvent::ServiceEnded:"):]:
         raise SystemExit("Arduino-ESP32 owns manager deinit on NETWORK_PROV_END; the native loop must not call it.")
     if native.count("network_prov_mgr_deinit()") != 1:
         raise SystemExit("Only the guarded provisioning-start failure path may deinitialize the manager directly.")
@@ -44,8 +40,14 @@ def main():
     event_queue = (source / "wifi_provisioning_event_queue.h").read_text(encoding="utf-8")
     if "serviceEndedPending_" not in event_queue or "deinitializedPending_" not in event_queue:
         raise SystemExit("END and DEINIT must use the dedicated lossless terminal-event path.")
+    if "ServiceStep serviceStep(" not in event_queue or "manager.onServiceEnded()" not in event_queue or "manager.onDeinitialized()" not in event_queue:
+        raise SystemExit("The tested service step must preserve overflowed terminal events and update lifecycle state.")
     if "CONFIG_NETWORK_PROV_AUTOSTOP_TIMEOUT" not in native:
         raise SystemExit("The compiled SDK auto-stop timeout must drive the setup drain fallback.")
+    if "timer_start_observed_ms" in native or "autostop_end_after_success_ms" in native:
+        raise SystemExit("Diagnostics must not imply that the SDK's internal timer start or firing was observed.")
+    if "missing_END after_CRED_SUCCESS_callback_ms=" not in native:
+        raise SystemExit("Diagnostics must report a missing END without claiming the SDK timer failed.")
     if "AMUSANT_WIFI_BLE_DIAGNOSTICS" not in native:
         raise SystemExit("The opt-in, non-secret BLE teardown diagnostics are missing.")
     diag_start = native.find("void reportProviderEventCounters()")
@@ -80,7 +82,7 @@ def main():
         ]
         subprocess.run(command, check=True)
         subprocess.run([str(executable)], check=True)
-    print("W2b-1 offline lifecycle ownership, lossless terminal-event overflow/order, cancellation, dynamic SDK timeout, commit gate, and fake-NVS tests passed.", flush=True)
+    print("W2b-1 offline lifecycle ownership, service-level terminal-event overflow/order, cancellation, dynamic SDK timeout, commit gate, and fake-NVS tests passed.", flush=True)
 
 
 if __name__ == "__main__":
