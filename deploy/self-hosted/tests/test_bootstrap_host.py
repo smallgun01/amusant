@@ -383,7 +383,7 @@ class BootstrapTests(unittest.TestCase):
         facts = host(prepared)
         real_read = Path.read_text
         real_exists, real_is_file = Path.exists, Path.is_file
-        real_digest = b.digest
+        real_digest, real_dir_metadata = b.digest, b.dir_metadata
         self.stack.enter_context(patch.object(b, "KEY", self.temp / "docker.asc"))
         self.stack.enter_context(patch.object(b, "SOURCE", self.temp / "docker.sources"))
         self.stack.enter_context(patch.object(b, "DOCKER_CONFIG_FILES", (self.temp / "host/docker.json",)))
@@ -398,7 +398,8 @@ class BootstrapTests(unittest.TestCase):
         self.stack.enter_context(patch.object(Path, "glob", return_value=[]))
         self.stack.enter_context(patch.object(b, "digest", side_effect=lambda path:
             "offline-apt-state" if str(path) == "/var/lib/dpkg/status" else real_digest(path)))
-        self.stack.enter_context(patch.object(b, "dir_metadata", return_value=facts["data_root"]))
+        self.stack.enter_context(patch.object(b, "dir_metadata", side_effect=lambda path:
+            facts["data_root"] if str(path) == inputs()["data_dir"] else real_dir_metadata(path)))
         self.stack.enter_context(patch.object(b.os, "statvfs", return_value=SimpleNamespace(f_bavail=1024*1024, f_frsize=4096)))
         def fake_command(*args, **kwargs):
             if args == ("uname", "-m"): return "aarch64\n"
