@@ -67,8 +67,8 @@ Both pinned builds passed in the latest [integration workflow run](https://githu
 
 | Profile | Firmware image | Program Flash | RAM |
 | --- | ---: | ---: | ---: |
-| `sticks3` | 2,430,761 B | 2,396,903 / 3,342,336 B (71.7%) | 79,800 / 327,680 B (24.4%) |
-| `sticks3_ble_diag` | 2,433,653 B | 2,399,723 / 3,342,336 B (71.8%) | 79,952 / 327,680 B (24.4%) |
+| `sticks3` | 2,430,928 B | 2,396,903 / 3,342,336 B (71.7%) | 79,800 / 327,680 B (24.4%) |
+| `sticks3_ble_diag` | 2,433,824 B | 2,399,723 / 3,342,336 B (71.8%) | 79,952 / 327,680 B (24.4%) |
 
 Runtime free heap, battery draw, Android status delivery, and reconnection to a real AP are not measurable from this offline build. The owner-supervised physical acceptance procedure remains pending; the CI run does not establish successful Android provisioning.
 
