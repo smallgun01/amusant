@@ -169,18 +169,20 @@ class BootstrapTests(unittest.TestCase):
 
     def test_docker_startup_state_reads_configs_overrides_and_storage_without_starting_daemon(self):
         config = self.temp / "daemon.json"
+        unit = self.temp / "docker.service"
         docker_unit = self.temp / "docker.service.d"; docker_unit.mkdir()
         override = docker_unit / "10-storage.conf"; override.write_text("[Service]\\nExecStart=custom\\n")
         docker_data = self.temp / "docker-data"; docker_data.mkdir(); (docker_data / "containers").mkdir()
         containerd_data = self.temp / "containerd-data"; containerd_data.mkdir()
         real_is_file = Path.is_file
-        with patch.object(b, "DOCKER_CONFIG_FILES", (config,)), \
+        with patch.object(b, "DOCKER_CONFIG_FILES", (config, unit)), \
                 patch.object(b, "DOCKER_OVERRIDE_DIRS", (docker_unit,)), \
                 patch.object(b, "DOCKER_STATE_DIRS", (docker_data, containerd_data)), \
                 patch.object(Path, "is_file", lambda path: False if str(path) == "/usr/bin/docker" else real_is_file(path)):
             config.write_text('{"data-root":"/srv/docker"}')
+            unit.write_text("[Service]\nExecStart=/usr/bin/dockerd --data-root=/srv/docker\n")
             state = b.docker_startup_state()
-        self.assertEqual(set(state["configs"]), {str(config), str(override)})
+        self.assertEqual(set(state["configs"]), {str(config), str(unit), str(override)})
         self.assertTrue(state["state_dirs"][str(docker_data)]["nonempty"])
         self.assertFalse(state["state_dirs"][str(containerd_data)]["nonempty"])
 
@@ -520,7 +522,10 @@ class BootstrapTests(unittest.TestCase):
         self.commands.reset_mock()
         self.commands.side_effect = lambda *args, **kwargs: (
             "" if args == ("dpkg", "--audit") else
-            "Inst docker-ce (1.2.3 Docker:stable [arm64])\nConf docker-ce (1.2.3 Docker:stable [arm64])\n"
+            "Inst docker-ce (1.2.3 Docker:stable [arm64])\n"
+            "Inst libnew-dependency (2.0 Ubuntu [arm64])\n"
+            "Conf docker-ce (1.2.3 Docker:stable [arm64])\n"
+            "Conf libnew-dependency (2.0 Ubuntu [arm64])\n"
             if "--simulate" in args else "")
         b.install_docker({"docker-ce": "1.2.3"}, "noble")
         self.assertTrue(any("--yes" in c.args for c in self.commands.call_args_list))

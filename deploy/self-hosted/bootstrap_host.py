@@ -32,12 +32,20 @@ DOCKER_CONFIG_FILES = (
     Path("/etc/docker/daemon.json"), Path("/etc/default/docker"), Path("/etc/containerd/config.toml"),
     Path("/etc/systemd/system/docker.service"), Path("/etc/systemd/system/docker.socket"),
     Path("/etc/systemd/system/containerd.service"),
+    Path("/run/systemd/system/docker.service"), Path("/run/systemd/system/docker.socket"),
+    Path("/run/systemd/system/containerd.service"),
+    Path("/usr/local/lib/systemd/system/docker.service"), Path("/usr/local/lib/systemd/system/docker.socket"),
+    Path("/usr/local/lib/systemd/system/containerd.service"),
 )
 DOCKER_OVERRIDE_DIRS = (
     Path("/etc/systemd/system/docker.service.d"), Path("/etc/systemd/system/docker.socket.d"),
     Path("/etc/systemd/system/containerd.service.d"), Path("/etc/systemd/system/service.d"),
     Path("/run/systemd/system/docker.service.d"), Path("/run/systemd/system/docker.socket.d"),
     Path("/run/systemd/system/containerd.service.d"), Path("/run/systemd/system/service.d"),
+    Path("/usr/local/lib/systemd/system/docker.service.d"), Path("/usr/local/lib/systemd/system/docker.socket.d"),
+    Path("/usr/local/lib/systemd/system/containerd.service.d"), Path("/usr/local/lib/systemd/system/service.d"),
+    Path("/usr/lib/systemd/system/docker.service.d"), Path("/usr/lib/systemd/system/docker.socket.d"),
+    Path("/usr/lib/systemd/system/containerd.service.d"), Path("/usr/lib/systemd/system/service.d"),
 )
 KEY_URL = "https://download.docker.com/linux/ubuntu/gpg"
 KEY = Path("/etc/apt/keyrings/docker.asc")
@@ -594,4 +602,3 @@ def main(argv=None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
