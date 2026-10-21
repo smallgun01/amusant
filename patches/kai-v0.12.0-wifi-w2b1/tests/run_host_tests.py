@@ -22,6 +22,7 @@ def main():
     source = args.firmware_root.resolve() / "src"
     required = (source / "wifi_config.cpp", source / "wifi_ble_flow.cpp",
                 source / "wifi_setup_intent.h", source / "wifi_provisioning_commit_gate.h",
+                source / "wifi_provisioning_event_queue.h",
                 source / "wifi_provisioning_lifecycle.h")
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
@@ -37,6 +38,24 @@ def main():
         raise SystemExit("Arduino-ESP32 owns manager deinit on NETWORK_PROV_END; the native loop must not call it.")
     if native.count("network_prov_mgr_deinit()") != 1:
         raise SystemExit("Only the guarded provisioning-start failure path may deinitialize the manager directly.")
+
+    event_queue = (source / "wifi_provisioning_event_queue.h").read_text(encoding="utf-8")
+    if "serviceEndedPending_" not in event_queue or "deinitializedPending_" not in event_queue:
+        raise SystemExit("END and DEINIT must use the dedicated lossless terminal-event path.")
+    if "CONFIG_NETWORK_PROV_AUTOSTOP_TIMEOUT" not in native:
+        raise SystemExit("The compiled SDK auto-stop timeout must drive the setup drain fallback.")
+    if "AMUSANT_WIFI_BLE_DIAGNOSTICS" not in native:
+        raise SystemExit("The opt-in, non-secret BLE teardown diagnostics are missing.")
+    diag_start = native.find("void reportProviderEventCounters()")
+    diag_end = native.find("#endif", diag_start)
+    diagnostic = native[diag_start:diag_end].lower() if diag_start >= 0 and diag_end > diag_start else ""
+    if not diagnostic:
+        raise SystemExit("The gated BLE teardown diagnostic implementation is missing.")
+    if any(secret_field in diagnostic for secret_field in ("ssid", "password", "proofofpossession", "servicename")):
+        raise SystemExit("BLE teardown diagnostics must not print credentials, PoP, or the provisioning service name.")
+    platformio = (args.firmware_root.resolve() / "platformio.ini").read_text(encoding="utf-8")
+    if "[env:sticks3_ble_diag]" not in platformio:
+        raise SystemExit("The reproducible diagnostic PlatformIO environment is missing.")
 
     fake_preferences = args.wifi_tests.resolve() / "fakes"
     with tempfile.TemporaryDirectory(prefix="wifi-w2b1-host-") as temporary:
@@ -59,7 +78,7 @@ def main():
         ]
         subprocess.run(command, check=True)
         subprocess.run([str(executable)], check=True)
-    print("W2b-1 offline lifecycle ownership, event-order, cancellation, commit gate, timeout, and fake-NVS tests passed.", flush=True)
+    print("W2b-1 offline lifecycle ownership, lossless terminal-event overflow/order, cancellation, dynamic SDK timeout, commit gate, and fake-NVS tests passed.", flush=True)
 
 
 if __name__ == "__main__":

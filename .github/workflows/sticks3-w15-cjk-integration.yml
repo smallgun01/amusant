@@ -43,7 +43,8 @@ jobs:
           git -C kai diff --check -- \
             firmware/src/main.cpp firmware/src/wifi_ble_flow.cpp firmware/src/wifi_ble_flow.h \
             firmware/src/wifi_ble_provisioning.cpp firmware/src/wifi_ble_provisioning.h \
-            firmware/src/wifi_setup_intent.h firmware/src/wifi_provisioning_commit_gate.h
+            firmware/src/wifi_setup_intent.h firmware/src/wifi_provisioning_commit_gate.h \
+            firmware/src/wifi_provisioning_lifecycle.h firmware/src/wifi_provisioning_event_queue.h
       - name: Firmware C++ and Python host tests
         run: |
           python3 patches/kai-v0.12.0-wifi-w1.5/tests/run_host_tests.py --firmware-root kai/firmware
@@ -120,11 +121,41 @@ jobs:
               if "JELLII_CJK_DIAGNOSTICS" in source or "CJK SHOW" in source:
                   raise SystemExit(f"production source unexpectedly contains opt-in CJK diagnostics: {relative}")
           image = (root / ".pio/build/sticks3/firmware.bin").read_bytes()
-          forbidden = (b"CJK SHOW", b"CJK MISSING", b"CJK FORMAT", b"CJK NONBMP", b"CJK INVALID")
+          forbidden = (b"CJK SHOW", b"CJK MISSING", b"CJK FORMAT", b"CJK NONBMP", b"CJK INVALID",
+                       b"WIFI BLE STATE phase=", b"WIFI BLE AUTOSTOP configured_timeout_s=",
+                       b"WIFI BLE EVT callback=")
           present = [marker.decode("ascii") for marker in forbidden if marker in image]
           if present:
               raise SystemExit("production firmware exposes opt-in CJK diagnostics: " + ", ".join(present))
           print("Production sticks3 excludes JELLII_CJK_DIAGNOSTICS and CJK Serial diagnostics.")
+          PY
+      - name: Build opt-in, secret-free BLE lifecycle diagnostics
+        run: |
+          /tmp/pioenv/bin/pio run -d kai/firmware -e sticks3_ble_diag
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          image_path = Path("kai/firmware/.pio/build/sticks3_ble_diag/firmware.bin")
+          image = image_path.read_bytes()
+          matches = re.findall(
+              rb"WIFI BLE AUTOSTOP configured_timeout_s=(\d+) fallback_timeout_ms=(\d+)", image
+          )
+          if len(matches) != 1:
+              raise SystemExit(f"Expected one compiled auto-stop marker in {image_path}, found {len(matches)}.")
+          timeout_s, fallback_ms = map(int, matches[0])
+          if timeout_s <= 0 or fallback_ms != timeout_s * 1000 + 15000:
+              raise SystemExit(f"Invalid compiled timer/fallback values: {timeout_s}s / {fallback_ms}ms.")
+          for marker in (b"WIFI BLE EVT callback=", b"WIFI BLE EVT dequeue=",
+                         b"WIFI BLE STATE phase=", b"WIFI BLE SDK autostop_end_after_success_ms="):
+              if marker not in image:
+                  raise SystemExit(f"Diagnostic firmware is missing lifecycle marker {marker!r}.")
+          image_bytes = len(image)
+          print(f"Compiled CONFIG_NETWORK_PROV_AUTOSTOP_TIMEOUT={timeout_s}s")
+          print(f"Dynamic drain fallback={fallback_ms}ms (SDK timeout + 15000ms safety margin)")
+          print(f"Opt-in BLE diagnostics firmware: {image_bytes} / 3342336 bytes")
+          if image_bytes > 3342336:
+              raise SystemExit("Diagnostic image exceeds available application partition.")
           PY
       - name: Check exact pinned glyph data and production wrap widths
         run: |

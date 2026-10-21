@@ -6,6 +6,7 @@
 #include "wifi_ble_flow.h"
 #include "wifi_config.h"
 #include "wifi_provisioning_commit_gate.h"
+#include "wifi_provisioning_event_queue.h"
 #include "wifi_provisioning_lifecycle.h"
 #include "wifi_setup_intent.h"
 
@@ -44,9 +45,8 @@ static void testOneShotBootIntent() {
 
 static void testFiveSecondGestureAndConflictGates() {
   assert(wifi_setup_intent::kPhysicalGestureHoldMs == 5000);
-  assert(wifi_setup_intent::kProvisioningAutoStopMaxMs == 30000);
-  assert(wifi_setup_intent::kManagerDrainTimeoutMs == 45000);
-  assert(wifi_setup_intent::kManagerDrainTimeoutMs > wifi_setup_intent::kProvisioningAutoStopMaxMs);
+  assert(wifi_setup_intent::managerDrainTimeoutMs(30000) == 45000);
+  assert(wifi_setup_intent::managerDrainTimeoutMs(90000) == 105000);
   assert(wifi_setup_intent::setupGestureEligible(true, false, false, false, true));
   assert(wifi_setup_intent::setupGestureEligible(false, true, false, false, true));
   assert(!wifi_setup_intent::setupGestureEligible(false, false, false, false, true));
@@ -287,16 +287,96 @@ static void testExternalDeinitMayBeDequeuedBeforeEnd() {
   assert(!manager.deinitializationRequested());
 }
 
-static void testManagerDrainFallbackWaitsPastSdkAutostop() {
+static void testTerminalCallbacksSurviveCredentialQueueOverflow() {
+  using wifi_provisioning_event_queue::Event;
+  using wifi_provisioning_event_queue::Queue;
+  using wifi_provisioning_lifecycle::ProviderEvent;
+  Queue queue;
+  wifi_config::Profile profile = makeProfile("host-test-network", 't');
+
+  for (uint32_t i = 0; i < wifi_provisioning_event_queue::kCredentialQueueCapacity; ++i) {
+    assert(queue.enqueue(ProviderEvent::CredentialsReceived, &profile, 100 + i));
+  }
+  assert(!queue.enqueue(ProviderEvent::CredentialsSucceeded, NULL, 104));
+  assert(queue.enqueue(ProviderEvent::ServiceEnded, NULL, 200));
+  assert(queue.enqueue(ProviderEvent::Deinitialized, NULL, 201));
+
+  wifi_provisioning_lifecycle::ManagerLifecycle manager;
+  assert(manager.onInitialized());
+  Event event = {};
+  bool overflowed = false;
+  assert(queue.dequeue(event, overflowed, 205));
+  assert(overflowed);
+  assert(event.type == ProviderEvent::CredentialsReceived);
+  manager.requestStop();
+  queue.clearCredentialEvents();
+
+  assert(queue.dequeue(event, overflowed, 206));
+  assert(!overflowed && event.type == ProviderEvent::ServiceEnded);
+  manager.onServiceEnded();
+  assert(queue.dequeue(event, overflowed, 207));
+  assert(!overflowed && event.type == ProviderEvent::Deinitialized);
+  manager.onDeinitialized();
+  assert(!manager.active());
+
+  wifi_provisioning_event_queue::Snapshot snapshot = {};
+  queue.snapshot(snapshot);
+  assert(snapshot.callbacks[Queue::eventIndex(ProviderEvent::CredentialsReceived)] ==
+         wifi_provisioning_event_queue::kCredentialQueueCapacity);
+  assert(snapshot.dropped[Queue::eventIndex(ProviderEvent::CredentialsSucceeded)] == 1);
+  assert(snapshot.callbacks[Queue::eventIndex(ProviderEvent::ServiceEnded)] == 1);
+  assert(snapshot.callbacks[Queue::eventIndex(ProviderEvent::Deinitialized)] == 1);
+  assert(snapshot.dequeued[Queue::eventIndex(ProviderEvent::ServiceEnded)] == 1);
+  assert(snapshot.dequeued[Queue::eventIndex(ProviderEvent::Deinitialized)] == 1);
+  assert(snapshot.overflowCount == 1);
+  assert(!snapshot.serviceEndedPending && !snapshot.deinitializedPending);
+
+  wifi_config::wipeSensitive(profile);
+  wifi_config::wipeSensitive(event.profile);
+}
+
+static void testTerminalQueuePreservesDeinitBeforeEndAndDeduplicatesPendingEvents() {
+  using wifi_provisioning_event_queue::Event;
+  using wifi_provisioning_event_queue::Queue;
+  using wifi_provisioning_lifecycle::ProviderEvent;
+  Queue queue;
+
+  assert(queue.enqueue(ProviderEvent::Deinitialized, NULL, 300));
+  assert(queue.enqueue(ProviderEvent::ServiceEnded, NULL, 301));
+  assert(queue.enqueue(ProviderEvent::ServiceEnded, NULL, 302));
+
+  Event event = {};
+  bool overflowed = false;
+  assert(queue.dequeue(event, overflowed, 310));
+  assert(!overflowed && event.type == ProviderEvent::Deinitialized && event.callbackAtMs == 300);
+  assert(queue.dequeue(event, overflowed, 311));
+  assert(!overflowed && event.type == ProviderEvent::ServiceEnded && event.callbackAtMs == 301);
+  assert(!queue.dequeue(event, overflowed, 312));
+
+  wifi_provisioning_event_queue::Snapshot snapshot = {};
+  queue.snapshot(snapshot);
+  assert(snapshot.callbacks[Queue::eventIndex(ProviderEvent::ServiceEnded)] == 2);
+  assert(snapshot.dequeued[Queue::eventIndex(ProviderEvent::ServiceEnded)] == 1);
+}
+
+static void testManagerDrainFallbackUsesCompiledSdkTimeout() {
   const uint32_t startedAt = 1000;
+  const uint32_t sdkAutoStopMs = 90000;
+  const uint32_t fallbackMs = wifi_setup_intent::managerDrainTimeoutMs(sdkAutoStopMs);
+  assert(fallbackMs == 105000);
   assert(!wifi_setup_intent::managerDrainFallbackExpired(
-      startedAt + wifi_setup_intent::kProvisioningAutoStopMaxMs, startedAt, true));
+      startedAt + sdkAutoStopMs, startedAt, true, sdkAutoStopMs));
   assert(!wifi_setup_intent::managerDrainFallbackExpired(
-      startedAt + wifi_setup_intent::kManagerDrainTimeoutMs - 1, startedAt, true));
+      startedAt + fallbackMs - 1, startedAt, true, sdkAutoStopMs));
   assert(wifi_setup_intent::managerDrainFallbackExpired(
-      startedAt + wifi_setup_intent::kManagerDrainTimeoutMs, startedAt, true));
+      startedAt + fallbackMs, startedAt, true, sdkAutoStopMs));
   assert(!wifi_setup_intent::managerDrainFallbackExpired(
-      startedAt + wifi_setup_intent::kManagerDrainTimeoutMs, startedAt, false));
+      startedAt + fallbackMs, startedAt, false, sdkAutoStopMs));
+
+  // Unsigned subtraction keeps the watchdog correct when millis() wraps.
+  const uint32_t wrappedStart = UINT32_MAX - 50000U;
+  assert(wifi_setup_intent::managerDrainFallbackExpired(
+      wrappedStart + fallbackMs, wrappedStart, true, sdkAutoStopMs));
 }
 
 enum class PendingInterruption { ButtonCancel, LowBattery, SetupWindowExpired };
@@ -409,7 +489,9 @@ int main() {
   testCancelStopAndEndAreIdempotent();
   testStartupFailureIsTheOnlyApplicationOwnedDeinit();
   testExternalDeinitMayBeDequeuedBeforeEnd();
-  testManagerDrainFallbackWaitsPastSdkAutostop();
+  testTerminalCallbacksSurviveCredentialQueueOverflow();
+  testTerminalQueuePreservesDeinitBeforeEndAndDeduplicatesPendingEvents();
+  testManagerDrainFallbackUsesCompiledSdkTimeout();
   testCancelLowBatteryAndWindowExpiryDiscardPendingCandidate();
   testNvsFailureAfterAssociationDoesNotLoseOldProfile();
   testBoundedWindowCancelAndUsbDisconnect();
