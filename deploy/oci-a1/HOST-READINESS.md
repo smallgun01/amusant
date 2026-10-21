@@ -2,6 +2,10 @@
 
 > **Evidence tier: owner-reported host SSH bootstrap, NOT E3 or OCI runtime readiness.** This is an operator handoff for [#62](https://github.com/smallgun01/amusant/issues/62). It does not authorize installing packages, changing cloud/host networking, adding sudo or Docker access, configuring credentials, starting containers, exposing ports, touching AWS resources or calling paid providers. [SPEC](../../SPEC.md), [ADR-0003](../../docs/adr/0003-oci-a1-hermes-sqlite.md) and [STATUS](../../STATUS.md) remain authoritative.
 
+## Host bootstrap entry point (Issue #101 / PR-B1)
+
+The [AI-first runbook](../self-hosted/README.md) turns the host preparation portion into one preview/apply script with offline fixtures. It preserves the observations and approval gates below: an SSH login is not sudo or Docker authorization. A separately reviewed, root-owned execution path and an already-mounted approved ext4 data disk are required before apply. Missing storage or authority is `BLOCKED`, not permission to provision a volume or widen privileges. `HOST_PREPARED` covers host prerequisites only; B2/B3 and real-host evidence remain separate. This document does not record a live bootstrap result.
+
 ## What is known, and the limit of each observation
 
 | Evidence source | Observation | What it does NOT prove |

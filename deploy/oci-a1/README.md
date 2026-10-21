@@ -6,6 +6,10 @@
 
 As of 2026-10-21, the owner reports an existing OCI Ubuntu ARM64 A1 VM and an N100 OpenClaw SSH **read-only** connection using a dedicated unprivileged account (BatchMode exit 0). This is **only a host-access milestone**. Docker/Compose, block volumes, secrets and actual OCI runtime execution have **not** been proven. Follow [HOST-READINESS.md](HOST-READINESS.md) for the non-mutating H2 inventory and request explicit approval for installs, sudo, volume/network or ingress changes, credentials, image pulls, containers and any provider call. Nothing in this package auto-deploys services or opens ports.
 
+## AI-first host preparation (Issue #101 / PR-B1)
+
+Use the [self-hosted runbook](../self-hosted/README.md) for a reviewed, idempotent host plan/apply using this existing package. PR-B1 prepares Docker/Compose and missing data directories only; `HOST_PREPARED` is not `READY_OFFLINE` or E3. The agent orchestrates SSH; the script does not grant itself privileges. B2 owns Hermes seed/effective tool policy; B3 owns image digest/platform verification, Compose deployment and synthetic on-host E2E. The static preflight verifies digest **syntax**, not registry/image existence or actual ARM64 compatibility. No live installation or service acceptance is implied by these files.
+
 ## Runtime topology
 
 - StickS3 connects to the private Relay listener on TCP/8443 using the existing fail-closed TLS-PSK path.
