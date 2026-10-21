@@ -41,7 +41,15 @@ Nayuki's C QR encoder is vendored from commit `3c6d0b3cefb4e049dc337e82237c96443
 
 ## Offline verification
 
-The integration workflow applies all production layers and merged PR #95, runs the W1/W1.5/W2b-1 regressions, builds that merged state as the footprint baseline, then applies this QR-only patch and repeats the production and diagnostic builds. It reports image, flash, and static RAM deltas against merged #95. The QR test decodes only a fake generated payload with `zbarimg`; it captures and compares output internally without printing or uploading the decoded payload or image. Builds use only `secrets.example.h` placeholders.
+The [integrated workflow run #47](https://github.com/smallgun01/amusant/actions/runs/39559463815) passed on the merged PR #95 baseline. It applies all production layers, runs the W1/W1.5/W2b-1/CJK regressions, builds the merged state, then applies this QR-only patch and passes the QR host/decode and owner-setup wiring tests plus production and diagnostic builds. The QR test decodes only a fake generated payload with `zbarimg`; it captures and compares output internally without printing or uploading the decoded payload or image. All firmware builds use only `secrets.example.h` placeholders.
+
+| Variant | Firmware image | Program flash | Static RAM |
+| --- | ---: | ---: | ---: |
+| Merged PR #95 W2b-1 | 2,430,944 B | 2,396,911 / 3,342,336 B (71.7%) | 79,800 / 327,680 B (24.4%) |
+| W2b-QR | 2,439,744 B | 2,405,595 / 3,342,336 B (72.0%) | 80,224 / 327,680 B (24.5%) |
+| Delta | +8,800 B | +8,684 B | +424 B |
+
+The static RAM increase matches the fixed QR matrix and scratch buffers. Runtime free-heap margin still requires device measurement.
 
 Manual verification command, after applying the patch:
 
