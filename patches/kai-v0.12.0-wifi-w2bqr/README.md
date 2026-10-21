@@ -41,11 +41,15 @@ Nayuki's C QR encoder is vendored from commit `3c6d0b3cefb4e049dc337e82237c96443
 
 ## Offline verification
 
-The integrated workflow applies all production layers, runs the merged W1/W1.5/W2b-1/CJK regressions, builds the merged baseline, then applies this display-only optical revision and runs QR host/layout/page checks, a fake-only independent `zbarimg` decode, and production plus diagnostic builds. The decoder captures and compares output internally without printing or uploading the decoded payload or image. All firmware builds use only `secrets.example.h` placeholders. See the matching latest PR workflow run for this commit; physical scanning remains pending owner-supervised acceptance.
+The [integrated workflow run #49](https://github.com/smallgun01/amusant/actions/runs/39587777101) passed on this optical revision. It applies all production layers, runs the merged W1/W1.5/W2b-1/CJK regressions, builds the merged baseline, then applies this display-only optical revision and runs QR host/layout/page checks, a fake-only independent `zbarimg` decode, and production plus diagnostic builds. The decoder captures and compares output internally without printing or uploading the decoded payload or image. All firmware builds use only `secrets.example.h` placeholders. Physical scanning remains pending owner-supervised acceptance.
 
-The optical revision's exact firmware image, program flash, static RAM, and delta against merged PR #95 are recorded in the matching CI summary and will be copied here from that run before review. The previous 98px version-6 measurements are intentionally not presented as measurements of this revision.
+| Variant | Firmware image | Program flash | Static RAM |
+| --- | ---: | ---: | ---: |
+| Merged PR #95 W2b-1 | 2,430,944 B | 2,396,911 / 3,342,336 B (71.7%) | 79,800 / 327,680 B (24.4%) |
+| W2b-QR optical experiment | 2,439,840 B | 2,405,571 / 3,342,336 B (72.0%) | 80,144 / 327,680 B (24.5%) |
+| Delta | +8,896 B | +8,660 B | +344 B |
 
-The static RAM increase matches the fixed QR matrix and scratch buffers. Runtime free-heap margin still requires device measurement.
+The 346 B fixed encoder buffers and 128 B stack payload use no heap; the measured static RAM delta is +344 B. Runtime free-heap margin still requires device measurement.
 
 Manual verification command, after applying the patch:
 
