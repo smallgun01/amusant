@@ -6,6 +6,22 @@
 
 As of 2026-10-21, the owner reports an existing OCI Ubuntu ARM64 A1 VM and an N100 OpenClaw SSH **read-only** connection using a dedicated unprivileged account (BatchMode exit 0). This is **only a host-access milestone**. Docker/Compose, block volumes, secrets and actual OCI runtime execution have **not** been proven. Follow [HOST-READINESS.md](HOST-READINESS.md) for the non-mutating H2 inventory and request explicit approval for installs, sudo, volume/network or ingress changes, credentials, image pulls, containers and any provider call. Nothing in this package auto-deploys services or opens ports.
 
+## Self-hosted Doctor and Safe Setup (PR-A)
+
+The generic standard-library-first CLI lives in `deploy/self-hosted/`; the OCI A1 input profile is `deploy/oci-a1/self-hosted-profile.json`.
+
+From the repository root:
+
+```sh
+python3 deploy/self-hosted/toolkit.py --profile deploy/oci-a1/self-hosted-profile.json doctor
+python3 deploy/self-hosted/toolkit.py --profile deploy/oci-a1/self-hosted-profile.json setup
+python3 deploy/self-hosted/toolkit.py --profile deploy/oci-a1/self-hosted-profile.json setup --apply
+```
+
+Pass `--env-file` to select a private env file and repeat `--external-network-cidr` with operator-supplied network evidence. For the OCI profile, set `OCI_EXPECTED_DATA_SOURCE` from owner-approved volume evidence; `OCI_VCN_CIDRS` is optional and never looked up remotely. Doctor reuses the existing OCI preflight, checks file metadata without opening secret/config contents or printing file paths, and runs only local `docker compose config --quiet` when inputs are complete. It does not connect to cloud/registry/provider APIs, pull images, or start services. Digest syntax is distinct from verified image provenance/platform, and every report remains explicitly short of deployment GO.
+
+`setup` is a dry-run by default. `setup --apply` requires an interactive `APPLY SAFE` confirmation and only applies the listed safe local operations. It never overwrites `.env`, secrets, Hermes config or existing data; never changes existing ownership/modes; never invokes sudo, creates credentials, or starts containers. If volume identity or permissions are unknown, data-directory changes stay blocked. Unit tests use temporary fixtures and fake command results only.
+
 ## Runtime topology
 
 - StickS3 connects to the private Relay listener on TCP/8443 using the existing fail-closed TLS-PSK path.

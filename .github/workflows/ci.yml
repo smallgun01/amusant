@@ -52,6 +52,9 @@ jobs:
       - name: OCI offline deployment package guards
         run: uv run --locked --python 3.13 --extra hardware-opus --group dev python -m unittest discover -s deploy/oci-a1/tests -v
 
+      - name: Self-hosting toolkit offline tests
+        run: uv run --locked --python 3.13 --extra hardware-opus --group dev python -m unittest discover -s deploy/self-hosted/tests -v
+
       - name: TLS-PSK WSS / Opus loopback (fake LiveProvider)
         # Direct script execution adds relay/tests to sys.path, not the repo root.
         env:

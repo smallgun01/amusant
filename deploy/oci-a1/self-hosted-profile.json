@@ -1,0 +1,51 @@
+{
+  "name": "oci-a1",
+  "target_os": "linux",
+  "target_architecture": "aarch64",
+  "env_file": "deploy/oci-a1/.env",
+  "env_example": "deploy/oci-a1/.env.example",
+  "compose_file": "deploy/oci-a1/compose.yaml",
+  "preflight_file": "deploy/oci-a1/preflight.py",
+  "data_root_env": "OCI_DATA_DIR",
+  "expected_source_env": "OCI_EXPECTED_DATA_SOURCE",
+  "host_ip_env": "RELAY_HOST_PRIVATE_IP",
+  "external_network_cidrs_env": "OCI_VCN_CIDRS",
+  "require_separate_device": true,
+  "network_envs": [
+    "RELAY_API_CIDR",
+    "HERMES_API_CIDR",
+    "RELAY_EGRESS_CIDR",
+    "HERMES_EGRESS_CIDR"
+  ],
+  "image_envs": [
+    "RELAY_IMAGE",
+    "FACADE_IMAGE",
+    "HERMES_IMAGE",
+    "EGRESS_PROXY_IMAGE"
+  ],
+  "secret_template_envs": [
+    "GEMINI_API_KEY_FILE",
+    "DEVICE_TOKEN_FILE",
+    "DEVICE_PSKS_FILE",
+    "FACADE_API_KEY_FILE",
+    "FACADE_WRITER_API_KEY_FILE",
+    "HERMES_API_KEY_FILE"
+  ],
+  "secret_files": [
+    {"env": "GEMINI_API_KEY_FILE", "consumer_uids": [10001], "shared_gid": 20000, "allow_shared_group": true},
+    {"env": "DEVICE_TOKEN_FILE", "consumer_uids": [10001], "shared_gid": 20000, "allow_shared_group": true},
+    {"env": "DEVICE_PSKS_FILE", "consumer_uids": [10001], "shared_gid": 20000, "allow_shared_group": true},
+    {"env": "FACADE_API_KEY_FILE", "consumer_uids": [10001, 10003], "shared_gid": 20000, "allow_shared_group": true},
+    {"env": "FACADE_WRITER_API_KEY_FILE", "consumer_uids": [10000, 10003], "shared_gid": 20000, "allow_shared_group": true},
+    {"env": "HERMES_API_KEY_FILE", "consumer_uids": [10000, 10003], "shared_gid": 20000, "allow_shared_group": true}
+  ],
+  "config_files": [
+    {"env": "HERMES_CONFIG_FILE", "reader_uid": 10000, "reader_gids": [10000, 20000]}
+  ],
+  "data_directories": [
+    {"path": "relay", "label": "Relay SQLite state", "uid": 10001, "gid": 10001, "mode": "0700"},
+    {"path": "hermes", "label": "Hermes Home", "uid": 10000, "gid": 10000, "mode": "0700"},
+    {"path": "results", "label": "Facade results parent", "mode": "0755"},
+    {"path": "results/facade", "label": "Facade ledger and artifacts", "uid": 10003, "gid": 10003, "mode": "0700"}
+  ]
+}
