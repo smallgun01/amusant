@@ -532,6 +532,8 @@ class BootstrapTests(unittest.TestCase):
         self.assertTrue(any("--yes" in c.args for c in self.commands.call_args_list))
 
     def test_unfinished_dpkg_state_stops_before_apt_or_source_mutation(self):
+        self.stack.enter_context(patch.object(b, "KEY", self.temp / "keys/docker.asc"))
+        self.stack.enter_context(patch.object(b, "SOURCE", self.temp / "sources/docker.sources"))
         self.commands.side_effect = lambda *args, **kwargs: "unconfigured packages remain" if args == ("dpkg", "--audit") else ""
         self.stack.enter_context(patch.object(b, "docker_startup_state", return_value={
             "configs": {}, "state_dirs": {str(p): None for p in b.DOCKER_STATE_DIRS}}))
@@ -539,6 +541,7 @@ class BootstrapTests(unittest.TestCase):
             b.install_docker({"docker-ce": "1.2.3"}, "noble")
         self.assertEqual([call.args for call in self.commands.call_args_list], [("dpkg", "--audit")])
         self.network.assert_not_called()
+        self.assertFalse(b.KEY.exists()); self.assertFalse(b.SOURCE.exists())
 
     def test_partial_install_retry_preserves_signing_key_and_source(self):
         self.install_fixture(); b.install_docker(inputs()["packages"], "noble")
