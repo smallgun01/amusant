@@ -29,8 +29,10 @@ def main():
         raise SystemExit("Apply the W2b-1 patch after the pinned W1.5 + CJK layers; missing: " + ", ".join(missing))
 
     native = (source / "wifi_ble_provisioning.cpp").read_text(encoding="utf-8")
+    service_body = native[native.find("void service("):]
     service_end = re.search(
-        r"case ProviderEvent::ServiceEnded:(.*?)case ProviderEvent::Deinitialized:", native, re.DOTALL
+        r"case ProviderEvent::ServiceEnded:(.*?)case ProviderEvent::Deinitialized:",
+        service_body, re.DOTALL
     )
     if service_end is None or "managerLifecycle.onServiceEnded()" not in service_end.group(1):
         raise SystemExit("The native service must record NETWORK_PROV_END before waiting for external DEINIT.")
