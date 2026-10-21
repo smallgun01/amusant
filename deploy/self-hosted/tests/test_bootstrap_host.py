@@ -173,9 +173,11 @@ class BootstrapTests(unittest.TestCase):
         override = docker_unit / "10-storage.conf"; override.write_text("[Service]\\nExecStart=custom\\n")
         docker_data = self.temp / "docker-data"; docker_data.mkdir(); (docker_data / "containers").mkdir()
         containerd_data = self.temp / "containerd-data"; containerd_data.mkdir()
+        real_is_file = Path.is_file
         with patch.object(b, "DOCKER_CONFIG_FILES", (config,)), \
                 patch.object(b, "DOCKER_OVERRIDE_DIRS", (docker_unit,)), \
-                patch.object(b, "DOCKER_STATE_DIRS", (docker_data, containerd_data)):
+                patch.object(b, "DOCKER_STATE_DIRS", (docker_data, containerd_data)), \
+                patch.object(Path, "is_file", lambda path: False if str(path) == "/usr/bin/docker" else real_is_file(path)):
             config.write_text('{"data-root":"/srv/docker"}')
             state = b.docker_startup_state()
         self.assertEqual(set(state["configs"]), {str(config), str(override)})
@@ -382,6 +384,9 @@ class BootstrapTests(unittest.TestCase):
         real_digest = b.digest
         self.stack.enter_context(patch.object(b, "KEY", self.temp / "docker.asc"))
         self.stack.enter_context(patch.object(b, "SOURCE", self.temp / "docker.sources"))
+        self.stack.enter_context(patch.object(b, "DOCKER_CONFIG_FILES", (self.temp / "host/docker.json",)))
+        self.stack.enter_context(patch.object(b, "DOCKER_OVERRIDE_DIRS", (self.temp / "host/systemd",)))
+        self.stack.enter_context(patch.object(b, "DOCKER_STATE_DIRS", (self.temp / "host/docker", self.temp / "host/containerd")))
         self.stack.enter_context(patch.object(Path, "read_text", lambda path, *a, **kw:
             'ID=ubuntu\nVERSION_ID="24.04"\nVERSION_CODENAME=noble\n' if str(path) == "/etc/os-release" else real_read(path, *a, **kw)))
         self.stack.enter_context(patch.object(Path, "exists", lambda path:
@@ -541,7 +546,8 @@ class BootstrapTests(unittest.TestCase):
         response.geturl.return_value = "https://unapproved.invalid/gpg"
         with self.assertRaisesRegex(b.Blocked, "SIGNING_KEY"):
             b.install_docker(inputs()["packages"], "noble")
-        self.commands.assert_not_called(); self.assertFalse(b.KEY.exists())
+        self.assertEqual([c.args for c in self.commands.call_args_list], [("dpkg", "--audit")])
+        self.assertFalse(b.KEY.exists())
         response.geturl.return_value = b.KEY_URL; response.read.return_value = b"x" * 65537
         with self.assertRaisesRegex(b.Blocked, "SIGNING_KEY"):
             b.install_docker(inputs()["packages"], "noble")
@@ -549,4 +555,3 @@ class BootstrapTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
