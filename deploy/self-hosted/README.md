@@ -82,8 +82,14 @@ and package changes with existing containers require separate review.
 
 Review [Docker's official apt procedure](https://docs.docker.com/engine/install/ubuntu/).
 The script uses that repository and HTTPS signing-key endpoint, not `curl | sh`.
-It simulates installation, forbids removals/upgrades of installed packages, and
-uses bounded command timeouts. Installing/starting Docker can create its ordinary
+Before a Docker package install or service start, it checks the default Docker and
+containerd data directories, Docker/containerd configuration, and systemd unit
+overrides. Existing state or an opaque custom startup configuration is `BLOCKED`;
+the bootstrap does not manage those settings. This check also covers package
+post-install hooks that may start the daemon automatically. It simulates the APT
+transaction, rejects unfinished `dpkg` configuration and unrelated pending
+package configuration, forbids removals/upgrades of installed packages, and uses
+bounded command timeouts. Installing/starting Docker can create its ordinary
 bridge/firewall rules; those daemon side effects belong in this approval. B1 does
 not open application ports, edit cloud networking, disable a firewall, or start
 containers (including `hello-world`). A stopped daemon with existing unverified
@@ -136,3 +142,4 @@ separately authorized acceptance window; no live-host success is recorded here.
 Borrowed approach: OpenAB's [AI-owned orchestration](https://github.com/openabdev/openab/blob/main/DESIGN.md)
 and [staged install guide](https://github.com/openabdev/openab/blob/main/docs/ai-install-upgrade.md).
 Borrow the runbook/success/failure discipline, not Kubernetes, Helm or `oabctl`.
+

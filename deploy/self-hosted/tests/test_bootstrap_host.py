@@ -47,6 +47,8 @@ def host(prepared=False, data="/mnt/amusant-data"):
             "addresses": [{"name": "enp0s3", "ips": ["10.0.0.10"]}],
             "routes": [{"dst": "10.0.0.0/24", "dev": "enp0s3", "gateway": "", "table": "", "type": ""}],
             "apt_files": {str(b.KEY): None, str(b.SOURCE): None}, "apt_status": "offline-state",
+             "dpkg_audit_clean": True,
+             "docker_startup": {"configs": {}, "state_dirs": {str(p): None for p in b.DOCKER_STATE_DIRS}},
             "extra_docker_sources": [], "source_valid": True, "free_mib": 4096,
             "static_status": "DEFERRED_B3_INPUTS_INCOMPLETE", "env_digest": b.digest(b.EXAMPLE)}
 
@@ -153,6 +155,51 @@ class BootstrapTests(unittest.TestCase):
         self.assertIn("EXISTING_PACKAGE_OR_APT_SOURCE_CONFLICT", b.plan(inputs(), facts)["blocked"])
         facts = host(); facts["docker"]["containers"] = ["foreign-container"]
         self.assertIn("PACKAGE_CHANGE_WITH_EXISTING_CONTAINERS_REQUIRES_REVIEW", b.plan(inputs(), facts)["blocked"])
+
+    def test_stopped_docker_with_custom_root_config_or_existing_state_is_blocked(self):
+        facts = host()
+        facts["docker_startup"]["configs"]["/etc/docker/daemon.json"] = "daemon-config-hash"
+        self.assertIn("DOCKER_STARTUP_CONFIGURATION_REQUIRES_REVIEW", b.plan(inputs(), facts)["blocked"])
+        facts = host()
+        facts["docker_startup"]["configs"]["/etc/systemd/system/docker.service.d/override.conf"] = "override-hash"
+        self.assertIn("DOCKER_STARTUP_CONFIGURATION_REQUIRES_REVIEW", b.plan(inputs(), facts)["blocked"])
+        facts = host()
+        facts["docker_startup"]["state_dirs"][str(b.DOCKER_STATE_DIRS[0])] = {"nonempty": True}
+        self.assertIn("DOCKER_STARTUP_STATE_REQUIRES_REVIEW", b.plan(inputs(), facts)["blocked"])
+
+    def test_docker_startup_state_reads_configs_overrides_and_storage_without_starting_daemon(self):
+        config = self.temp / "daemon.json"
+        docker_unit = self.temp / "docker.service.d"; docker_unit.mkdir()
+        override = docker_unit / "10-storage.conf"; override.write_text("[Service]\\nExecStart=custom\\n")
+        docker_data = self.temp / "docker-data"; docker_data.mkdir(); (docker_data / "containers").mkdir()
+        containerd_data = self.temp / "containerd-data"; containerd_data.mkdir()
+        with patch.object(b, "DOCKER_CONFIG_FILES", (config,)), \
+                patch.object(b, "DOCKER_OVERRIDE_DIRS", (docker_unit,)), \
+                patch.object(b, "DOCKER_STATE_DIRS", (docker_data, containerd_data)):
+            config.write_text('{"data-root":"/srv/docker"}')
+            state = b.docker_startup_state()
+        self.assertEqual(set(state["configs"]), {str(config), str(override)})
+        self.assertTrue(state["state_dirs"][str(docker_data)]["nonempty"])
+        self.assertFalse(state["state_dirs"][str(containerd_data)]["nonempty"])
+
+    def test_unverified_docker_startup_state_blocks_apply_before_any_mutation(self):
+        self.authorize_fixture(); facts = host()
+        facts["docker_startup"]["configs"]["/etc/systemd/system/docker.service.d/override.conf"] = "override"
+        reviewed = b.plan(inputs(), facts)
+        with patch.object(b, "observe", return_value=facts), self.assertRaisesRegex(b.Blocked, "PLAN_HAS_BLOCKERS"):
+            b.apply(reviewed, self.temp / "plan")
+        self.commands.assert_not_called(); self.network.assert_not_called()
+
+    def test_dpkg_audit_blocks_package_plan_and_stale_startup_facts(self):
+        facts = host(); facts["dpkg_audit_clean"] = False
+        self.assertIn("DPKG_HAS_UNFINISHED_CONFIGURATION", b.plan(inputs(), facts)["blocked"])
+        self.authorize_fixture()
+        reviewed = b.plan(inputs(), host())
+        changed = deepcopy(reviewed)
+        changed["facts"]["docker_startup"]["configs"]["/etc/systemd/system/docker.service"] = "new-config"
+        with patch.object(b, "observe", return_value=host()), self.assertRaisesRegex(b.Blocked, "STALE_OR_TAMPERED"):
+            b.apply(changed, self.temp / "plan")
+        self.commands.assert_not_called(); self.network.assert_not_called()
 
     def test_network_conflicts_and_own_bridge_identity(self):
         facts = host(True)
@@ -338,7 +385,7 @@ class BootstrapTests(unittest.TestCase):
         self.stack.enter_context(patch.object(Path, "read_text", lambda path, *a, **kw:
             'ID=ubuntu\nVERSION_ID="24.04"\nVERSION_CODENAME=noble\n' if str(path) == "/etc/os-release" else real_read(path, *a, **kw)))
         self.stack.enter_context(patch.object(Path, "exists", lambda path:
-            False if str(path) == "/var/lib/docker" else real_exists(path)))
+            False if str(path) in ("/var/lib/docker", "/var/lib/containerd") else real_exists(path)))
         self.stack.enter_context(patch.object(Path, "is_file", lambda path:
             prepared if str(path) == "/usr/bin/docker" else real_is_file(path)))
         self.stack.enter_context(patch.object(Path, "glob", return_value=[]))
@@ -348,6 +395,7 @@ class BootstrapTests(unittest.TestCase):
         self.stack.enter_context(patch.object(b.os, "statvfs", return_value=SimpleNamespace(f_bavail=1024*1024, f_frsize=4096)))
         def fake_command(*args, **kwargs):
             if args == ("uname", "-m"): return "aarch64\n"
+            if args == ("dpkg", "--audit"): return ""
             if args[0] == "dpkg-query": return "".join(f"{p}\tinstalled\t1.2.3\n" for p in b.PACKAGES) if prepared else ""
             if args[0] == "findmnt":
                 if "--mountpoint" in args and missing_mount: raise b.Blocked("DENIED")
@@ -355,6 +403,7 @@ class BootstrapTests(unittest.TestCase):
             if args[0] == "lsblk": return json.dumps({"blockdevices": [
                 {"type": "disk", "maj:min": "8:0", "children": [{"type": "part", "maj:min": "8:1"}]},
                 {"type": "disk", "maj:min": "8:16"}]})
+            if args[:2] == ("systemctl", "show"): return ""
             if args[:2] == ("systemctl", "is-active"): return "active\n"
             if args[:2] == ("systemctl", "is-enabled"): return "enabled\n"
             if args[0] == "ip":
@@ -427,16 +476,20 @@ class BootstrapTests(unittest.TestCase):
         response.geturl.return_value = b.KEY_URL
         response.read.return_value = b"-----BEGIN PGP PUBLIC KEY BLOCK-----\nOFFLINE FIXTURE\n-----END PGP PUBLIC KEY BLOCK-----\n"
         self.network.side_effect = None; self.network.return_value = response
-        self.commands.side_effect = lambda *args, **kwargs: simulation if "--simulate" in args else ""
+        self.stack.enter_context(patch.object(b, "docker_startup_state", return_value={
+            "configs": {}, "state_dirs": {str(p): None for p in b.DOCKER_STATE_DIRS}}))
+        self.commands.side_effect = lambda *args, **kwargs: (
+            "" if args == ("dpkg", "--audit") else simulation if "--simulate" in args else "")
         return response
 
     def test_official_apt_install_pins_versions_and_never_runs_hello_world(self):
         self.install_fixture()
         b.install_docker(inputs()["packages"], "noble")
         calls = [c.args for c in self.commands.call_args_list]
-        self.assertEqual(calls[0], ("apt-get", "update"))
-        self.assertIn("--simulate", calls[1]); self.assertIn("--no-remove", calls[2]); self.assertIn("--no-upgrade", calls[2])
-        self.assertTrue(all("=1.2.3-offline-fixture" in value for value in calls[2][-5:]))
+        self.assertEqual(calls[0], ("dpkg", "--audit"))
+        self.assertEqual(calls[1], ("apt-get", "update"))
+        self.assertIn("--simulate", calls[2]); self.assertIn("--no-remove", calls[4]); self.assertIn("--no-upgrade", calls[4])
+        self.assertTrue(all("=1.2.3-offline-fixture" in value for value in calls[4][-5:]))
         self.assertNotIn("docker", [c[0] for c in calls]); self.assertNotIn("sudo", [c[0] for c in calls])
         self.assertEqual(stat.S_IMODE(b.KEY.stat().st_mode), 0o644)
 
@@ -448,6 +501,33 @@ class BootstrapTests(unittest.TestCase):
             with self.assertRaisesRegex(b.Blocked, "APT_WOULD_REMOVE_OR_UPGRADE"):
                 b.install_docker(inputs()["packages"], "noble")
             self.assertFalse(any("--yes" in c.args for c in self.commands.call_args_list))
+
+    def test_apt_simulation_rejects_unapproved_conf_and_allows_new_dependency_conf(self):
+        self.install_fixture()
+        self.commands.side_effect = lambda *args, **kwargs: (
+            "" if args == ("dpkg", "--audit") else
+            "Inst docker-ce (1.2.3 Docker:stable [arm64])\nConf unrelated-daemon (9.9 Ubuntu [arm64])\n"
+            if "--simulate" in args else "")
+        with self.assertRaisesRegex(b.Blocked, "APT_WOULD_CONFIGURE_UNAPPROVED_PACKAGE"):
+            b.install_docker({"docker-ce": "1.2.3"}, "noble")
+        self.assertFalse(any("--yes" in c.args for c in self.commands.call_args_list))
+
+        self.commands.reset_mock()
+        self.commands.side_effect = lambda *args, **kwargs: (
+            "" if args == ("dpkg", "--audit") else
+            "Inst docker-ce (1.2.3 Docker:stable [arm64])\nConf docker-ce (1.2.3 Docker:stable [arm64])\n"
+            if "--simulate" in args else "")
+        b.install_docker({"docker-ce": "1.2.3"}, "noble")
+        self.assertTrue(any("--yes" in c.args for c in self.commands.call_args_list))
+
+    def test_unfinished_dpkg_state_stops_before_apt_or_source_mutation(self):
+        self.commands.side_effect = lambda *args, **kwargs: "unconfigured packages remain" if args == ("dpkg", "--audit") else ""
+        self.stack.enter_context(patch.object(b, "docker_startup_state", return_value={
+            "configs": {}, "state_dirs": {str(p): None for p in b.DOCKER_STATE_DIRS}}))
+        with self.assertRaisesRegex(b.Blocked, "DPKG_HAS_UNFINISHED_CONFIGURATION"):
+            b.install_docker({"docker-ce": "1.2.3"}, "noble")
+        self.assertEqual([call.args for call in self.commands.call_args_list], [("dpkg", "--audit")])
+        self.network.assert_not_called()
 
     def test_partial_install_retry_preserves_signing_key_and_source(self):
         self.install_fixture(); b.install_docker(inputs()["packages"], "noble")
@@ -469,3 +549,4 @@ class BootstrapTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

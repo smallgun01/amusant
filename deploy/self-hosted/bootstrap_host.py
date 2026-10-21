@@ -27,6 +27,18 @@ CONFLICTS = ("docker.io", "podman-docker", "containerd", "runc")
 DIRECTORIES = (("relay", 10001, 10001, 0o700), ("hermes", 10000, 10000, 0o700),
                ("results", 0, 0, 0o755), ("results/facade", 10003, 10003, 0o700))
 DOCKER = ("docker", "--host", "unix:///var/run/docker.sock")
+DOCKER_STATE_DIRS = (Path("/var/lib/docker"), Path("/var/lib/containerd"))
+DOCKER_CONFIG_FILES = (
+    Path("/etc/docker/daemon.json"), Path("/etc/default/docker"), Path("/etc/containerd/config.toml"),
+    Path("/etc/systemd/system/docker.service"), Path("/etc/systemd/system/docker.socket"),
+    Path("/etc/systemd/system/containerd.service"),
+)
+DOCKER_OVERRIDE_DIRS = (
+    Path("/etc/systemd/system/docker.service.d"), Path("/etc/systemd/system/docker.socket.d"),
+    Path("/etc/systemd/system/containerd.service.d"), Path("/etc/systemd/system/service.d"),
+    Path("/run/systemd/system/docker.service.d"), Path("/run/systemd/system/docker.socket.d"),
+    Path("/run/systemd/system/containerd.service.d"), Path("/run/systemd/system/service.d"),
+)
 KEY_URL = "https://download.docker.com/linux/ubuntu/gpg"
 KEY = Path("/etc/apt/keyrings/docker.asc")
 SOURCE = Path("/etc/apt/sources.list.d/docker.sources")
@@ -39,7 +51,7 @@ class Blocked(RuntimeError):
     """Safe reason code only: never forward command output or private inputs."""
 
 
-def command(*args: str, ok=(0,), timeout=30) -> str:
+def command(*args: str, ok=(0,), timeout=30, reject_stderr=False) -> str:
     executable = next((str(Path(p) / args[0]) for p in SAFE_ENV["PATH"].split(":")
                        if (Path(p) / args[0]).is_file()), None)
     if executable is None:
@@ -51,6 +63,8 @@ def command(*args: str, ok=(0,), timeout=30) -> str:
         raise Blocked("COMMAND_UNAVAILABLE_OR_TIMEOUT") from None
     if result.returncode not in ok:
         raise Blocked("COMMAND_FAILED_OR_PERMISSION_DENIED")
+    if reject_stderr and result.stderr.strip():
+        raise Blocked("COMMAND_DIAGNOSTICS_UNVERIFIED")
     return result.stdout
 
 
@@ -135,6 +149,60 @@ def dir_metadata(path: Path):
             "device": info.st_dev, "inode": info.st_ino}
 
 
+def docker_startup_state() -> dict:
+    """Fingerprint Docker/containerd state that package hooks or systemd could start."""
+    configs = {}
+    for path in DOCKER_CONFIG_FILES:
+        no_symlinks(path)
+        if path.exists():
+            if not path.is_file():
+                raise Blocked("DOCKER_STARTUP_CONFIGURATION_UNVERIFIED")
+            configs[str(path)] = digest(path)
+    for directory in DOCKER_OVERRIDE_DIRS:
+        no_symlinks(directory)
+        if not directory.exists():
+            continue
+        if not directory.is_dir():
+            raise Blocked("DOCKER_STARTUP_CONFIGURATION_UNVERIFIED")
+        for path in sorted(directory.rglob("*")):
+            no_symlinks(path)
+            if path.is_file():
+                configs[str(path)] = digest(path)
+            elif not path.is_dir():
+                raise Blocked("DOCKER_STARTUP_CONFIGURATION_UNVERIFIED")
+    if Path("/usr/bin/docker").is_file():
+        for unit in ("docker.service", "docker.socket", "containerd.service"):
+            fragment = command("systemctl", "show", unit, "--property=FragmentPath", "--value", ok=(0, 1)).strip()
+            if fragment:
+                path = Path(fragment)
+                if path.parent not in {Path("/lib/systemd/system"), Path("/usr/lib/systemd/system")}:
+                    no_symlinks(path)
+                    if not path.is_file():
+                        raise Blocked("DOCKER_STARTUP_CONFIGURATION_UNVERIFIED")
+                    configs[str(path)] = digest(path)
+            paths = command("systemctl", "show", unit, "--property=DropInPaths", "--value", ok=(0, 1))
+            for name in paths.split():
+                path = Path(name)
+                no_symlinks(path)
+                if not path.is_file():
+                    raise Blocked("DOCKER_STARTUP_CONFIGURATION_UNVERIFIED")
+                configs[str(path)] = digest(path)
+
+    state = {}
+    for path in DOCKER_STATE_DIRS:
+        no_symlinks(path)
+        metadata = dir_metadata(path)
+        if metadata is None:
+            state[str(path)] = None
+            continue
+        try:
+            metadata["nonempty"] = next(path.iterdir(), None) is not None
+        except OSError:
+            raise Blocked("DOCKER_STARTUP_STATE_UNVERIFIED") from None
+        state[str(path)] = metadata
+    return {"configs": configs, "state_dirs": state}
+
+
 def observe(inputs: dict) -> dict:
     """Read host metadata only. Application .env/config/secret contents are not logged."""
     os_release = dict(line.split("=", 1) for line in Path("/etc/os-release").read_text().splitlines()
@@ -153,6 +221,7 @@ def observe(inputs: dict) -> dict:
         name, status, version = line.split("\t")
         if status == "installed":
             packages[name.split(":", 1)[0]] = version
+    dpkg_audit = command("dpkg", "--audit", reject_stderr=True)
     docker = {"cli": False, "compose": "", "server": "", "networks": [], "containers": []}
     # Package state and binary presence must agree. A denied daemon is never "absent".
     if Path("/usr/bin/docker").is_file():
@@ -178,10 +247,7 @@ def observe(inputs: dict) -> dict:
         docker.update(active=False, enabled=False)
         if "docker-ce" in packages or Path("/var/lib/docker").exists():
             raise Blocked("EXISTING_DOCKER_STATE_REQUIRES_REVIEW")
-    if not docker["active"] and Path("/var/lib/docker").exists():
-        # A stopped daemon cannot tell us which unrelated workloads would auto-restart.
-        if any(Path("/var/lib/docker").iterdir()):
-            raise Blocked("STOPPED_DOCKER_STATE_REQUIRES_SEPARATE_REVIEW")
+    startup_state = docker_startup_state()
     addresses = json_command("ip", "-json", "-4", "address", "show")
     routes = json_command("ip", "-json", "-4", "route", "show", "table", "all")
     preflight = load_preflight()
@@ -213,7 +279,9 @@ def observe(inputs: dict) -> dict:
             "directories": {rel: dir_metadata(data / rel) for rel, *_ in DIRECTORIES},
             "packages": {p: packages[p] for p in (*PACKAGES, *CONFLICTS) if p in packages},
             "apt_status": digest(Path("/var/lib/dpkg/status")),
-            "docker": docker, "networks": networks, "static_status": static_status,
+            "dpkg_audit_clean": not dpkg_audit.strip(),
+            "docker": docker, "docker_startup": startup_state,
+            "networks": networks, "static_status": static_status,
             "addresses": [{"name": a["ifname"], "ips": sorted(i["local"] for i in a.get("addr_info", []))}
                           for a in addresses],
             "routes": [{k: r.get(k, "") for k in ("dst", "dev", "gateway", "table", "type")} for r in routes],
@@ -269,8 +337,12 @@ def plan(inputs: dict, facts: dict) -> dict:
     elif docker["cli"] and "docker-ce" not in packages:
         reasons.append("EXISTING_NON_CE_DOCKER_REQUIRES_REVIEW")
     if missing:
+        if not facts["dpkg_audit_clean"]:
+            reasons.append("DPKG_HAS_UNFINISHED_CONFIGURATION")
         if any(p in packages for p in CONFLICTS) or facts["extra_docker_sources"] or not facts["source_valid"]:
             reasons.append("EXISTING_PACKAGE_OR_APT_SOURCE_CONFLICT")
+        if docker["active"]:
+            reasons.append("PACKAGE_CHANGE_WITH_ACTIVE_DOCKER_REQUIRES_REVIEW")
         if docker["containers"]:
             reasons.append("PACKAGE_CHANGE_WITH_EXISTING_CONTAINERS_REQUIRES_REVIEW")
         if any(p not in inputs["packages"] for p in missing):
@@ -279,6 +351,13 @@ def plan(inputs: dict, facts: dict) -> dict:
             actions.insert(0, {"op": "install_docker", "packages": {p: inputs["packages"][p] for p in missing}})
     if not docker["active"] or not docker["enabled"]:
         actions.insert(1 if missing else 0, {"op": "enable_docker"})
+    needs_docker_start = any(action["op"] == "install_docker" for action in actions) or (
+        not docker["active"] and any(action["op"] == "enable_docker" for action in actions))
+    if needs_docker_start and facts["docker_startup"]["configs"]:
+        reasons.append("DOCKER_STARTUP_CONFIGURATION_REQUIRES_REVIEW")
+    if needs_docker_start and any(value and value["nonempty"]
+                                  for value in facts["docker_startup"]["state_dirs"].values()):
+        reasons.append("DOCKER_STARTUP_STATE_REQUIRES_REVIEW")
     if docker["active"] and not docker["server"]:
         reasons.append("DOCKER_DAEMON_ACCESS_UNVERIFIED")
     if docker["compose"] and not re.fullmatch(r"v?(?:[2-9]|[1-9][0-9]+)\.[0-9]+\.[0-9]+(?:[-+].*)?", docker["compose"]):
@@ -357,6 +436,14 @@ def make_directory(data: Path, action: dict) -> None:
 
 
 def install_docker(packages: dict, codename: str) -> None:
+    # apt package hooks may start Docker/containerd. Check before all apt or key/source writes.
+    if command("dpkg", "--audit", reject_stderr=True).strip():
+        raise Blocked("DPKG_HAS_UNFINISHED_CONFIGURATION")
+    startup_state = docker_startup_state()
+    if startup_state["configs"]:
+        raise Blocked("DOCKER_STARTUP_CONFIGURATION_REQUIRES_REVIEW")
+    if any(value and value["nonempty"] for value in startup_state["state_dirs"].values()):
+        raise Blocked("DOCKER_STARTUP_STATE_REQUIRES_REVIEW")
     if not KEY.parent.exists():
         trusted(KEY.parent.parent)
         KEY.parent.mkdir(mode=0o755)
@@ -376,9 +463,24 @@ def install_docker(packages: dict, codename: str) -> None:
     selection = [f"{p}={v}" for p, v in sorted(packages.items())]
     flags = ("--no-install-recommends", "--no-remove", "--no-upgrade")
     simulation = command("apt-get", "--simulate", *flags, "install", *selection, timeout=120)
-    if any(line.startswith("Remv ") or re.match(r"^Inst \S+ \[", line)
-           for line in simulation.splitlines()):
-        raise Blocked("APT_WOULD_REMOVE_OR_UPGRADE_EXISTING_PACKAGES")
+    simulated_installs = set()
+    for line in simulation.splitlines():
+        operation = re.match(r"^(Inst|Conf|Remv|Purg)\s+(\S+)", line)
+        if not operation:
+            continue
+        action, package = operation.groups()
+        if action in {"Remv", "Purg"}:
+            raise Blocked("APT_WOULD_REMOVE_OR_UPGRADE_EXISTING_PACKAGES")
+        if action == "Inst":
+            if re.match(r"^Inst\s+\S+\s+\[", line):
+                raise Blocked("APT_WOULD_REMOVE_OR_UPGRADE_EXISTING_PACKAGES")
+            simulated_installs.add(package)
+        elif package not in simulated_installs:
+            raise Blocked("APT_WOULD_CONFIGURE_UNAPPROVED_PACKAGE")
+    if command("dpkg", "--audit", reject_stderr=True).strip():
+        raise Blocked("DPKG_HAS_UNFINISHED_CONFIGURATION")
+    if docker_startup_state() != startup_state:
+        raise Blocked("DOCKER_STARTUP_STATE_CHANGED_DURING_APT_PREFLIGHT")
     command("apt-get", "--yes", *flags, "install", *selection, timeout=900)
 
 
@@ -407,6 +509,14 @@ def apply(reviewed: dict, plan_file: Path) -> None:
             # Revalidate disk identity immediately before *every* mutation, including apt.
             if mounted(Path(inputs["data_dir"]), exact=True) != facts["mount"]:
                 raise Blocked("DATA_MOUNT_CHANGED_DURING_APPLY")
+            if action["op"] == "enable_docker" and not facts["docker"]["active"] and not any(
+                    prior["op"] == "install_docker" for prior in current["actions"][:completed]):
+                if docker_startup_state() != facts["docker_startup"]:
+                    raise Blocked("DOCKER_STARTUP_STATE_CHANGED_DURING_APPLY")
+                startup = facts["docker_startup"]
+                if startup["configs"] or any(value and value["nonempty"]
+                                               for value in startup["state_dirs"].values()):
+                    raise Blocked("DOCKER_STARTUP_STATE_REQUIRES_REVIEW")
             if action["op"] == "install_docker":
                 install_docker(action["packages"], facts["os"]["VERSION_CODENAME"])
             elif action["op"] == "enable_docker":
@@ -484,3 +594,4 @@ def main(argv=None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
