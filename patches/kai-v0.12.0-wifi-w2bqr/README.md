@@ -1,8 +1,8 @@
 # Wi-Fi W2b-QR — on-screen BLE provisioning QR
 
-This downstream patch implements Issue #96 on the pinned Kai v0.12.0 firmware. It shows the current W2b-1 BLE service name and its existing 26-character PoP as an Espressif provisioning QR on the owner-triggered setup boot. Button A short-click switches to the existing manual PoP view; Button B short-click cancels setup. First-boot USB recovery and normal PTT behavior keep their existing views.
+This downstream patch implements Issue #96 on the pinned Kai v0.12.0 firmware. The current revision is an **optical-readability experiment**, following the owner report that the official Espressif app did not recognize the 98px version-6 QR. It shows the active W2b-1 BLE service name and existing 26-character PoP as a larger QR on owner-triggered setup boot. Physical scan acceptance is still pending; this experiment is not a production PASS.
 
-The QR uses Espressif QR v1 JSON with numeric `security: 1`, so the official Espressif Android provisioning app selects Security 1 instead of its Security 2 default. QR data comes from the active W2b-1 session; this patch does not generate another service name or PoP. USB Serial `WIFI SET` remains available as the recovery path.
+The unchanged 99-byte payload uses Espressif QR v1 JSON with numeric `security: 1`, so the official Espressif Android provisioning app selects Security 1 instead of its Security 2 default. QR data comes from the active W2b-1 session; this patch does not generate another service name or PoP. QR v5-L uses 37×37 modules, four pure-white quiet-zone modules on every side, and 3 pixels per module for a 135×135 image. It is horizontally centered on the 240×135 canvas and fills its height. The QR page has a white background with no header, footer, or overlay. Its backlight is 45; the manual PoP page restores the normal awake level of 90. Button A short-click switches between the QR and existing manual PoP; Button B short-click cancels setup. Size and backlight are changed together in this first optical experiment, so their effects are not independently attributed. First-boot USB recovery, normal PTT behavior, and USB Serial `WIFI SET` remain unchanged.
 
 ## Pinned baseline and patch order
 
@@ -35,19 +35,15 @@ git -C kai diff --check
 
 ## QR and memory design
 
-The QR payload is exactly 99 ASCII bytes for the W2b-1 service name and 26-character PoP. Fixed QR version 6-M holds it in 41×41 modules. Four white quiet-zone modules and 2×2-pixel modules produce a 98×98-pixel image at x=71, y=18 on the 240×135 landscape display. The code draws modules directly from the encoded matrix; it does not allocate a second bitmap.
+The QR payload is exactly 99 ASCII bytes for the W2b-1 service name and 26-character PoP. Fixed QR version 5-L holds it in 37×37 modules (106-byte capacity). Four white quiet-zone modules and 3×3-pixel modules produce a 135×135-pixel image at x=52, y=0 on the 240×135 landscape display; the remaining right margin is 53 pixels. The code draws modules directly from the encoded matrix; it does not allocate a second bitmap. Encoder ECC is explicitly LOW and ECC boosting is disabled.
 
-Nayuki's C QR encoder is vendored from commit `3c6d0b3cefb4e049dc337e82237c9644399716a8` under its MIT license. Encoding uses two fixed 212-byte buffers (424 bytes total) and a 128-byte stack payload, with no heap allocation. The encoded matrix, payload scratch, and manual PoP display are cleared on setup cancel, success, timeout, and battery abort. CI reports the before/after PlatformIO firmware image, flash, and static RAM measurements in its run summary; physical free-heap margin still needs device measurement.
+Nayuki's C QR encoder is vendored from commit `3c6d0b3cefb4e049dc337e82237c9644399716a8` under its MIT license. Encoding uses two fixed 173-byte buffers (346 bytes total) and a 128-byte stack payload, with no heap allocation. The encoded matrix, payload scratch, and manual PoP display are cleared on setup cancel, success, timeout, and battery abort. The integrated workflow reports this revision's before/after PlatformIO image, flash, and static RAM measurements. Physical free-heap margin still needs device measurement.
 
 ## Offline verification
 
-The [integrated workflow run #47](https://github.com/smallgun01/amusant/actions/runs/39559463815) passed on the merged PR #95 baseline. It applies all production layers, runs the W1/W1.5/W2b-1/CJK regressions, builds the merged state, then applies this QR-only patch and passes the QR host/decode and owner-setup wiring tests plus production and diagnostic builds. The QR test decodes only a fake generated payload with `zbarimg`; it captures and compares output internally without printing or uploading the decoded payload or image. All firmware builds use only `secrets.example.h` placeholders.
+The integrated workflow applies all production layers, runs the merged W1/W1.5/W2b-1/CJK regressions, builds the merged baseline, then applies this display-only optical revision and runs QR host/layout/page checks, a fake-only independent `zbarimg` decode, and production plus diagnostic builds. The decoder captures and compares output internally without printing or uploading the decoded payload or image. All firmware builds use only `secrets.example.h` placeholders. See the matching latest PR workflow run for this commit; physical scanning remains pending owner-supervised acceptance.
 
-| Variant | Firmware image | Program flash | Static RAM |
-| --- | ---: | ---: | ---: |
-| Merged PR #95 W2b-1 | 2,430,944 B | 2,396,911 / 3,342,336 B (71.7%) | 79,800 / 327,680 B (24.4%) |
-| W2b-QR | 2,439,744 B | 2,405,595 / 3,342,336 B (72.0%) | 80,224 / 327,680 B (24.5%) |
-| Delta | +8,800 B | +8,684 B | +424 B |
+The optical revision's exact firmware image, program flash, static RAM, and delta against merged PR #95 are recorded in the matching CI summary and will be copied here from that run before review. The previous 98px version-6 measurements are intentionally not presented as measurements of this revision.
 
 The static RAM increase matches the fixed QR matrix and scratch buffers. Runtime free-heap margin still requires device measurement.
 

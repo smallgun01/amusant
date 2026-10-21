@@ -1,4 +1,4 @@
-name: StickS3 W1.5 BLE + production CJK + W2b-1 + W2b-QR
+name: StickS3 W1.5 BLE + production CJK + W2b-1 + W2b-QR optical experiment
 
 on:
   pull_request:
@@ -77,7 +77,7 @@ jobs:
           echo "Merged PR #95 W2b-1 baseline: $image_bytes / 3342336 bytes"
           test "$image_bytes" -le 3342336
 
-      - name: Apply W2b-QR and run offline regression suites
+      - name: Apply W2b-QR optical revision and run offline regression suites
         run: |
           git -C kai apply --check "$GITHUB_WORKSPACE/patches/kai-v0.12.0-wifi-w2bqr/kai-v0.12.0-wifi-w2bqr.patch"
           git -C kai apply "$GITHUB_WORKSPACE/patches/kai-v0.12.0-wifi-w2bqr/kai-v0.12.0-wifi-w2bqr.patch"
@@ -89,6 +89,10 @@ jobs:
             --wifi-tests patches/kai-v0.12.0-wifi-w1.5/tests
           python3 patches/kai-v0.12.0-wifi-w2bqr/tests/run_host_tests.py --firmware-root kai/firmware
           python3 patches/kai-v0.12.0-wifi-w2bqr/tests/check_owner_setup_wiring.py --firmware-root kai/firmware
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -Ikai/firmware/src \
+            patches/kai-v0.12.0-cjk-display/tests/test_cjk_layout.cpp \
+            -o /tmp/jellii-cjk-final-test
+          /tmp/jellii-cjk-final-test
 
       - name: Build integrated production firmware and report footprint delta
         run: |
@@ -180,13 +184,13 @@ jobs:
               "| Variant | Firmware image | Program flash | Static RAM |",
               "| --- | ---: | ---: | ---: |",
               f"| Merged PR #95 W2b-1 | {before_bin:,} B | {before_flash[1]:,} / {before_flash[2]:,} B ({before_flash[0]:.1f}%) | {before_ram[1]:,} / {before_ram[2]:,} B ({before_ram[0]:.1f}%) |",
-              f"| W2b-QR | {after_bin:,} B | {after_flash[1]:,} / {after_flash[2]:,} B ({after_flash[0]:.1f}%) | {after_ram[1]:,} / {after_ram[2]:,} B ({after_ram[0]:.1f}%) |",
+              f"| W2b-QR optical experiment | {after_bin:,} B | {after_flash[1]:,} / {after_flash[2]:,} B ({after_flash[0]:.1f}%) | {after_ram[1]:,} / {after_ram[2]:,} B ({after_ram[0]:.1f}%) |",
               f"| Delta | {after_bin - before_bin:+,} B | {after_flash[1] - before_flash[1]:+,} B | {after_ram[1] - before_ram[1]:+,} B |",
           ]
-          summary = "\n".join(rows) + "\n\nQR encoder fixed storage: 424 B, with a 128 B stack payload and no heap allocation. Device free-heap margin remains a hardware measurement.\n"
+          summary = "\n".join(rows) + "\n\nQR encoder fixed storage: 346 B, with a 128 B stack payload and no heap allocation. Device free-heap margin remains a hardware measurement. Physical QR acceptance is pending owner-supervised testing.\n"
           print(summary)
           with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as report:
-              report.write("## StickS3 footprint vs merged PR #95\n\n" + summary)
+              report.write("## StickS3 W2b-QR optical experiment footprint vs merged PR #95\n\n" + summary)
           if after_bin > 3342336:
               raise SystemExit("W2b-QR firmware image exceeds the StickS3 application partition limit.")
           PY

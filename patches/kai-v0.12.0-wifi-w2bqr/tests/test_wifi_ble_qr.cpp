@@ -49,13 +49,17 @@ void testPageState() {
 }
 
 void testMatrixAndQuietZone() {
-  assert(wifi_ble_qr::kQrVersion == 6);
-  assert(wifi_ble_qr::kModuleCount == 41);
-  assert(wifi_ble_qr::kPixelsPerModule == 2);
+  assert(wifi_ble_qr::kQrVersion == 5);
+  assert(wifi_ble_qr::kModuleCount == 37);
+  assert(wifi_ble_qr::kPixelsPerModule == 3);
   assert(wifi_ble_qr::kQuietZoneModules == 4);
-  assert(wifi_ble_qr::kQrPixelSize == 98);
-  assert(wifi_ble_qr::kQrLeft == 71 && wifi_ble_qr::kQrTop == 18);
-  assert(wifi_ble_qr::kQrBottom == 116 && wifi_ble_qr::kFooterTop == 119);
+  assert(wifi_ble_qr::kQrPixelSize == 135);
+  assert(wifi_ble_qr::kCanvasWidth == 240 && wifi_ble_qr::kCanvasHeight == 135);
+  assert(wifi_ble_qr::kQrLeft == 52 && wifi_ble_qr::kQrTop == 0);
+  assert(wifi_ble_qr::kQrBottom == 135);
+  const int rightMargin = wifi_ble_qr::kCanvasWidth -
+                          (wifi_ble_qr::kQrLeft + wifi_ble_qr::kQrPixelSize);
+  assert(rightMargin == 53 && rightMargin - wifi_ble_qr::kQrLeft == 1);
 
   assert(wifi_ble_qr::begin(kTestService, kTestPop));
   assert(wifi_ble_qr::active() && wifi_ble_qr::size() == wifi_ble_qr::kModuleCount);
@@ -81,6 +85,15 @@ void testMatrixAndQuietZone() {
     assert(!wifi_ble_qr::darkPixel(i, wifi_ble_qr::kQrPixelSize - 1));
     assert(!wifi_ble_qr::darkPixel(0, i));
     assert(!wifi_ble_qr::darkPixel(wifi_ble_qr::kQrPixelSize - 1, i));
+  }
+  const int quietZonePixels = wifi_ble_qr::kQuietZoneModules * wifi_ble_qr::kPixelsPerModule;
+  for (int y = 0; y < wifi_ble_qr::kQrPixelSize; ++y) {
+    for (int x = 0; x < wifi_ble_qr::kQrPixelSize; ++x) {
+      if (x < quietZonePixels || x >= wifi_ble_qr::kQrPixelSize - quietZonePixels ||
+          y < quietZonePixels || y >= wifi_ble_qr::kQrPixelSize - quietZonePixels) {
+        assert(!wifi_ble_qr::darkPixel(x, y));
+      }
+    }
   }
   assert(!wifi_ble_qr::darkPixel(-1, 0));
   assert(!wifi_ble_qr::darkPixel(wifi_ble_qr::kQrPixelSize, 0));

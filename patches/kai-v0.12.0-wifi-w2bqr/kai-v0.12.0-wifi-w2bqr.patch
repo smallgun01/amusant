@@ -1,5 +1,5 @@
 diff --git a/firmware/src/face.cpp b/firmware/src/face.cpp
-index c79d673..eac853c 100644
+index c79d673..a80e674 100644
 --- a/firmware/src/face.cpp
 +++ b/firmware/src/face.cpp
 @@ -5,6 +5,7 @@
@@ -18,20 +18,14 @@ index c79d673..eac853c 100644
  int battery = -1;
  int inbox = 0;  // updates waiting from the background brain
  
-@@ -344,12 +346,38 @@ void drawFace(uint32_t now, uint32_t tick, bool newTick) {
+@@ -344,12 +346,28 @@ void drawFace(uint32_t now, uint32_t tick, bool newTick) {
  }
  
  void drawProvisioning() {
 +  if (provisioningPage.qrPage() && wifi_ble_qr::active()) {
-+    canvas.setTextDatum(top_center);
-+    canvas.setTextColor(T.text);
-+    canvas.setFont(&fonts::Font2);
-+    canvas.drawString("Scan with ESP BLE app", W / 2, wifi_ble_qr::kHeaderTop);
-+
 +    const uint16_t white = canvas.color565(255, 255, 255);
 +    const uint16_t black = canvas.color565(0, 0, 0);
-+    canvas.fillRect(wifi_ble_qr::kQrLeft, wifi_ble_qr::kQrTop,
-+                    wifi_ble_qr::kQrPixelSize, wifi_ble_qr::kQrPixelSize, white);
++    canvas.fillSprite(white);
 +    for (int y = 0; y < wifi_ble_qr::kModuleCount; ++y) {
 +      for (int x = 0; x < wifi_ble_qr::kModuleCount; ++x) {
 +        if (!wifi_ble_qr::darkModule(x, y)) continue;
@@ -41,10 +35,6 @@ index c79d673..eac853c 100644
 +      }
 +    }
 +
-+    canvas.setFont(&fonts::Font2);
-+    canvas.setTextColor(T.textSoft);
-+    canvas.setTextDatum(top_center);
-+    canvas.drawString("A: PoP  B: Cancel", W / 2, wifi_ble_qr::kFooterTop);
 +    return;
 +  }
 +
@@ -58,7 +48,7 @@ index c79d673..eac853c 100644
  
    canvas.setTextDatum(middle_center);
    canvas.setTextColor(T.text);
-@@ -487,6 +515,8 @@ void setStatusText(const String& text) {
+@@ -487,6 +505,8 @@ void setStatusText(const String& text) {
    statusText = text;
  }
  void showProvisioning(const char* proofOfPossession) {
@@ -67,7 +57,7 @@ index c79d673..eac853c 100644
    char first[wifi_ble_flow::kPopLength / 2 + 1] = {};
    char second[wifi_ble_flow::kPopLength / 2 + 1] = {};
    const bool valid = wifi_ble_flow::splitPopForDisplay(proofOfPossession, first, second);
-@@ -507,6 +537,22 @@ void showProvisioning(const char* proofOfPossession) {
+@@ -507,6 +527,26 @@ void showProvisioning(const char* proofOfPossession) {
    dirty |= provisioningHint != "USB recovery: WIFI SET";
    provisioningHint = "USB recovery: WIFI SET";
    provisioningOn = valid;
@@ -87,10 +77,14 @@ index c79d673..eac853c 100644
 +  provisioningHint = provisioningPage.qrPage() ? "A: PoP  B: Cancel" : "A: QR  B: Cancel";
 +  dirty = true;
 +  return true;
++}
++
++bool provisioningQrPage() {
++  return provisioningPage.qrPage() && wifi_ble_qr::active();
  }
  
  void setProvisioningHint(const String& text) {
-@@ -515,6 +561,8 @@ void setProvisioningHint(const String& text) {
+@@ -515,6 +555,8 @@ void setProvisioningHint(const String& text) {
  }
  
  void clearProvisioning() {
@@ -100,49 +94,142 @@ index c79d673..eac853c 100644
    volatile char* second = provisioningPopSecond;
    for (size_t i = 0; i < sizeof(provisioningPopFirst); ++i) first[i] = 0;
 diff --git a/firmware/src/face.h b/firmware/src/face.h
-index ae9ba01..84347f9 100644
+index ae9ba01..f6ef4b1 100644
 --- a/firmware/src/face.h
 +++ b/firmware/src/face.h
-@@ -33,6 +33,8 @@ void setExpr(Expr e);
+@@ -33,6 +33,9 @@ void setExpr(Expr e);
  void setLevel(float level);              // drives the sound waves while listening and the mouth while speaking
  void setStatusText(const String& text);  // small hint under Kai (e.g. "connecting wifi")
  void showProvisioning(const char* proofOfPossession);
 +void showProvisioningQr(const char* serviceName, const char* proofOfPossession);
 +bool toggleProvisioningPage();
++bool provisioningQrPage();
  void setProvisioningHint(const String& text);
  void clearProvisioning();
  void setBattery(int percent);
 diff --git a/firmware/src/main.cpp b/firmware/src/main.cpp
-index c75d303..d5cf34b 100644
+index c75d303..49f67b4 100644
 --- a/firmware/src/main.cpp
 +++ b/firmware/src/main.cpp
-@@ -664,6 +664,7 @@ static void markOwnerSetupReturn(const char* status) {
+@@ -43,6 +43,7 @@ static constexpr int DECODE_PER_LOOP = 4;            // ~16 ms of decoding per l
+ // answer, so the tail is short, the radio naps and the CPU slows down whenever nothing is happening,
+ // and deep sleep powers the screen/audio rail off. On USB Kai never deep-sleeps, so it stays instant.
+ static constexpr uint8_t BRIGHTNESS_AWAKE = 90;
++static constexpr uint8_t BRIGHTNESS_PROVISIONING_QR = 45;
+ static constexpr uint8_t BRIGHTNESS_DIM = 15;
+ static constexpr uint32_t DIM_AFTER_MS = 15000;
+ static constexpr uint32_t DEEP_SLEEP_AFTER_MS = 45000;      // on battery
+@@ -184,6 +185,16 @@ static void backlight(uint8_t level) {
+   M5.Display.setBrightness(level);
+ }
+ 
++static void syncOwnerSetupProvisioningBrightness() {
++  if (!ownerSetupBootActive) return;
++  backlight(face::provisioningQrPage() ? BRIGHTNESS_PROVISIONING_QR : BRIGHTNESS_AWAKE);
++}
++
++static void clearProvisioningView() {
++  face::clearProvisioning();
++  if (ownerSetupBootActive) backlight(BRIGHTNESS_AWAKE);
++}
++
+ #ifdef KAI_TELEMETRY
+ static int64_t rtcNowUs() {
+   timeval tv;
+@@ -664,6 +675,7 @@ static void markOwnerSetupReturn(const char* status) {
  
  static void requestOwnerSetupExit(const char* status) {
    if (!ownerSetupBootActive) return;
-+  face::clearProvisioning();
++  clearProvisioningView();
    markOwnerSetupReturn(status);
    wifi_ble_provisioning::stop();
  }
-@@ -790,6 +791,7 @@ static void serviceWifiBleProvisioning() {
+@@ -681,7 +693,7 @@ static void onWifiConsoleEvent(const wifi_console::Event& event) {
+     case wifi_console::EventType::Clear: {
+       const bool bleWasActive = wifi_ble_provisioning::active();
+       wifi_ble_provisioning::stop();
+-      face::clearProvisioning();
++      clearProvisioningView();
+       if (!wifi_config::clear()) {
+         Serial.println("WIFI ERR STORAGE");
+         break;
+@@ -711,7 +723,7 @@ static void onWifiConsoleEvent(const wifi_console::Event& event) {
+     case wifi_console::EventType::Set: {
+       const bool bleWasActive = wifi_ble_provisioning::active();
+       wifi_ble_provisioning::stop();
+-      face::clearProvisioning();
++      clearProvisioningView();
+       if (!wifi_config::save(event.profile)) {
+         Serial.println("WIFI ERR STORAGE");
+         break;
+@@ -773,7 +785,7 @@ static void serviceWifiBleProvisioning() {
+     case wifi_ble_provisioning::Event::CredentialsSucceeded:
+       if (!wifi_config::save(profile)) {
+         Serial.println("WIFI ERR STORAGE");
+-        face::clearProvisioning();
++        clearProvisioningView();
+         if (ownerSetupBootActive) {
+           requestOwnerSetupExit("Save failed; saved Wi-Fi kept");
+         } else {
+@@ -790,9 +802,10 @@ static void serviceWifiBleProvisioning() {
          wifi_ble_provisioning::logDiagnostics("profile-saved");
  #endif
          if (ownerSetupBootActive) {
-+          face::clearProvisioning();
++          clearProvisioningView();
            markOwnerSetupReturn("Wi-Fi connected; saved");
          } else {
-           face::clearProvisioning();
-@@ -859,6 +861,9 @@ static void serviceWifiBleProvisioning() {
+-          face::clearProvisioning();
++          clearProvisioningView();
+           face::setStatusText("BLE saved; finishing");
+         }
+       }
+@@ -805,7 +818,7 @@ static void serviceWifiBleProvisioning() {
+ 
+     case wifi_ble_provisioning::Event::TimedOut:
+       Serial.println("WIFI BLE TIMEOUT");
+-      face::clearProvisioning();
++      clearProvisioningView();
+       if (ownerSetupBootActive) {
+         requestOwnerSetupExit("Setup timed out; Wi-Fi kept");
+       } else {
+@@ -814,7 +827,7 @@ static void serviceWifiBleProvisioning() {
+       break;
+ 
+     case wifi_ble_provisioning::Event::SessionEnded:
+-      face::clearProvisioning();
++      clearProvisioningView();
+       if (ownerSetupBootActive) {
+         if (!setupReturnToNormal) requestOwnerSetupExit("Setup ended; Wi-Fi kept");
+       } else if (wifiConfigured) {
+@@ -831,7 +844,7 @@ static void serviceWifiBleProvisioning() {
+ 
+     case wifi_ble_provisioning::Event::Error:
+       Serial.println("WIFI BLE ERR SERVICE");
+-      face::clearProvisioning();
++      clearProvisioningView();
+       if (ownerSetupBootActive) {
+         requestOwnerSetupExit("BLE failed; Wi-Fi kept");
+       } else {
+@@ -847,7 +860,7 @@ static void serviceWifiBleProvisioning() {
+ }
+ 
+ [[noreturn]] static void restartNormalAfterOwnerSetup() {
+-  face::clearProvisioning();
++  clearProvisioningView();
+   face::setStatusText(setupReturnStatus);
+   face::render();
+   Serial.println("WIFI BLE SETUP RETURN");
+@@ -859,6 +872,9 @@ static void serviceWifiBleProvisioning() {
  static void serviceOwnerSetupBoot() {
    serviceWifiConsole();
    const uint32_t now = millis();
 +  if (!setupReturnToNormal && M5.BtnA.wasClicked()) {
-+    face::toggleProvisioningPage();
++    if (face::toggleProvisioningPage()) syncOwnerSetupProvisioningBrightness();
 +  }
    if (!setupReturnToNormal && M5.BtnB.wasClicked()) {
      requestOwnerSetupExit("Setup cancelled; Wi-Fi kept");
    }
-@@ -1062,8 +1067,8 @@ void setup() {
+@@ -1062,8 +1078,9 @@ void setup() {
    } else if (ownerSetupBootActive) {
      setMode(Mode::Offline);
      if (startBleForOwnerSetup) {
@@ -150,6 +237,7 @@ index c75d303..d5cf34b 100644
 -      face::setProvisioningHint("B click cancels");
 +      face::showProvisioningQr(wifi_ble_provisioning::provisioningServiceName(),
 +                               wifi_ble_provisioning::proofOfPossession());
++      syncOwnerSetupProvisioningBrightness();
      } else {
        face::setStatusText(setupReturnStatus);
      }
@@ -1608,7 +1696,7 @@ index b135237..0bf644a 100644
  const char* proofOfPossession();
 diff --git a/firmware/src/wifi_ble_qr.cpp b/firmware/src/wifi_ble_qr.cpp
 new file mode 100644
-index 0000000..5ca52b1
+index 0000000..3b52312
 --- /dev/null
 +++ b/firmware/src/wifi_ble_qr.cpp
 @@ -0,0 +1,110 @@
@@ -1623,7 +1711,7 @@ index 0000000..5ca52b1
 +namespace {
 +
 +constexpr size_t kQrBufferLength = qrcodegen_BUFFER_LEN_FOR_VERSION(kQrVersion);
-+static_assert(kQrBufferLength == 212, "Unexpected Nayuki QR buffer size for version 6");
++static_assert(kQrBufferLength == 173, "Unexpected Nayuki QR buffer size for version 5");
 +
 +uint8_t qrBuffer[kQrBufferLength] = {};
 +uint8_t tempBuffer[kQrBufferLength] = {};
@@ -1688,7 +1776,7 @@ index 0000000..5ca52b1
 +  }
 +
 +  const bool encoded = qrcodegen_encodeText(payload, tempBuffer, qrBuffer,
-+      qrcodegen_Ecc_MEDIUM, kQrVersion, kQrVersion, qrcodegen_Mask_AUTO, false);
++      qrcodegen_Ecc_LOW, kQrVersion, kQrVersion, qrcodegen_Mask_AUTO, false);
 +  wipe(payload, sizeof(payload));
 +  wipe(tempBuffer, sizeof(tempBuffer));
 +  if (!encoded || qrcodegen_getSize(qrBuffer) != kModuleCount) {
@@ -1724,10 +1812,10 @@ index 0000000..5ca52b1
 +}  // namespace wifi_ble_qr
 diff --git a/firmware/src/wifi_ble_qr.h b/firmware/src/wifi_ble_qr.h
 new file mode 100644
-index 0000000..86af679
+index 0000000..dfbc72f
 --- /dev/null
 +++ b/firmware/src/wifi_ble_qr.h
-@@ -0,0 +1,70 @@
+@@ -0,0 +1,68 @@
 +#pragma once
 +
 +#include <stddef.h>
@@ -1735,24 +1823,22 @@ index 0000000..86af679
 +
 +namespace wifi_ble_qr {
 +
-+constexpr int kQrVersion = 6;
++constexpr int kQrVersion = 5;
 +constexpr int kModuleCount = 4 * kQrVersion + 17;
 +constexpr int kQuietZoneModules = 4;
-+constexpr int kPixelsPerModule = 2;
++constexpr int kPixelsPerModule = 3;
 +constexpr int kQrPixelSize = (kModuleCount + 2 * kQuietZoneModules) * kPixelsPerModule;
 +constexpr int kCanvasWidth = 240;
 +constexpr int kCanvasHeight = 135;
 +constexpr int kQrLeft = (kCanvasWidth - kQrPixelSize) / 2;
-+constexpr int kQrTop = 18;
++constexpr int kQrTop = (kCanvasHeight - kQrPixelSize) / 2;
 +constexpr int kQrBottom = kQrTop + kQrPixelSize;
-+constexpr int kHeaderTop = 1;
-+constexpr int kFooterTop = 119;
 +constexpr size_t kPayloadCapacity = 128;
 +
-+static_assert(kQrPixelSize == 98, "The fixed QR version and module scale changed");
++static_assert(kModuleCount == 37, "The fixed QR version changed");
++static_assert(kQrPixelSize == 135, "The fixed QR version and module scale changed");
 +static_assert(kQrLeft >= 0 && kQrLeft + kQrPixelSize <= kCanvasWidth, "QR exceeds canvas width");
-+static_assert(kQrTop >= 0 && kQrBottom <= kCanvasHeight, "QR exceeds canvas height");
-+static_assert(kQrBottom <= kFooterTop, "QR overlaps its footer");
++static_assert(kQrTop == 0 && kQrBottom == kCanvasHeight, "QR must use the full canvas height");
 +
 +// Owns only page-selection state. A short front click toggles pages while a
 +// valid session QR is available; clearing the session makes both pages inert.
