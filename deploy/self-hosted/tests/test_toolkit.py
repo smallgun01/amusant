@@ -192,6 +192,23 @@ class ToolkitTests(unittest.TestCase):
             context = self.inspect_fixture(stack, filesystem_uuid=self.mount_uuid, root_device=1, data_device=1)
         self.assertEqual(self.check(context, "persistent data mount")["status"], "BLOCKED")
 
+    def test_findmnt_mount_identity_reads_filesystem_uuid(self):
+        calls = []
+        def findmnt(argv, *, cwd=None):
+            calls.append(argv)
+            return 0, json.dumps({"filesystems": [{
+                "source": "/dev/sdb1",
+                "uuid": self.mount_uuid,
+                "target": str(self.data_root),
+                "fstype": "ext4",
+            }]}), ""
+        with patch.object(toolkit, "run_command", side_effect=findmnt):
+            mount = toolkit._load_mount(self.data_root)
+        self.assertEqual(mount["uuid"], self.mount_uuid)
+        self.assertEqual(mount["target"], str(self.data_root))
+        self.assertIn("UUID,TARGET,FSTYPE", calls[0])
+        self.assertNotIn("SOURCE,TARGET,FSTYPE", calls[0])
+
     def test_stable_uuid_survives_device_node_renumbering(self):
         for device_node in ("/dev/sdb1", "/dev/sdc1"):
             with ExitStack() as stack:
@@ -220,6 +237,18 @@ class ToolkitTests(unittest.TestCase):
         self.assertEqual(values["OCI_DATA_DIR"], str(self.data_root))
         self.assertEqual(stat.S_IMODE(self.env_file.stat().st_mode), 0o600)
 
+    def test_root_setup_preserves_operator_owned_private_env(self):
+        before_env = self.env_file.read_bytes()
+        profile = json.loads(PROFILE_SOURCE.read_text(encoding="utf-8"))
+        context = {"profile": profile, "root": self.root, "env_file": self.env_file, "storage_ok": True, "data_root": self.data_root}
+        with patch.object(toolkit.os, "geteuid", return_value=0):
+            operations, blockers = toolkit.setup_plan(context)
+        self.assertFalse(blockers)
+        self.assertIn({"kind": "preserve_env", "target": self.env_file}, operations)
+        self.assertTrue(any(item["kind"] == "create_dir" and item["uid"] == 10001 for item in operations))
+        self.assertEqual(self.env_file.read_bytes(), before_env)
+        self.assertFalse((self.data_root / "relay").exists())
+
     def test_unprivileged_unreadable_env_is_unknown_not_bad_permissions(self):
         with ExitStack() as stack:
             self.patches(stack)
@@ -227,6 +256,11 @@ class ToolkitTests(unittest.TestCase):
             context = toolkit.inspect(self.profile_rel, root=self.root)
         self.assertEqual(self.check(context, "environment file")["status"], "UNKNOWN")
         self.assertIn("inaccessible", self.check(context, "environment file")["detail"])
+        self.assertEqual(self.check(context, "environment completeness")["status"], "UNKNOWN")
+        self.assertEqual(self.check(context, "image digest syntax RELAY_IMAGE")["status"], "UNKNOWN")
+        self.assertEqual(self.check(context, "secret-file metadata GEMINI_API_KEY_FILE")["status"], "UNKNOWN")
+        self.assertEqual(self.check(context, "private Relay bind address")["status"], "UNKNOWN")
+        self.assertEqual(self.check(context, "persistent data mount")["status"], "UNKNOWN")
 
     def test_inaccessible_protected_secret_and_config_metadata_is_unknown(self):
         protected_paths = {
@@ -424,6 +458,15 @@ class ToolkitTests(unittest.TestCase):
         operations, blockers = toolkit.setup_plan(context)
         self.assertIn({"kind": "preserve_dir", "target": results, "label": parent["label"]}, operations)
         self.assertTrue(blockers)  # Other service-owned paths remain blocked under this unprivileged test identity.
+
+    def test_setup_template_copy_requires_readable_preflight(self):
+        self.env_file.unlink()
+        context = {"profile": self.profile, "root": self.root, "env_file": self.env_file, "storage_ok": False, "data_root": None}
+        with patch.object(toolkit, "_load_preflight", return_value=None):
+            operations, blockers = toolkit.setup_plan(context)
+        self.assertTrue(blockers)
+        self.assertFalse(any(item["kind"] == "copy_env" for item in operations))
+        self.assertFalse(self.env_file.exists())
 
     def test_wrong_data_directory_mode_is_blocked_and_no_other_dir_is_created(self):
         relay = self.data_root / "relay"

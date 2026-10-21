@@ -153,7 +153,10 @@ def _device_id(path: Path) -> int | None:
         return None
 
 
-def _storage_state(profile: dict, values: dict[str, str], checks: list[dict]) -> tuple[bool, Path | None, str]:
+def _storage_state(profile: dict, values: dict[str, str], checks: list[dict], *, env_file_ok: bool = True) -> tuple[bool, Path | None, str]:
+    if not env_file_ok:
+        checks.append({"status": "UNKNOWN", "name": "persistent data mount", "detail": "environment values were not readable; mount inputs were not inferred"})
+        return False, None, "UNKNOWN"
     root_value = values.get(profile["data_root_env"], "").strip()
     if not root_value:
         checks.append({"status": "BLOCKED", "name": "persistent data mount", "detail": "data-root input is missing"})
@@ -331,7 +334,13 @@ def _readable_by(item: os.stat_result, uid: int, gids: list[int]) -> bool:
     return bool(mode & stat.S_IROTH)
 
 
-def _check_config_and_secrets(profile: dict, values: dict[str, str], checks: list[dict]) -> bool:
+def _check_config_and_secrets(profile: dict, values: dict[str, str], checks: list[dict], *, env_file_ok: bool = True) -> bool:
+    if not env_file_ok:
+        for entry in profile["secret_files"]:
+            checks.append({"status": "UNKNOWN", "name": "secret-file metadata " + entry["env"], "detail": "environment field was not inspected; file path was not inferred"})
+        for entry in profile["config_files"]:
+            checks.append({"status": "UNKNOWN", "name": "configuration-file metadata " + entry["env"], "detail": "environment field was not inspected; file path was not inferred"})
+        return False
     all_ok = True
     for entry in profile["secret_files"]:
         value = values.get(entry["env"], "").strip()
@@ -459,7 +468,11 @@ def _verified_compose_bridges(profile: dict, values: dict[str, str]) -> dict | N
         return None
 
 
-def _check_networks(profile: dict, values: dict[str, str], extra_network_cidrs: list[str], checks: list[dict]) -> None:
+def _check_networks(profile: dict, values: dict[str, str], extra_network_cidrs: list[str], checks: list[dict], *, env_file_ok: bool = True) -> None:
+    if not env_file_ok:
+        checks.append({"status": "UNKNOWN", "name": "host route overlap", "detail": "environment values were not inspected; Docker networks are unknown"})
+        checks.append({"status": "UNKNOWN", "name": "external network overlap", "detail": "environment values were not inspected; external network inputs are unknown"})
+        return
     docker_networks = []
     for name in profile["network_envs"]:
         value = values.get(name, "").strip()
@@ -526,7 +539,10 @@ def _check_networks(profile: dict, values: dict[str, str], extra_network_cidrs: 
             checks.append({"status": "PASS", "name": "external network overlap", "detail": "no conflict with supplied external CIDRs"})
 
 
-def _check_host_ip(profile: dict, values: dict[str, str], checks: list[dict]) -> None:
+def _check_host_ip(profile: dict, values: dict[str, str], checks: list[dict], *, env_file_ok: bool = True) -> None:
+    if not env_file_ok:
+        checks.append({"status": "UNKNOWN", "name": "private Relay bind address", "detail": "environment values were not inspected; bind address is unknown"})
+        return
     value = values.get(profile["host_ip_env"], "").strip()
     if not value:
         checks.append({"status": "BLOCKED", "name": "private Relay bind address", "detail": "configured host address is missing"})
@@ -605,14 +621,14 @@ def inspect(
     values, env_error, env_file_ok = _read_env(env_file, preflight)
     checks.append({"status": "PASS" if env_error is None else _path_problem_status(env_error), "name": "environment file", "detail": "private regular file inspected without displaying values" if env_error is None else env_error})
     required = _required_variables(profile, preflight, compose_path)
-    missing = sorted(name for name in required if _is_empty(values.get(name)))
+    missing = sorted(name for name in required if _is_empty(values.get(name))) if env_file_ok else []
     env_complete = env_file_ok and not missing
-    if missing:
+    if not env_file_ok:
+        checks.append({"status": "UNKNOWN", "name": "environment completeness", "detail": "environment values were not inspected; missing fields are not inferred"})
+    elif missing:
         checks.append({"status": "BLOCKED", "name": "environment completeness", "detail": "missing values for: " + ", ".join(missing)})
-    elif env_file_ok:
-        checks.append({"status": "PASS", "name": "environment completeness", "detail": "required values are present; values were not displayed"})
     else:
-        checks.append({"status": "BLOCKED", "name": "environment completeness", "detail": "cannot validate values because the environment file is unavailable"})
+        checks.append({"status": "PASS", "name": "environment completeness", "detail": "required values are present; values were not displayed"})
     static_ok = False
     if preflight is not None and env_complete:
         try:
@@ -624,6 +640,9 @@ def inspect(
     elif preflight is not None:
         checks.append({"status": "UNKNOWN", "name": "existing profile static preflight", "detail": "not run because required environment values are incomplete"})
     for name in profile["image_envs"]:
+        if not env_file_ok:
+            checks.append({"status": "UNKNOWN", "name": "image digest syntax " + name, "detail": "image reference was not inspected because env values are unavailable"})
+            continue
         value = values.get(name, "").strip()
         if not value:
             checks.append({"status": "BLOCKED", "name": "image digest syntax " + name, "detail": "image reference is missing"})
@@ -644,11 +663,11 @@ def inspect(
         checks.append({"status": "PASS", "name": "host architecture", "detail": "host architecture matches selected profile"})
     else:
         checks.append({"status": "BLOCKED", "name": "host architecture", "detail": "host architecture does not match selected profile"})
-    storage_ok, data_root, storage_status = _storage_state(profile, values, checks)
+    storage_ok, data_root, storage_status = _storage_state(profile, values, checks, env_file_ok=env_file_ok)
     _check_data_directories(profile, data_root, storage_status, checks)
-    files_ok = _check_config_and_secrets(profile, values, checks)
-    _check_host_ip(profile, values, checks)
-    _check_networks(profile, values, extra_network_cidrs or [], checks)
+    files_ok = _check_config_and_secrets(profile, values, checks, env_file_ok=env_file_ok)
+    _check_host_ip(profile, values, checks, env_file_ok=env_file_ok)
+    _check_networks(profile, values, extra_network_cidrs or [], checks, env_file_ok=env_file_ok)
     _check_docker(profile, values, root, env_file, env_complete, static_ok, files_ok, checks)
     return {"profile": profile, "root": root, "env_file": env_file, "values": values, "data_root": data_root, "storage_ok": storage_ok, "storage_status": storage_status, "checks": checks}
 
@@ -661,10 +680,10 @@ def _can_create(uid: int, gid: int) -> bool:
 
 def _template_is_safe(path: Path, profile: dict, preflight) -> bool:
     state, item = _stat_file(path)
-    if state != "regular" or item is None:
+    if state != "regular" or item is None or preflight is None:
         return False
     try:
-        values = preflight.read_env_file(path) if preflight is not None else {}
+        values = preflight.read_env_file(path)
     except Exception:
         return False
     return all(not values.get(name, "").strip() for name in profile.get("secret_template_envs", []))
@@ -684,15 +703,16 @@ def setup_plan(context: dict) -> tuple[list[dict], list[str]]:
             operations.append({"kind": "copy_env", "target": env_file})
         else:
             blockers.append("non-secret environment template is missing or unsafe")
-    elif (
-        env_state == "regular" and env_stat is not None
-        and _mode_is_private(stat.S_IMODE(env_stat.st_mode))
-        and env_stat.st_uid in {os.geteuid(), 0}
-        and os.access(env_file, os.R_OK)
-    ):
-        operations.append({"kind": "preserve_env", "target": env_file})
+    elif env_state in {"inaccessible", "unavailable"}:
+        blockers.append("existing environment metadata is inaccessible; it will not be overwritten")
+    elif env_state == "regular" and env_stat is not None and _mode_is_private(stat.S_IMODE(env_stat.st_mode)):
+        if os.geteuid() == 0 or os.access(env_file, os.R_OK):
+            # Explicit root execution may inspect/preserve an operator-owned .env; never rewrite it.
+            operations.append({"kind": "preserve_env", "target": env_file})
+        else:
+            blockers.append("existing environment file is inaccessible to this operator; it will not be overwritten")
     else:
-        blockers.append("existing environment target is unsafe; it will not be overwritten")
+        blockers.append("existing environment target has unsafe type or permissions; it will not be overwritten")
     if not context["storage_ok"] or context["data_root"] is None:
         blockers.append("data directories are not planned until the mount identity is verified")
         return operations, blockers
