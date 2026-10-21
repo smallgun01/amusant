@@ -34,11 +34,11 @@ git -C kai apply ../patches/kai-v0.12.0-wifi-w2b1/kai-v0.12.0-wifi-w2b1.patch
 git -C kai diff --check
 ```
 
-The combined production workflow performs these patch-apply checks from a clean pinned Kai checkout. W2b-1 is a downstream patch; it does not vendor or modify upstream Kai.
+The combined production workflow performs these patch-apply checks from a clean pinned Kai checkout. It builds both the normal `sticks3` image and the opt-in `sticks3_ble_diag` image. W2b-1 is a downstream patch; it does not vendor or modify upstream Kai.
 
 ## Offline tests and build
 
-The combined workflow runs the W1, W1.5, and W2b-1 host suites, the production CJK UTF-8 layout and real-font glyph-width checks, then builds only `sticks3`:
+The combined workflow runs the W1, W1.5, and W2b-1 host suites, the production CJK UTF-8 layout and real-font glyph-width checks, then builds `sticks3` and the opt-in `sticks3_ble_diag` diagnostics profile:
 
 ```sh
 python3 patches/kai-v0.12.0-wifi-w1/tests/run_host_tests.py --firmware-root kai/firmware
@@ -48,27 +48,29 @@ python3 patches/kai-v0.12.0-wifi-w2b1/tests/run_host_tests.py \
   --wifi-tests patches/kai-v0.12.0-wifi-w1.5/tests
 ```
 
-The W2b-1 C++ fake-NVS suite covers explicit configured-profile entry, the 5-second gesture gates, one-shot intent, battery thresholds, wrong-PoP behavior, no write before association plus IP, retry limits, single-profile replacement, NVS write failure, cancellation, timeout, and USB removal. Its `CredentialCommitGate` is the same small state machine used by the native provisioning service: the host seam injects `CredentialsSucceeded` and `Deinitialized` in either order, then controls Wi-Fi/IP readiness and interruptions. It verifies that deinitialization preserves a pending candidate, the old NVS record remains until commit, commit occurs at most once, cancellation/low battery/window expiry discard pending state, and the IP wait terminates at 15 seconds. This does not emulate Espressif's callback scheduler or replace hardware acceptance.
+The W2b-1 C++ fake-NVS suite covers configured-profile entry, gesture/battery gates, credential commit ordering, cancellation, timeout, write failure, and teardown. `CredentialCommitGate` retains the existing NVS profile until Wi-Fi plus IP are verified. The shared `ManagerLifecycle` seam leaves SDK auto-stop enabled for the phone app, records `NETWORK_PROV_END`, and waits for the Arduino core's external `NETWORK_PROV_DEINIT`; the application loop does not deinitialize again. Queue overflow is handled before any event is dequeued: the shared `serviceStep` used by firmware and tests wipes credential entries, requests stop once, and retains pending END/DEINIT events for ordered lifecycle processing. Regression tests exercise END-first plus credential overflow and DEINIT-first plus overflow, then verify the terminal callbacks drain and the manager becomes inactive. Other tests cover external DEINIT ordering, cancellation, exactly-once profile save, and the last-resort 45-second fallback. A source contract check enforces a single guarded direct deinit for provisioning-start failure. This seam does not emulate Espressif's callback scheduler or replace hardware acceptance.
 
 For a local build, use only the placeholder secrets file and the production profile:
 
 ```sh
 cp kai/firmware/src/secrets.example.h kai/firmware/src/secrets.h
 pio run -d kai/firmware -e sticks3
+pio run -d kai/firmware -e sticks3_ble_diag
 rm kai/firmware/src/secrets.h
 ```
 
-The CI production check verifies the `sticks3` sources do not define `JELLII_CJK_DIAGNOSTICS`, contain `CJK SHOW`, or include the opt-in CJK diagnostic strings in the firmware image. The build uses placeholder secrets only; it does not upload firmware or contact Gemini.
+The CI checks that the production `sticks3` image excludes BLE lifecycle and CJK diagnostic strings, while `sticks3_ble_diag` contains the opt-in lifecycle markers and compiled SDK timeout. The diagnostic profile logs event timestamps, queue counts, lifecycle state, and active-state contributors without SSID, password, candidate profile, service name, or PoP. Both builds use placeholder secrets only; they do not upload firmware or contact Gemini.
 
 ## Footprint and verification
 
-PlatformIO linker figures below are from the pinned production `sticks3` profile; image size is the resulting `firmware.bin`.
+Both pinned builds passed in the latest [integration workflow run](https://github.com/smallgun01/amusant/actions/workflows/sticks3-w15-cjk-integration.yml) for this PR. The production firmware excludes lifecycle diagnostics. The opt-in build compiled `CONFIG_NETWORK_PROV_AUTOSTOP_TIMEOUT=30s` and derives its 45,000 ms drain fallback from that SDK value plus a 15-second margin. CI uses placeholder secrets only and does not upload firmware or contact Gemini.
 
-| Profile | Firmware image | Program Flash | Static RAM |
+| Profile | Firmware image | Program Flash | RAM |
 | --- | ---: | ---: | ---: |
-| `sticks3` | 2,430,080 B | 2,396,099 / 3,342,336 B (71.7%) | 79,616 / 327,680 B (24.3%) |
+| `sticks3` | 2,430,928 B | 2,396,903 / 3,342,336 B (71.7%) | 79,800 / 327,680 B (24.4%) |
+| `sticks3_ble_diag` | 2,433,824 B | 2,399,723 / 3,342,336 B (71.8%) | 79,952 / 327,680 B (24.4%) |
 
-Runtime free heap, battery draw, Android interoperability, and reconnection to a real AP are not measurable from this offline build and remain part of owner-supervised physical acceptance. The separate CJK diagnostic patch is not applied or built by this production workflow.
+Runtime free heap, battery draw, Android status delivery, and reconnection to a real AP are not measurable from this offline build. The owner-supervised physical acceptance procedure remains pending; the CI run does not establish successful Android provisioning.
 
 ## Rollback
 
@@ -79,3 +81,4 @@ git -C kai apply -R ../patches/kai-v0.12.0-wifi-w2b1/kai-v0.12.0-wifi-w2b1.patch
 ```
 
 This source rollback does not flash a device, erase NVS, or alter the saved W1 profile. Restoring a device image is a separate owner-authorized action.
+
