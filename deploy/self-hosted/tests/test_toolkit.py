@@ -41,7 +41,7 @@ def valid_values(data_root: Path) -> dict[str, str]:
         "RELAY_HOST_PRIVATE_IP": "10.0.0.10",
         "RELAY_PUBLISH_PORT": "8443",
         "OCI_DATA_DIR": str(data_root),
-        "OCI_EXPECTED_DATA_SOURCE": "/dev/fake-volume",
+        "OCI_EXPECTED_DATA_UUID": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
         "OCI_VCN_CIDRS": "10.20.0.0/16",
     }
 
@@ -70,8 +70,10 @@ class ToolkitTests(unittest.TestCase):
         self.profile["env_example"] = "deploy/oci-a1/.env.example"
         self.profile["compose_file"] = "deploy/oci-a1/compose.yaml"
         for entry in self.profile["data_directories"]:
-            entry["uid"] = self.uid
-            entry["gid"] = self.gid
+            if entry.get("uid") is not None:
+                entry["uid"] = self.uid
+            if entry.get("gid") is not None:
+                entry["gid"] = self.gid
         for entry in self.profile["secret_files"]:
             entry["consumer_uids"] = [self.uid]
             entry["shared_gid"] = self.gid
@@ -94,13 +96,13 @@ class ToolkitTests(unittest.TestCase):
         for name in self.profile["secret_template_envs"]:
             template_values[name] = ""
         template_values["HERMES_CONFIG_FILE"] = ""
-        template_values["OCI_EXPECTED_DATA_SOURCE"] = ""
+        template_values["OCI_EXPECTED_DATA_UUID"] = ""
         template_values["OCI_VCN_CIDRS"] = ""
         self.write_env(self.template, template_values)
         self.profile_path = self.root / "deploy" / "self-hosted" / "profile.json"
         self.profile_path.write_text(json.dumps(self.profile), encoding="utf-8")
         self.profile_rel = Path("deploy/self-hosted/profile.json")
-        self.mount_source = "/dev/fake-volume"
+        self.mount_uuid = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
         self.command_calls = []
 
     def write_env(self, path: Path, values: dict[str, str]):
@@ -130,10 +132,10 @@ class ToolkitTests(unittest.TestCase):
                 return 0, "", ""
         return 127, "", ""
 
-    def patches(self, stack: ExitStack, *, docker=None, source=None, root_device=1, data_device=2):
-        source = source or self.mount_source
+    def patches(self, stack: ExitStack, *, docker=None, device_node="/dev/sdb1", filesystem_uuid=None, root_device=1, data_device=2):
+        filesystem_uuid = filesystem_uuid or self.mount_uuid
         stack.enter_context(patch.object(toolkit, "_load_mount", return_value={
-            "source": source, "target": str(self.data_root), "fstype": "ext4"
+            "source": device_node, "uuid": filesystem_uuid, "target": str(self.data_root), "fstype": "ext4"
         }))
         stack.enter_context(patch.object(toolkit, "_device_id", side_effect=lambda path: root_device if Path(path) == Path("/") else data_device))
         stack.enter_context(patch.object(toolkit, "run_command", side_effect=self.fake_command))
@@ -182,13 +184,154 @@ class ToolkitTests(unittest.TestCase):
         self.assertIn("FACADE_IMAGE", completeness["detail"])
         self.assertNotIn("DO_NOT_ECHO_THIS_VALUE", str(context["checks"]))
 
-    def test_empty_directory_and_wrong_source_do_not_pass_persistence_check(self):
+    def test_empty_directory_and_wrong_uuid_do_not_pass_persistence_check(self):
         with ExitStack() as stack:
-            context = self.inspect_fixture(stack, source="/dev/wrong-volume")
+            context = self.inspect_fixture(stack, filesystem_uuid="bbbbbbbb-cccc-4ddd-8eee-ffffffffffff")
         self.assertEqual(self.check(context, "persistent data mount")["status"], "BLOCKED")
         with ExitStack() as stack:
-            context = self.inspect_fixture(stack, source="/dev/fake-volume", root_device=1, data_device=1)
+            context = self.inspect_fixture(stack, filesystem_uuid=self.mount_uuid, root_device=1, data_device=1)
         self.assertEqual(self.check(context, "persistent data mount")["status"], "BLOCKED")
+
+    def test_stable_uuid_survives_device_node_renumbering(self):
+        for device_node in ("/dev/sdb1", "/dev/sdc1"):
+            with ExitStack() as stack:
+                context = self.inspect_fixture(stack, device_node=device_node, filesystem_uuid=self.mount_uuid)
+            self.assertEqual(self.check(context, "persistent data mount")["status"], "PASS")
+        values = dict(self.values)
+        values["OCI_EXPECTED_DATA_UUID"] = "/dev/sdb1"
+        self.write_env(self.env_file, values)
+        with ExitStack() as stack:
+            context = self.inspect_fixture(stack, device_node="/dev/sdb1", filesystem_uuid=self.mount_uuid)
+        self.assertEqual(self.check(context, "persistent data mount")["status"], "BLOCKED")
+
+    def test_root_can_inspect_operator_owned_private_env_without_relaxing_mode(self):
+        from types import SimpleNamespace
+        original_lstat = Path.lstat
+        def owner_metadata(path):
+            result = original_lstat(path)
+            if path == self.env_file:
+                return SimpleNamespace(st_mode=result.st_mode, st_uid=self.uid + 1)
+            return result
+        preflight = toolkit._load_preflight(PREFLIGHT)
+        with patch.object(toolkit.os, "geteuid", return_value=0), patch.object(Path, "lstat", owner_metadata):
+            values, error, readable = toolkit._read_env(self.env_file, preflight)
+        self.assertTrue(readable)
+        self.assertIsNone(error)
+        self.assertEqual(values["OCI_DATA_DIR"], str(self.data_root))
+        self.assertEqual(stat.S_IMODE(self.env_file.stat().st_mode), 0o600)
+
+    def test_unprivileged_unreadable_env_is_unknown_not_bad_permissions(self):
+        with ExitStack() as stack:
+            self.patches(stack)
+            stack.enter_context(patch.object(toolkit.os, "access", return_value=False))
+            context = toolkit.inspect(self.profile_rel, root=self.root)
+        self.assertEqual(self.check(context, "environment file")["status"], "UNKNOWN")
+        self.assertIn("inaccessible", self.check(context, "environment file")["detail"])
+
+    def test_inaccessible_protected_secret_and_config_metadata_is_unknown(self):
+        protected_paths = {
+            Path(self.values["FACADE_API_KEY_FILE"]),
+            Path(self.values["HERMES_CONFIG_FILE"]),
+        }
+        original = toolkit._path_component_issue
+        def access_issue(path):
+            if path in protected_paths:
+                return "inaccessible"
+            return original(path)
+        checks = []
+        with patch.object(toolkit, "_path_component_issue", side_effect=access_issue):
+            files_ok = toolkit._check_config_and_secrets(self.profile, self.values, checks)
+        secret_check = next(item for item in checks if item["name"] == "secret-file metadata FACADE_API_KEY_FILE")
+        config_check = next(item for item in checks if item["name"] == "configuration-file metadata HERMES_CONFIG_FILE")
+        self.assertFalse(files_ok)
+        self.assertEqual(secret_check["status"], "UNKNOWN")
+        self.assertEqual(config_check["status"], "UNKNOWN")
+        self.assertIn("no sudo was attempted", secret_check["detail"])
+
+    def test_docker_permission_denial_is_unknown_and_never_runs_sudo(self):
+        self.create_data_directories()
+        with ExitStack() as stack:
+            self.patches(stack, docker="docker")
+            def permission_run(argv, *, cwd=None):
+                self.command_calls.append(list(argv))
+                if argv[:3] == ["ip", "-j", "address"]:
+                    return 0, json.dumps([{"addr_info": [{"local": "10.0.0.10", "prefixlen": 24}]}]), ""
+                if argv[:3] == ["ip", "-j", "route"]:
+                    return 0, json.dumps([{"dst": "10.0.0.0/24"}]), ""
+                if argv[0] == "docker" and argv[1:] in (["--version"], ["compose", "version"]):
+                    return 0, "ok", ""
+                if argv[0] == "docker" and len(argv) > 1 and argv[1] == "ps":
+                    return 1, "", "permission denied"
+                if argv[0] == "docker" and "config" in argv:
+                    return 0, "", ""
+                return 127, "", ""
+            stack.enter_context(patch.object(toolkit, "run_command", side_effect=permission_run))
+            context = toolkit.inspect(self.profile_rel, root=self.root)
+        self.assertEqual(self.check(context, "existing container status")["status"], "UNKNOWN")
+        self.assertFalse(any(call and call[0] == "sudo" for call in self.command_calls))
+
+    def inspect_with_overlapping_bridge(self, route_device, *, network_records=None, network_list_code=0):
+        self.create_data_directories()
+        network_id = "0123456789abcdef0123456789abcdef"
+        records = network_records
+        if records is None and network_list_code == 0:
+            records = [{
+                "Id": network_id,
+                "Labels": {
+                    "com.docker.compose.project": "amusant-oci-a1",
+                    "com.docker.compose.network": "relay_api",
+                },
+                "IPAM": {"Config": [{"Subnet": "172.30.62.0/29"}]},
+                "Options": {},
+            }]
+        else:
+            records = records or []
+        def runner(argv, *, cwd=None):
+            self.command_calls.append(list(argv))
+            if argv[:3] == ["ip", "-j", "address"]:
+                return 0, json.dumps([
+                    {"ifname": "wlp3s0", "addr_info": [{"local": "10.0.0.10", "prefixlen": 24}]},
+                    {"ifname": route_device, "addr_info": [{"local": "172.30.62.1", "prefixlen": 29}]},
+                ]), ""
+            if argv[:3] == ["ip", "-j", "route"]:
+                return 0, json.dumps([
+                    {"dst": "10.0.0.0/24", "dev": "wlp3s0"},
+                    {"dst": "172.30.62.0/29", "dev": route_device},
+                ]), ""
+            if argv and argv[0] == "docker":
+                if argv[1:] in (["--version"], ["compose", "version"]):
+                    return 0, "version ok", ""
+                if argv[1:3] == ["network", "ls"]:
+                    if network_list_code:
+                        return network_list_code, "", "permission denied"
+                    ids = "".join(item["Id"] + chr(10) for item in records)
+                    return 0, ids, ""
+                if argv[1:3] == ["network", "inspect"]:
+                    return 0, json.dumps(records), ""
+                if argv[1] == "ps":
+                    return 0, "", ""
+                if "config" in argv:
+                    return 0, "", ""
+            return 127, "", ""
+        with ExitStack() as stack:
+            self.patches(stack, docker="docker")
+            stack.enter_context(patch.object(toolkit, "run_command", side_effect=runner))
+            return toolkit.inspect(self.profile_rel, root=self.root)
+
+    def test_own_compose_bridge_route_is_ignored_only_after_identity_check(self):
+        bridge = "br-0123456789ab"
+        context = self.inspect_with_overlapping_bridge(bridge)
+        check = self.check(context, "host route overlap")
+        self.assertEqual(check["status"], "PASS")
+        self.assertIn("verified as this Compose project's own", check["detail"])
+
+    def test_overlapping_route_is_unknown_when_docker_identity_is_inaccessible(self):
+        context = self.inspect_with_overlapping_bridge("br-0123456789ab", network_list_code=1)
+        self.assertEqual(self.check(context, "host route overlap")["status"], "UNKNOWN")
+
+    def test_foreign_overlapping_route_is_blocked(self):
+        context = self.inspect_with_overlapping_bridge("wlp3s0", network_records=[])
+        self.assertEqual(self.check(context, "host route overlap")["status"], "BLOCKED")
 
     def test_vcn_overlap_blocks_and_missing_vcn_is_unknown(self):
         values = dict(self.values)
@@ -258,7 +401,7 @@ class ToolkitTests(unittest.TestCase):
     def test_setup_can_copy_only_nonsecret_template_when_mount_is_unverified(self):
         self.env_file.unlink()
         with ExitStack() as stack:
-            context = self.inspect_fixture(stack, source="/dev/wrong-volume")
+            context = self.inspect_fixture(stack, filesystem_uuid="bbbbbbbb-cccc-4ddd-8eee-ffffffffffff")
         operations, blockers = toolkit.setup_plan(context)
         self.assertTrue(blockers)
         self.assertEqual([item["kind"] for item in operations], ["copy_env"])
@@ -268,6 +411,19 @@ class ToolkitTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(self.env_file.stat().st_mode), 0o600)
         text = self.env_file.read_text(encoding="utf-8")
         self.assertNotIn("FAKE_OFFLINE_SECRET_SENTINEL", text)
+
+    def test_setup_handles_unmodified_oci_profile_parent_without_uid_gid(self):
+        profile = json.loads(PROFILE_SOURCE.read_text(encoding="utf-8"))
+        parent = next(item for item in profile["data_directories"] if item["path"] == "results")
+        self.assertNotIn("uid", parent)
+        self.assertNotIn("gid", parent)
+        results = self.data_root / "results"
+        results.mkdir()
+        results.chmod(int(parent["mode"], 8))
+        context = {"profile": profile, "root": self.root, "env_file": self.env_file, "storage_ok": True, "data_root": self.data_root}
+        operations, blockers = toolkit.setup_plan(context)
+        self.assertIn({"kind": "preserve_dir", "target": results, "label": parent["label"]}, operations)
+        self.assertTrue(blockers)  # Other service-owned paths remain blocked under this unprivileged test identity.
 
     def test_wrong_data_directory_mode_is_blocked_and_no_other_dir_is_created(self):
         relay = self.data_root / "relay"

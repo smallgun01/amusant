@@ -43,7 +43,7 @@ def _load_json(path: Path) -> dict:
         raise ValueError("profile is unavailable or invalid JSON") from None
     required = {
         "name", "target_os", "target_architecture", "env_file", "env_example",
-        "compose_file", "preflight_file", "data_root_env", "expected_source_env",
+        "compose_file", "preflight_file", "data_root_env", "expected_filesystem_uuid_env",
         "host_ip_env", "external_network_cidrs_env", "network_envs", "image_envs",
         "secret_files", "config_files", "data_directories",
     }
@@ -72,26 +72,40 @@ def _mode_is_private(mode: int) -> bool:
     return (mode & 0o077) == 0 and (mode & 0o111) == 0
 
 
+def _path_problem_status(problem: str | None) -> str:
+    return "UNKNOWN" if problem and ("inaccessible" in problem or "unavailable" in problem) else "BLOCKED"
+
+
 def _read_env(path: Path, preflight) -> tuple[dict[str, str], str | None, bool]:
-    """Return values in memory only; never include values or paths in diagnostics."""
-    if _has_symlink_component(path):
+    """Read env values only into memory; never expose values or paths in diagnostics."""
+    issue = _path_component_issue(path)
+    if issue == "symlink":
         return {}, "environment file path contains a symlink", False
+    if issue:
+        return {}, "environment file metadata is " + issue, False
     try:
         metadata = path.lstat()
     except FileNotFoundError:
         return {}, "environment file is missing", False
+    except PermissionError:
+        return {}, "environment file metadata is inaccessible to this operator", False
     except OSError:
         return {}, "environment file metadata is unavailable", False
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
         return {}, "environment file must be a regular non-symlink file", False
-    if not _mode_is_private(stat.S_IMODE(metadata.st_mode)):
-        return {}, "environment file permissions are not private", False
-    if metadata.st_uid not in {os.geteuid(), 0}:
-        return {}, "environment file owner is unexpected", False
+    mode = stat.S_IMODE(metadata.st_mode)
+    if not _mode_is_private(mode) or not (mode & stat.S_IRUSR):
+        return {}, "environment file permissions are not private/readable", False
+    if os.geteuid() != 0 and not os.access(path, os.R_OK):
+        return {}, "environment file is inaccessible to this operator", False
     if preflight is None:
         return {}, "profile static preflight module is unavailable", False
     try:
         values = preflight.read_env_file(path)
+    except PermissionError:
+        return {}, "environment file is inaccessible to this operator", False
+    except OSError:
+        return {}, "environment file is unavailable to this operator", False
     except Exception:
         return {}, "environment file could not be parsed; values were not displayed", False
     return values, None, True
@@ -107,7 +121,7 @@ def _required_variables(profile: dict, preflight, compose_path: Path) -> set[str
     except OSError:
         pass
     names.add(profile["data_root_env"])
-    names.add(profile["expected_source_env"])
+    names.add(profile["expected_filesystem_uuid_env"])
     return names
 
 
@@ -117,21 +131,19 @@ def _is_empty(value: str | None) -> bool:
 
 def _load_mount(path: Path) -> dict | None:
     code, stdout, _ = run_command([
-        "findmnt", "--json", "--target", str(path), "--output", "SOURCE,TARGET,FSTYPE"
+        "findmnt", "--json", "--target", str(path), "--output", "UUID,TARGET,FSTYPE"
     ])
     if code != 0:
         return None
     try:
         filesystems = json.loads(stdout).get("filesystems", [])
         item = filesystems[0]
-        return {key.lower(): item.get(key.lower()) or item.get(key.upper()) for key in ("source", "target", "fstype")}
+        return {key.lower(): item.get(key.lower()) or item.get(key.upper()) for key in ("uuid", "target", "fstype")}
     except (ValueError, KeyError, IndexError, TypeError):
         return None
 
 
-def _canonical_source(value: str) -> str:
-    value = value.strip()
-    return os.path.realpath(value) if value.startswith("/") else value
+FILESYSTEM_UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 
 def _device_id(path: Path) -> int | None:
@@ -141,75 +153,110 @@ def _device_id(path: Path) -> int | None:
         return None
 
 
-def _storage_state(profile: dict, values: dict[str, str], checks: list[dict]) -> tuple[bool, Path | None]:
+def _storage_state(profile: dict, values: dict[str, str], checks: list[dict]) -> tuple[bool, Path | None, str]:
     root_value = values.get(profile["data_root_env"], "").strip()
     if not root_value:
         checks.append({"status": "BLOCKED", "name": "persistent data mount", "detail": "data-root input is missing"})
-        return False, None
+        return False, None, "BLOCKED"
     root = Path(root_value)
     if not root.is_absolute():
         checks.append({"status": "BLOCKED", "name": "persistent data mount", "detail": "data root must be an absolute path"})
-        return False, None
-    if _has_symlink_component(root):
+        return False, None, "BLOCKED"
+    path_issue = _path_component_issue(root)
+    if path_issue == "symlink":
         checks.append({"status": "BLOCKED", "name": "persistent data mount", "detail": "configured data root path contains a symlink"})
-        return False, root
+        return False, root, "BLOCKED"
+    if path_issue:
+        checks.append({"status": "UNKNOWN", "name": "persistent data mount", "detail": "data-root metadata is " + path_issue + "; no permissions were changed"})
+        return False, root, "UNKNOWN"
     try:
         metadata = root.lstat()
-    except OSError:
+    except FileNotFoundError:
         checks.append({"status": "BLOCKED", "name": "persistent data mount", "detail": "configured data root does not exist"})
-        return False, root
+        return False, root, "BLOCKED"
+    except PermissionError:
+        checks.append({"status": "UNKNOWN", "name": "persistent data mount", "detail": "data-root metadata is inaccessible to this operator"})
+        return False, root, "UNKNOWN"
+    except OSError:
+        checks.append({"status": "UNKNOWN", "name": "persistent data mount", "detail": "data-root metadata is unavailable"})
+        return False, root, "UNKNOWN"
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
         checks.append({"status": "BLOCKED", "name": "persistent data mount", "detail": "configured data root is not a real directory"})
-        return False, root
+        return False, root, "BLOCKED"
     mount = _load_mount(root)
-    if not mount or not mount.get("source") or not mount.get("target"):
-        checks.append({"status": "BLOCKED", "name": "persistent data mount", "detail": "mount identity could not be verified; an empty directory is insufficient"})
-        return False, root
+    if not mount or not mount.get("target"):
+        if os.path.ismount(root):
+            checks.append({"status": "UNKNOWN", "name": "persistent data mount", "detail": "mount source/UUID metadata is unavailable"})
+            return False, root, "UNKNOWN"
+        checks.append({"status": "BLOCKED", "name": "persistent data mount", "detail": "data root is not a mountpoint; an empty directory is insufficient"})
+        return False, root, "BLOCKED"
     try:
         root_resolved = root.resolve(strict=True)
         target_resolved = Path(str(mount["target"])).resolve(strict=True)
+    except PermissionError:
+        checks.append({"status": "UNKNOWN", "name": "persistent data mount", "detail": "mount target metadata is inaccessible to this operator"})
+        return False, root, "UNKNOWN"
     except OSError:
-        checks.append({"status": "BLOCKED", "name": "persistent data mount", "detail": "mount target could not be resolved"})
-        return False, root
+        checks.append({"status": "UNKNOWN", "name": "persistent data mount", "detail": "mount target metadata is unavailable"})
+        return False, root, "UNKNOWN"
     if root_resolved != target_resolved:
         checks.append({"status": "BLOCKED", "name": "persistent data mount", "detail": "data root is not itself the mounted target"})
-        return False, root
+        return False, root, "BLOCKED"
     if profile.get("require_separate_device", True):
         root_dev, data_dev = _device_id(Path("/")), _device_id(root)
-        if root_dev is None or data_dev is None or root_dev == data_dev:
-            checks.append({"status": "BLOCKED", "name": "persistent data mount", "detail": "data root is not verified on a separate filesystem"})
-            return False, root
-    expected = values.get(profile["expected_source_env"], "").strip()
-    if not expected:
-        checks.append({"status": "BLOCKED", "name": "persistent data mount", "detail": "expected persistent-volume identity is missing"})
-        return False, root
-    if _canonical_source(str(mount["source"])) != _canonical_source(expected):
-        checks.append({"status": "BLOCKED", "name": "persistent data mount", "detail": "mounted source does not match the operator-supplied identity"})
-        return False, root
-    checks.append({"status": "PASS", "name": "persistent data mount", "detail": "mountpoint and operator-supplied source identity match"})
-    return True, root
+        if root_dev is None or data_dev is None:
+            checks.append({"status": "UNKNOWN", "name": "persistent data mount", "detail": "filesystem device identity is inaccessible"})
+            return False, root, "UNKNOWN"
+        if root_dev == data_dev:
+            checks.append({"status": "BLOCKED", "name": "persistent data mount", "detail": "data root resolves to the boot filesystem"})
+            return False, root, "BLOCKED"
+    expected_uuid = values.get(profile["expected_filesystem_uuid_env"], "").strip()
+    if not expected_uuid:
+        checks.append({"status": "UNKNOWN", "name": "persistent data mount", "detail": "owner-approved filesystem UUID input is missing"})
+        return False, root, "UNKNOWN"
+    if not FILESYSTEM_UUID.fullmatch(expected_uuid):
+        checks.append({"status": "BLOCKED", "name": "persistent data mount", "detail": "expected identity must be a filesystem UUID, not a volatile device path"})
+        return False, root, "BLOCKED"
+    actual_uuid = str(mount.get("uuid") or "").strip()
+    if not actual_uuid or not FILESYSTEM_UUID.fullmatch(actual_uuid):
+        checks.append({"status": "UNKNOWN", "name": "persistent data mount", "detail": "mounted filesystem UUID is unavailable"})
+        return False, root, "UNKNOWN"
+    if actual_uuid.lower() != expected_uuid.lower():
+        checks.append({"status": "BLOCKED", "name": "persistent data mount", "detail": "mounted filesystem UUID differs from the operator-supplied identity"})
+        return False, root, "BLOCKED"
+    checks.append({"status": "PASS", "name": "persistent data mount", "detail": "mounted filesystem UUID matches the operator-supplied stable identity"})
+    return True, root, "PASS"
 
 
-def _has_symlink_component(path: Path) -> bool:
+
+
+
+def _path_component_issue(path: Path) -> str | None:
     current = path.absolute()
     for component in reversed((current, *current.parents)):
         try:
-            if stat.S_ISLNK(component.lstat().st_mode):
-                return True
+            metadata = component.lstat()
         except FileNotFoundError:
             continue
+        except PermissionError:
+            return "inaccessible"
         except OSError:
-            return True
-    return False
+            return "unavailable"
+        if stat.S_ISLNK(metadata.st_mode):
+            return "symlink"
+    return None
 
 
 def _inspect_dir(path: Path) -> tuple[str, os.stat_result | None]:
-    if _has_symlink_component(path):
-        return "symlink", None
+    issue = _path_component_issue(path)
+    if issue:
+        return issue, None
     try:
         item = path.lstat()
     except FileNotFoundError:
         return "missing", None
+    except PermissionError:
+        return "inaccessible", None
     except OSError:
         return "unavailable", None
     if stat.S_ISLNK(item.st_mode):
@@ -219,10 +266,11 @@ def _inspect_dir(path: Path) -> tuple[str, os.stat_result | None]:
     return "directory", item
 
 
-def _check_data_directories(profile: dict, root: Path | None, storage_ok: bool, checks: list[dict]) -> None:
-    if root is None or not storage_ok:
+def _check_data_directories(profile: dict, root: Path | None, storage_status: str, checks: list[dict]) -> None:
+    if root is None or storage_status != "PASS":
+        status = "UNKNOWN" if storage_status == "UNKNOWN" else "BLOCKED"
         for entry in profile["data_directories"]:
-            checks.append({"status": "BLOCKED", "name": "data directory " + entry["label"], "detail": "not inspected because persistent mount identity is unverified"})
+            checks.append({"status": status, "name": "data directory " + entry["label"], "detail": "not inspected because persistent mount identity is " + storage_status.lower()})
         return
     for entry in profile["data_directories"]:
         path = root / entry["path"]
@@ -230,8 +278,10 @@ def _check_data_directories(profile: dict, root: Path | None, storage_ok: bool, 
         name = "data directory " + entry["label"]
         if state == "missing":
             checks.append({"status": "BLOCKED", "name": name, "detail": "required directory is absent; setup may plan it after mount verification"})
+        elif state in {"inaccessible", "unavailable"}:
+            checks.append({"status": "UNKNOWN", "name": name, "detail": "metadata is not accessible to this operator; no sudo was attempted"})
         elif state != "directory" or item is None:
-            checks.append({"status": "BLOCKED", "name": name, "detail": "path is unsafe or unavailable; it will not be changed automatically"})
+            checks.append({"status": "BLOCKED", "name": name, "detail": "path is unsafe; it will not be changed automatically"})
         else:
             mode = stat.S_IMODE(item.st_mode)
             expected_mode = int(entry["mode"], 8)
@@ -245,12 +295,15 @@ def _check_data_directories(profile: dict, root: Path | None, storage_ok: bool, 
 
 
 def _stat_file(path: Path) -> tuple[str, os.stat_result | None]:
-    if _has_symlink_component(path):
-        return "symlink", None
+    issue = _path_component_issue(path)
+    if issue:
+        return issue, None
     try:
         item = path.lstat()
     except FileNotFoundError:
         return "missing", None
+    except PermissionError:
+        return "inaccessible", None
     except OSError:
         return "unavailable", None
     if stat.S_ISLNK(item.st_mode):
@@ -288,7 +341,10 @@ def _check_config_and_secrets(profile: dict, values: dict[str, str], checks: lis
             all_ok = False
             continue
         state, item = _stat_file(Path(value))
-        if state != "regular" or item is None:
+        if state in {"inaccessible", "unavailable"}:
+            checks.append({"status": "UNKNOWN", "name": name, "detail": "file metadata is not accessible to this operator; no sudo was attempted"})
+            all_ok = False
+        elif state != "regular" or item is None:
             checks.append({"status": "BLOCKED", "name": name, "detail": "path must be a regular non-symlink file; contents are not read"})
             all_ok = False
         elif not _secret_mode_ok(item, entry):
@@ -304,6 +360,10 @@ def _check_config_and_secrets(profile: dict, values: dict[str, str], checks: lis
             all_ok = False
             continue
         state, item = _stat_file(Path(value))
+        if state in {"inaccessible", "unavailable"}:
+            checks.append({"status": "UNKNOWN", "name": name, "detail": "file metadata is not accessible to this operator; no sudo was attempted"})
+            all_ok = False
+            continue
         if state != "regular" or item is None:
             checks.append({"status": "BLOCKED", "name": name, "detail": "path must be a regular non-symlink file; contents are not read"})
             all_ok = False
@@ -317,18 +377,19 @@ def _check_config_and_secrets(profile: dict, values: dict[str, str], checks: lis
     return all_ok
 
 
-def _get_local_networks() -> tuple[set, bool]:
+def _get_local_networks() -> tuple[set[tuple[object, str | None]], bool]:
     code, stdout, _ = run_command(["ip", "-j", "address", "show"])
     if code != 0:
         return set(), False
-    networks = set()
+    networks: set[tuple[object, str | None]] = set()
     try:
         for interface in json.loads(stdout):
+            device = interface.get("ifname")
             for address in interface.get("addr_info", []):
                 local = address.get("local")
                 prefix = address.get("prefixlen")
                 if local is not None and prefix is not None:
-                    networks.add(ipaddress.ip_network(f"{local}/{prefix}", strict=False))
+                    networks.add((ipaddress.ip_network(f"{local}/{prefix}", strict=False), device))
     except (ValueError, TypeError):
         return set(), False
     code, stdout, _ = run_command(["ip", "-j", "route", "show"])
@@ -340,12 +401,62 @@ def _get_local_networks() -> tuple[set, bool]:
             if not destination or destination == "default":
                 continue
             try:
-                networks.add(ipaddress.ip_network(destination, strict=False))
+                networks.add((ipaddress.ip_network(destination, strict=False), route.get("dev")))
             except ValueError:
                 continue
     except (ValueError, TypeError):
         return networks, False
     return networks, True
+
+
+def _verified_compose_bridges(profile: dict, values: dict[str, str]) -> dict | None:
+    project = profile.get("compose_project")
+    network_labels = profile.get("compose_network_labels")
+    docker = shutil.which("docker")
+    if not project or not isinstance(network_labels, dict) or not docker:
+        return None
+    code, stdout, _ = run_command([
+        docker, "network", "ls", "--filter", "label=com.docker.compose.project=" + project, "--quiet"
+    ])
+    if code != 0:
+        return None
+    identifiers = [line.strip() for line in stdout.splitlines() if line.strip()]
+    if not identifiers:
+        return {}
+    code, stdout, _ = run_command([docker, "network", "inspect", *identifiers])
+    if code != 0:
+        return None
+    try:
+        networks = json.loads(stdout)
+        if not isinstance(networks, list):
+            return None
+        expected = {}
+        for logical_name, variable in network_labels.items():
+            expected[logical_name] = ipaddress.ip_network(values[variable], strict=True)
+        bridges = {}
+        for item in networks:
+            labels = item.get("Labels") or {}
+            if labels.get("com.docker.compose.project") != project:
+                return None
+            logical_name = labels.get("com.docker.compose.network")
+            if logical_name not in expected:
+                continue
+            configs = item.get("IPAM", {}).get("Config", [])
+            subnets = {ipaddress.ip_network(row["Subnet"], strict=True) for row in configs if row.get("Subnet")}
+            expected_subnet = expected[logical_name]
+            if subnets != {expected_subnet}:
+                return None
+            options = item.get("Options") or {}
+            bridge = options.get("com.docker.network.bridge.name")
+            if not bridge:
+                network_id = item.get("Id")
+                if not isinstance(network_id, str) or len(network_id) < 12:
+                    return None
+                bridge = "br-" + network_id[:12]
+            bridges[expected_subnet] = bridge
+        return bridges
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def _check_networks(profile: dict, values: dict[str, str], extra_network_cidrs: list[str], checks: list[dict]) -> None:
@@ -373,12 +484,38 @@ def _check_networks(profile: dict, values: dict[str, str], extra_network_cidrs: 
     host_networks, routes_known = _get_local_networks()
     if not routes_known:
         checks.append({"status": "UNKNOWN", "name": "host route overlap", "detail": "local route inventory is unavailable"})
+    elif not docker_networks:
+        checks.append({"status": "UNKNOWN", "name": "host route overlap", "detail": "configured Docker CIDRs are unavailable"})
     else:
-        conflicts = [(name, network) for name, network in docker_networks if any(network.overlaps(route) for route in host_networks)]
-        if conflicts:
-            checks.append({"status": "BLOCKED", "name": "host route overlap", "detail": "one or more Docker networks overlap a local interface or route"})
-        else:
+        overlaps = [
+            (name, network, route, device)
+            for name, network in docker_networks
+            for route, device in host_networks
+            if network.overlaps(route)
+        ]
+        if not overlaps:
             checks.append({"status": "PASS", "name": "host route overlap", "detail": "no conflict with observed local interface/route CIDRs"})
+        else:
+            own_bridges = _verified_compose_bridges(profile, values)
+            if own_bridges is None:
+                checks.append({"status": "UNKNOWN", "name": "host route overlap", "detail": "routes overlap configured Docker networks, but Compose ownership could not be verified; no PASS assumed"})
+            else:
+                conflicts = []
+                unverified = []
+                for name, network, route, device in overlaps:
+                    expected_device = own_bridges.get(network)
+                    if expected_device and route == network and device == expected_device:
+                        continue
+                    if device is None:
+                        unverified.append((name, route))
+                    else:
+                        conflicts.append((name, route))
+                if conflicts:
+                    checks.append({"status": "BLOCKED", "name": "host route overlap", "detail": "a host route conflicts with a Docker network and is not this project's verified bridge"})
+                elif unverified:
+                    checks.append({"status": "UNKNOWN", "name": "host route overlap", "detail": "an overlapping route lacks interface identity; no PASS assumed"})
+                else:
+                    checks.append({"status": "PASS", "name": "host route overlap", "detail": "overlapping routes are verified as this Compose project's own Docker bridges"})
     if not supplied_networks:
         checks.append({"status": "UNKNOWN", "name": "external network overlap", "detail": "no operator-supplied external CIDR; not inferred from local routes"})
     else:
@@ -466,7 +603,7 @@ def inspect(
     if preflight is None:
         checks.append({"status": "UNKNOWN", "name": "profile static preflight reuse", "detail": "existing preflight module could not be loaded"})
     values, env_error, env_file_ok = _read_env(env_file, preflight)
-    checks.append({"status": "PASS" if env_error is None else "BLOCKED", "name": "environment file", "detail": "private regular file read without displaying values" if env_error is None else env_error})
+    checks.append({"status": "PASS" if env_error is None else _path_problem_status(env_error), "name": "environment file", "detail": "private regular file inspected without displaying values" if env_error is None else env_error})
     required = _required_variables(profile, preflight, compose_path)
     missing = sorted(name for name in required if _is_empty(values.get(name)))
     env_complete = env_file_ok and not missing
@@ -507,13 +644,13 @@ def inspect(
         checks.append({"status": "PASS", "name": "host architecture", "detail": "host architecture matches selected profile"})
     else:
         checks.append({"status": "BLOCKED", "name": "host architecture", "detail": "host architecture does not match selected profile"})
-    storage_ok, data_root = _storage_state(profile, values, checks)
-    _check_data_directories(profile, data_root, storage_ok, checks)
+    storage_ok, data_root, storage_status = _storage_state(profile, values, checks)
+    _check_data_directories(profile, data_root, storage_status, checks)
     files_ok = _check_config_and_secrets(profile, values, checks)
     _check_host_ip(profile, values, checks)
     _check_networks(profile, values, extra_network_cidrs or [], checks)
     _check_docker(profile, values, root, env_file, env_complete, static_ok, files_ok, checks)
-    return {"profile": profile, "root": root, "env_file": env_file, "values": values, "data_root": data_root, "storage_ok": storage_ok, "checks": checks}
+    return {"profile": profile, "root": root, "env_file": env_file, "values": values, "data_root": data_root, "storage_ok": storage_ok, "storage_status": storage_status, "checks": checks}
 
 
 def _can_create(uid: int, gid: int) -> bool:
@@ -567,7 +704,10 @@ def setup_plan(context: dict) -> tuple[list[dict], list[str]]:
         label = entry["label"]
         if state == "directory" and item is not None:
             mode = stat.S_IMODE(item.st_mode)
-            if item.st_uid == entry["uid"] and item.st_gid == entry["gid"] and mode == int(entry["mode"], 8):
+            expected_uid = entry.get("uid")
+            expected_gid = entry.get("gid")
+            owner_matches = (expected_uid is None or item.st_uid == expected_uid) and (expected_gid is None or item.st_gid == expected_gid)
+            if owner_matches and mode == int(entry["mode"], 8):
                 operations.append({"kind": "preserve_dir", "target": target, "label": label})
             else:
                 blockers.append(label + " already exists with mismatched ownership/mode; it will not be changed")
@@ -646,7 +786,7 @@ def _apply_operations(context: dict, operations: list[dict]) -> list[str]:
 def _next_safe_step(check: dict) -> str:
     name = check["name"]
     if name in {"persistent data mount"}:
-        return "verify the mounted source against owner-approved volume evidence; do not create data directories yet."
+        return "verify the mounted filesystem UUID against owner-approved volume evidence; do not create data directories yet."
     if name == "environment completeness":
         return "fill the named missing fields in the private .env, then rerun Doctor; never paste values into chat."
     if name == "environment file":

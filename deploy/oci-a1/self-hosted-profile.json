@@ -7,10 +7,17 @@
   "compose_file": "deploy/oci-a1/compose.yaml",
   "preflight_file": "deploy/oci-a1/preflight.py",
   "data_root_env": "OCI_DATA_DIR",
-  "expected_source_env": "OCI_EXPECTED_DATA_SOURCE",
+  "expected_filesystem_uuid_env": "OCI_EXPECTED_DATA_UUID",
   "host_ip_env": "RELAY_HOST_PRIVATE_IP",
   "external_network_cidrs_env": "OCI_VCN_CIDRS",
   "require_separate_device": true,
+  "compose_project": "amusant-oci-a1",
+  "compose_network_labels": {
+    "relay_api": "RELAY_API_CIDR",
+    "hermes_api": "HERMES_API_CIDR",
+    "relay_egress": "RELAY_EGRESS_CIDR",
+    "hermes_egress": "HERMES_EGRESS_CIDR"
+  },
   "network_envs": [
     "RELAY_API_CIDR",
     "HERMES_API_CIDR",
