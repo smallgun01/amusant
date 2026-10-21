@@ -2,6 +2,10 @@
 
 [PR #87](https://github.com/smallgun01/amusant/pull/87) wires **Relay → authenticated Option D Facade → Hermes** with private Docker network isolation. [PR #90](https://github.com/smallgun01/amusant/pull/90) additionally proved the **integrated** Relay/Dispatcher/SQLite→Facade→pinned Hermes→Artifact/Inbox path with synthetic providers on a native ARM64 runner. Both are merged; [#85](https://github.com/smallgun01/amusant/issues/85) is closed as **E1 GO**. This does **not** establish OCI deployment, actual model/provider operation, production credentials, external device ingress, real cancellation or 1 OCPU performance.
 
+## Host readiness is not a canary
+
+As of 2026-10-21, the owner reports an existing OCI Ubuntu ARM64 A1 VM and an N100 OpenClaw SSH **read-only** connection using a dedicated unprivileged account (BatchMode exit 0). This is **only a host-access milestone**. Docker/Compose, block volumes, secrets and actual OCI runtime execution have **not** been proven. Follow [HOST-READINESS.md](HOST-READINESS.md) for the non-mutating H2 inventory and request explicit approval for installs, sudo, volume/network or ingress changes, credentials, image pulls, containers and any provider call. Nothing in this package auto-deploys services or opens ports.
+
 ## Runtime topology
 
 - StickS3 connects to the private Relay listener on TCP/8443 using the existing fail-closed TLS-PSK path.

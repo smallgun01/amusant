@@ -1,9 +1,11 @@
 # ADR-0003 — OCI A1 / Hermes / SQLite and Option D result boundary
 
 - **Status:** Accepted **implementation target** (Owner 2026-10-18); refreshed 2026-10-20 after [#87](https://github.com/smallgun01/amusant/pull/87) and [#90](https://github.com/smallgun01/amusant/pull/90) merged. The architecture and offline E1 integration are implemented; this is **not** a live OCI deployment, real-model approval, security/latency/cost certification or permission to run a canary.
-- **Scope:** one-owner, single active Relay, OCI Ampere A1 **candidate** (1 OCPU / 6 GiB); actual VM cost/quota, performance and 24/7 availability must be proven separately.
+- **Scope:** one owner and active Relay, OCI Ampere A1. The **original performance candidate** was 1 OCPU / 6 GiB; this is **not** a mandated or measured production shape. The owner-reported SSH-ready VM on 2026-10-21 returned `nproc=2`, about 11 GiB OS-visible RAM and no swap; verify its actual OCI OCPU shape/billing in Console rather than assuming Linux `nproc` proves a billed shape. Real FAST/Slow contention, quotas/cost and 24/7 behavior remain unverified.
 - **Prior decisions:** [ADR-0001](0001-openab-acp-slow-path.md) OpenAB ACP / two ECS services and [ADR-0002](0002-external-task-store.md) AWS-motivated DynamoDB remain **historical** for the **new target only**. AWS T4b readback is valid bounded proof, not OCI. No automatic AWS data/resource cleanup.
 - **Implementation evidence:** #70 offline OCI packaging, #83 12-case native ARM64 image gate, #75/#80 isolated Option D proof and #87 Facade runtime wiring merged; [#90](https://github.com/smallgun01/amusant/pull/90) integrates the actual Relay→Facade→pinned Hermes→Ledger/Inbox fake-provider flow on a native ARM64 runner ([CI PASS](https://github.com/smallgun01/amusant/actions/runs/39240814687)). [#85](https://github.com/smallgun01/amusant/issues/85) is closed as **offline E1 GO only**. All E3/E4 gates remain open.
+
+**H2 operational evidence (2026-10-21, owner-reported):** N100 OpenClaw successfully executed a read-only, noninteractive SSH command on an existing Ubuntu ARM64 A1 VM using a dedicated unprivileged host account. The host/SSH foundation exists; **Relay, Facade, Hermes, persistent data mounts, off-host restore and E3 canary are not deployed or accepted**. See [OCI host-readiness handoff](../../deploy/oci-a1/HOST-READINESS.md). This observation changes neither the selected design nor deployment permissions.
 
 ## Decision and trust boundaries
 
