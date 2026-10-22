@@ -876,6 +876,10 @@ async def run():
         CHECKS["ambiguous_run_stays_uncertain_without_replay"] = "PASS"
 
         PHASE = "v2-runtime"
+        # The v1 ambiguous-submit fixture intentionally remains busy. Use a
+        # separate synthetic owner for fresh v2 admissions in the same ledger.
+        v2_client_id = "b2-v2-offline-owner"
+        environ["AMUSANT_CLIENT_ID"] = v2_client_id
         environ["AMUSANT_RESULT_CONTRACT_VERSION"] = "2"
         handler3, dispatcher3, store3 = start_runtime(environ, providers, conversation_counter)
         await dispatcher3.start()
@@ -953,7 +957,7 @@ async def run():
         executor = dispatcher3._executor
         run_headers = {
             "Authorization": "Bearer " + FACADE_KEY,
-            "X-Hermes-Session-Key": executor._session_key(CLIENT_ID),
+            "X-Hermes-Session-Key": executor._session_key(v2_client_id),
             "X-Amusant-Result-Contract": "2",
             "Accept": "application/json",
         }

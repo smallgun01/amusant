@@ -67,6 +67,7 @@ class Issue85E2EContractTests(unittest.TestCase):
     def test_native_integration_runs_v2_delivery_and_replay_scenarios(self):
         relay_e2e = (PROJECT / "relay_e2e.py").read_text(encoding="utf-8")
         self.assertIn('environ["AMUSANT_RESULT_CONTRACT_VERSION"] = "2"', relay_e2e)
+        self.assertIn('environ["AMUSANT_CLIENT_ID"] = v2_client_id', relay_e2e)
         self.assertIn('audit.result_contract_versions.get(task_id) == "2"', relay_e2e)
         for marker in (
             'submit_v2("v2_no_artifact")',
