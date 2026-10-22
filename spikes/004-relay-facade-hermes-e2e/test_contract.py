@@ -69,6 +69,10 @@ class Issue85E2EContractTests(unittest.TestCase):
         self.assertIn('environ["AMUSANT_RESULT_CONTRACT_VERSION"] = "2"', relay_e2e)
         self.assertIn('environ["AMUSANT_CLIENT_ID"] = v2_client_id', relay_e2e)
         self.assertIn('audit.result_contract_versions.get(task_id) == "2"', relay_e2e)
+        self.assertIn('connection = http.client.HTTPConnection("facade", 8643, timeout=3)', relay_e2e)
+        self.assertIn('return response.status, payload', relay_e2e)
+        self.assertNotIn("dispatcher3._executor", relay_e2e)
+        self.assertNotIn("replay_one[2]", relay_e2e)
         for marker in (
             'submit_v2("v2_no_artifact")',
             'submit_v2("v2_report")',
