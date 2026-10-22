@@ -55,9 +55,20 @@ After the authenticated GET reported `HTTP 502 / status=failed / error=artifact_
 
 **Safe slot recovery:** Independent native Hermes GET and Facade GET both confirm terminal `completed`; `relay.operator_reconcile` (after operator review) supports `--terminal-state completed` + verified exact Run ID and evidence reference, yielding `failed / hermes_operator_reconciled_completed_no_result` and releasing the uncertain single-flight slot. This **does not** save, fabricate, or announce a successful result. No remote Run resubmit; no direct SQLite edits. Reconcile only by owner-executed operator action with audit evidence.
 
+## 2026-10-23 owner manual reconciliation — PASS
+
+The Owner executed the reviewed `relay.operator_reconcile` against the exact persisted Task ID and independently verified Hermes Run ID, after a read-only precheck of `slow_tasks.status=uncertain`, matching `backend_run_id`, and `dispatch_outbox.state=uncertain`. Sanitized terminal receipt:
+
+```text
+PRECHECK: PASS
+{"status":"failed","task_id":"14425650-7a16-42ee-a258-48bfe9348198","code":"hermes_operator_reconciled_completed_no_result"}
+```
+
+**Verdict:** The old Relay task has been durably closed **failed/no result** and the uncertain single-flight reservation released; no new task was admitted in this reconciliation and physical Slow→Inbox→spoken remains **NO-GO**. This is operator-assisted recovery, **not** proof that #58 automatic terminal recovery or #107 result-contract v2 is implemented/deployed.
+
 ## Runtime configuration / follow-ups
 
 - Owner readback: `AMUSANT_PERSONA_PROFILE=UNSET`, `AMUSANT_GEMINI_GOOGLE_SEARCH=UNSET`, `AMUSANT_SLOW_EXECUTOR=hermes_runs`. Persona absence may affect delegation consistency, but **did not prevent this observed delegation**. No profile change applied.
-- Single-flight deliberately retains the uncertain owner slot until remote termination is independently verified. Do **not** clear SQLite, blindly re-submit the task, or claim confirmed cancellation.
+- Single-flight was correctly held while remote termination was unknown and was **released by Owner's verified operator reconciliation on 2026-10-23**. Do not clear SQLite or blindly re-submit the old task; no confirmed cancellation or recovered result is claimed.
 - Next: owner-reviewed `relay.operator_reconcile` with confirmed native `completed` and matching Run ID to release blocked single-flight as **failed/no result**; then investigate omitted `save_report` behavior and fix the v1 task instructions plus regression tests or separately roll out #105 v2. Diagnose 662 poll counter/120s deadline independently; rerun a bounded authorized physical Slow task and test explicit PTT Inbox spoken retrieval.
 - Keep `#62` open for OCI acceptance, `#46` open for spoken Inbox, `#58` open for timeout/STOP reliability, and `#27` open for durable public device ingress. `#105` Option D v2 remains a **separate proposal**, not required to explain this failure.
