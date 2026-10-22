@@ -1,5 +1,7 @@
 # Amusant WS1–WS4 — Current M1 delivery gates
 
+> **2026-10-22 LIVE OVERRIDE:** #62 GO 2 real backend functional PASS; GO 3 physical StickS3 → temporary SSH-forwarded OCI Relay → Gemini Live **audible FAST PASS**. One physical Slow delegation reached Hermes but timed out at 120s and remains `uncertain / hermes_stop_unconfirmed` (no saved result or spoken readback). Thus **G3a/S1 still OPEN**, #58 STOP/deadline diagnosis pending, #27 public ingress unproven. See [live evidence](../oci-go2-go3-live-evidence-20261022.md). The GO 1-only tracker below is an earlier snapshot.
+
 > **Reviewed 2026-10-22** against `main@73436c6`. [SPEC](../../SPEC.md) governs product acceptance, [ADR-0003](../adr/0003-oci-a1-hermes-sqlite.md) the architecture and [STATUS](../../STATUS.md) evidence. Owner-reported OCI SSH access is recorded in the [host handoff](../../deploy/oci-a1/HOST-READINESS.md), not a live deploy gate. This index authorizes no cloud mutation, paid providers, public ingress, flash or state migration.
 
 ## Workstream index and near-term WIP
