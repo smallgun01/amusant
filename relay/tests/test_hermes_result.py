@@ -5,6 +5,7 @@ import unittest
 
 from relay.hermes_result import (
     HERMES_RESULT_INSTRUCTIONS,
+    HERMES_RESULT_V2_INSTRUCTIONS,
     build_hermes_run_prompt,
     parse_hermes_run_result,
 )
@@ -90,6 +91,55 @@ class HermesResultTests(unittest.TestCase):
         self.assertIn("details_md to at most 512", HERMES_RESULT_INSTRUCTIONS)
         task = SimpleNamespace(task_kind="summarize", task="summarize the fixture")
         self.assertIn("Task request:", build_hermes_run_prompt(task))
+
+    def test_v2_accepts_optional_and_committed_artifact_envelopes(self):
+        base = {
+            "schema_version": 2,
+            "speak": "I compared the options.",
+            "card": {"title": "Comparison", "lines": ["Option A costs less."]},
+            "execution_status": "completed",
+            "artifact_status": "none",
+            "presentation_status": "ready",
+            "artifact_ref": None,
+        }
+        answer = parse_hermes_run_result(json.dumps(base), expected_version=2)
+        self.assertEqual(answer.artifact_status, "none")
+        self.assertIsNone(answer.artifact_ref)
+        self.assertEqual(answer.presentation_status, "ready")
+
+        committed = {**base, "artifact_status": "committed", "artifact_ref": "art_" + "a" * 24}
+        report = parse_hermes_run_result(json.dumps(committed), expected_version=2)
+        self.assertEqual(report.artifact_status, "committed")
+        self.assertEqual(report.artifact_ref, committed["artifact_ref"])
+        with self.assertRaisesRegex(ValueError, "schema_unsupported"):
+            parse_hermes_run_result(json.dumps(base))
+
+    def test_v2_failure_envelope_is_bounded_and_never_claims_delivery(self):
+        failure = {
+            "schema_version": 2,
+            "speak": "The task finished, but result delivery needs recovery.",
+            "card": {"title": "Result needs recovery", "lines": ["The short result could not be safely delivered."]},
+            "execution_status": "completed",
+            "artifact_status": "failed",
+            "presentation_status": "failed",
+            "artifact_ref": None,
+        }
+        result = parse_hermes_run_result(json.dumps(failure), expected_version=2)
+        self.assertEqual(result.presentation_status, "failed")
+        self.assertEqual(result.delivery_error, "artifact_write_failed")
+        self.assertEqual(result.speak, failure["speak"])
+        failure["artifact_status"] = "none"
+        failure["speak"] = "The report was saved!"
+        with self.assertRaisesRegex(ValueError, "presentation_failure_invalid"):
+            parse_hermes_run_result(json.dumps(failure), expected_version=2)
+
+    def test_v2_prompt_instructs_report_ack_and_optional_short_answer(self):
+        task = SimpleNamespace(task_kind="research", task="compare options", result_contract_version=2)
+        prompt = build_hermes_run_prompt(task)
+        self.assertIn("save_report", prompt)
+        self.assertIn("committed=true", prompt)
+        self.assertIn("may be returned without an Artifact", prompt)
+        self.assertIn("schema_version=2", HERMES_RESULT_V2_INSTRUCTIONS)
 
 
 if __name__ == "__main__":
