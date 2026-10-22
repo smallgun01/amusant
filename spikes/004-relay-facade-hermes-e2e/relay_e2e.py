@@ -954,24 +954,34 @@ async def run():
             "v2 report Inbox readback was not bounded and ready",
         )
 
-        executor = dispatcher3._executor
         run_headers = {
             "Authorization": "Bearer " + FACADE_KEY,
-            "X-Hermes-Session-Key": executor._session_key(v2_client_id),
+            # The dispatcher wraps the executor in a private router. Derive the
+            # same opaque owner key independently for this read-only Facade check.
+            "X-Hermes-Session-Key": hmac.new(
+                FACADE_KEY.encode("utf-8"), v2_client_id.encode("utf-8"), "sha256",
+            ).hexdigest(),
             "X-Amusant-Result-Contract": "2",
             "Accept": "application/json",
         }
 
         def completed_get(run_id):
-            return executor._request_json(
-                "GET", "/v1/runs/" + quote(run_id, safe=""), None, run_headers,
-            )
+            connection = http.client.HTTPConnection("facade", 8643, timeout=3)
+            try:
+                connection.request("GET", "/v1/runs/" + quote(run_id, safe=""), headers=run_headers)
+                response = connection.getresponse()
+                body = response.read(32 * 1024 + 1)
+                require(len(body) <= 32 * 1024, "v2 completed Run response exceeded its test bound")
+                payload = json.loads(body or b"{}")
+                require(isinstance(payload, dict), "v2 completed Run response was not an object")
+                return response.status, payload
+            finally:
+                connection.close()
 
         replay_one = await asyncio.to_thread(completed_get, v2_report_row["backend_run_id"])
         replay_two = await asyncio.to_thread(completed_get, v2_report_row["backend_run_id"])
         require(
             replay_one[0] == replay_two[0] == 200
-            and replay_one[2] is None and replay_two[2] is None
             and replay_one[1].get("output") == replay_two[1].get("output"),
             "v2 committed presentation replay changed its bounded GET response",
         )
