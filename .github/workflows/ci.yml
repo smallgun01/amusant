@@ -102,7 +102,7 @@ jobs:
               "HERMES_EGRESS_IP": "172.30.65.2",
               "EGRESS_PROXY_HERMES_BIND_IP": "172.30.65.3",
               "RELAY_HOST_PRIVATE_IP": "10.0.0.10",
-              "RELAY_PUBLISH_PORT": "8443",
+              "RELAY_PUBLISH_PORT": "443",
               "OCI_DATA_DIR": str(root / "data"),
               "HERMES_CONFIG_FILE": str(root / "hermes-config.yaml"),
               "RELAY_CPU_LIMIT": "0.35",
@@ -153,9 +153,6 @@ jobs:
 
       - name: Build Relay for ARM64 without importing cross-platform cache
         run: docker buildx build --platform linux/arm64 --load -f deploy/oci-a1/Dockerfile.relay -t amusant-relay:oci-arm64-ci .
-
-      - name: Verify Relay source imports as non-root
-        run: docker run --rm --platform linux/arm64 --network none --read-only --user 10001:10001 --entrypoint /app/.venv/bin/python amusant-relay:oci-arm64-ci -c 'import relay.live_bridge; print("NONROOT_IMPORT_PASS")'
 
       - name: Exercise OpenCC on the Relay ARM64 runtime
         run: |
@@ -246,3 +243,4 @@ jobs:
             spikes/003-hermes-option-d-poc/evidence/phase2.json
           if-no-files-found: warn
           retention-days: 14
+

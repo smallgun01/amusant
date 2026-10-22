@@ -119,9 +119,9 @@ def validate(values: dict[str, str]) -> None:
     try:
         port = int(values["RELAY_PUBLISH_PORT"])
     except ValueError:
-        raise PreflightError("RELAY_PUBLISH_PORT must be between 1 and 65535") from None
-    if not 1 <= port <= 65535:
-        raise PreflightError("RELAY_PUBLISH_PORT must be between 1 and 65535")
+        raise PreflightError("RELAY_PUBLISH_PORT must be 443 for raw TLS-PSK ingress") from None
+    if port != 443:
+        raise PreflightError("RELAY_PUBLISH_PORT must be 443 for raw TLS-PSK ingress")
 
 
 def main() -> int:
@@ -139,3 +139,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

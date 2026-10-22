@@ -1,0 +1,152 @@
+name: amusant-g1-ingress-poc
+
+services:
+  relay:
+    image: ${G1_TEST_IMAGE:?build the local test image first}
+    entrypoint: ["/app/.venv/bin/python", "/repo/deploy/oci-a1/tests/device_ingress_poc/fake_device_relay.py"]
+    command: ["--host", "172.30.62.2", "--port", "8443"]
+    init: true
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=4m"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ${G1_REPO_ROOT:?repo root is required}/deploy/oci-a1/tests/device_ingress_poc:/repo/deploy/oci-a1/tests/device_ingress_poc:ro
+    networks:
+      relay_api:
+        ipv4_address: 172.30.62.2
+      relay_egress:
+        ipv4_address: 172.30.63.2
+
+  facade:
+    image: ${G1_TEST_IMAGE:?build the local test image first}
+    entrypoint: ["/app/.venv/bin/python", "/repo/deploy/oci-a1/tests/device_ingress_poc/fake_listener.py"]
+    command: ["--listen", "172.30.62.3:8643"]
+    init: true
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=4m"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ${G1_REPO_ROOT:?repo root is required}/deploy/oci-a1/tests/device_ingress_poc:/repo/deploy/oci-a1/tests/device_ingress_poc:ro
+    networks:
+      relay_api:
+        ipv4_address: 172.30.62.3
+      hermes_api:
+        ipv4_address: 172.30.64.2
+
+  hermes:
+    image: ${G1_TEST_IMAGE:?build the local test image first}
+    entrypoint: ["/app/.venv/bin/python", "/repo/deploy/oci-a1/tests/device_ingress_poc/fake_listener.py"]
+    command: ["--listen", "172.30.64.3:8642"]
+    init: true
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=4m"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ${G1_REPO_ROOT:?repo root is required}/deploy/oci-a1/tests/device_ingress_poc:/repo/deploy/oci-a1/tests/device_ingress_poc:ro
+    networks:
+      hermes_api:
+        ipv4_address: 172.30.64.3
+      hermes_egress:
+        ipv4_address: 172.30.65.2
+
+  egress_proxy:
+    image: ${G1_TEST_IMAGE:?build the local test image first}
+    entrypoint: ["/app/.venv/bin/python", "/repo/deploy/oci-a1/tests/device_ingress_poc/fake_listener.py"]
+    command:
+      - "--listen"
+      - "172.30.63.3:3128"
+      - "--listen"
+      - "172.30.65.3:3128"
+      - "--listen"
+      - "172.30.67.2:9443"
+    init: true
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=4m"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ${G1_REPO_ROOT:?repo root is required}/deploy/oci-a1/tests/device_ingress_poc:/repo/deploy/oci-a1/tests/device_ingress_poc:ro
+    networks:
+      relay_egress:
+        ipv4_address: 172.30.63.3
+      hermes_egress:
+        ipv4_address: 172.30.65.3
+      proxy_outbound:
+        ipv4_address: 172.30.67.2
+
+  egress_sentinel:
+    image: ${G1_TEST_IMAGE:?build the local test image first}
+    entrypoint: ["/app/.venv/bin/python", "/repo/deploy/oci-a1/tests/device_ingress_poc/fake_listener.py"]
+    command: ["--listen", "172.30.67.3:9443"]
+    init: true
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=4m"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ${G1_REPO_ROOT:?repo root is required}/deploy/oci-a1/tests/device_ingress_poc:/repo/deploy/oci-a1/tests/device_ingress_poc:ro
+    networks:
+      proxy_outbound:
+        ipv4_address: 172.30.67.3
+
+  external_client:
+    image: ${G1_TEST_IMAGE:?build the local test image first}
+    entrypoint: ["sleep", "infinity"]
+    init: true
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=4m"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    volumes:
+      - ${G1_REPO_ROOT:?repo root is required}/deploy/oci-a1/tests/device_ingress_poc:/repo/deploy/oci-a1/tests/device_ingress_poc:ro
+    networks:
+      test_client: {}
+
+  private_client:
+    image: ${G1_TEST_IMAGE:?build the local test image first}
+    entrypoint: ["sleep", "infinity"]
+    init: true
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=4m"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ${G1_REPO_ROOT:?repo root is required}/deploy/oci-a1/tests/device_ingress_poc:/repo/deploy/oci-a1/tests/device_ingress_poc:ro
+    networks:
+      relay_api:
+        ipv4_address: 172.30.62.4
+
+networks:
+  relay_api:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.62.0/29
+  relay_egress:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.63.0/29
+  hermes_api:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.64.0/29
+  hermes_egress:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.65.0/29
+  test_client:
+    ipam:
+      config:
+        - subnet: 172.30.66.0/29
+  proxy_outbound:
+    ipam:
+      config:
+        - subnet: 172.30.67.0/29
+

@@ -1,8 +1,5 @@
 # OCI A1 offline deployment package — #85 B1/B2 merged (E1 GO only)
 
-> **2026-10-22 runtime status (#62):** Owner confirms GO 1 `READY_TO_COMPOSE_UP` (Docker/Compose, reboot-checked persistent mount, pulled digest-pinned ARM64 images, six file secrets, Hermes config, real preflight/Compose static PASS). The older SSH-only readiness section below records its original historical point in time. **GO 2 four-service startup, approved Codex OAuth and live backend E2E; GO 3 remote StickS3 E2E; and formal E3 remain pending.** Do not repeat GO 1 prep or infer authorization to deploy.
-
-
 [PR #87](https://github.com/smallgun01/amusant/pull/87) wires **Relay → authenticated Option D Facade → Hermes** with private Docker network isolation. [PR #90](https://github.com/smallgun01/amusant/pull/90) additionally proved the **integrated** Relay/Dispatcher/SQLite→Facade→pinned Hermes→Artifact/Inbox path with synthetic providers on a native ARM64 runner. Both are merged; [#85](https://github.com/smallgun01/amusant/issues/85) is closed as **E1 GO**. This does **not** establish OCI deployment, actual model/provider operation, production credentials, external device ingress, real cancellation or 1 OCPU performance.
 
 ## Host readiness is not a canary
@@ -11,14 +8,14 @@ As of 2026-10-21, the owner reports an existing OCI Ubuntu ARM64 A1 VM and an N1
 
 ## Runtime topology
 
-- StickS3 connects to the private Relay listener on TCP/8443 using the existing fail-closed TLS-PSK path.
+- StickS3 connects to the host's selected private VNIC address on TCP/443. The G1 `systemd-socket-proxyd` unit forwards opaque TCP to Relay's existing private listener on `relay_api:8443`; TLS-PSK and Bearer checks still terminate only in Relay. The existing private Relay path remains available.
 - Relay joins only relay_api and relay_egress. It has no route to the Hermes API network, Hermes port 8642, the result volume, or Hermes artifacts.
 - Facade joins relay_api and hermes_api, listens only on its Relay-side IP, and exposes no host port. It is the only service that holds the separate Hermes API credential. Relay receives a facade-only key.
 - Hermes joins only hermes_api and hermes_egress. Its Runs API binds to its static Hermes-side IP and is never published.
 - The egress proxy has one listener on each egress network and accepts only the configured Relay and Hermes IPs. It permits CONNECT to public destinations on port 443 and rejects private, loopback, link-local, reserved, and mixed public/private DNS answers. Facade has no egress network.
-- Compose publishes only Relay 8443, bound to the selected RFC1918 host address. The four internal subnets must be private, non-overlapping, and separate from the VCN.
+- Compose does not publish a host port. The G1 systemd socket binds only TCP/443 on the selected RFC1918 private VNIC address; the host proxy has one fixed Relay target. The four internal subnets must be private, non-overlapping, and separate from the VCN.
 
-All service images require immutable @sha256 references. Preflight validates image digests, four isolated subnets, unique static addresses, and private host binding. It makes no cloud or provider calls.
+All service images require immutable @sha256 references. Preflight validates image digests, four isolated subnets, unique static addresses, private host binding, and the raw TLS-PSK ingress port (443). `render_device_ingress.py` writes the two systemd unit files for review; neither command changes a host or makes cloud/provider calls. See [G1 ingress decision, tests, and rollback](G1-INGRESS-DECISION.md).
 
 ## Hermes plugin and result boundary
 
@@ -50,3 +47,4 @@ These two commands validate **static** inputs only; they neither start the servi
 **Important STOP caveat:** Pinned Hermes v2026.9.24 reported terminal `failed / interrupt` for an active fake-provider Run. Relay and Inbox correctly showed `hermes_failed` and the proof recorded `stop_cancel_confirmed=false`; E1 STOP *handling* passed, but true active-run cancellation, provider/tool settlement and billing cessation remain **unverified**, as do OCI host restart and off-host restoration.
 
 Relay retains its durable task ledger, persisted Run ID, GET-only restart recovery, per-owner single-flight, deadlines and stop semantics. Hermes remains the same pinned image; this package does not fork Hermes. Keep the existing Relay and Hermes volumes. This package does not deploy to OCI, alter ingress, call real providers, manipulate production credentials, or perform data migrations.
+

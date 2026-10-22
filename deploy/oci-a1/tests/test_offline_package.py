@@ -49,7 +49,7 @@ def valid_values():
         "HERMES_EGRESS_IP": "172.30.65.2",
         "EGRESS_PROXY_HERMES_BIND_IP": "172.30.65.3",
         "RELAY_HOST_PRIVATE_IP": "10.0.0.10",
-        "RELAY_PUBLISH_PORT": "8443",
+        "RELAY_PUBLISH_PORT": "443",
     }
 
 
@@ -90,7 +90,9 @@ class OfflinePackageTests(unittest.TestCase):
         self.assertIn("hermes_egress:", proxy)
         self.assertIn("proxy_outbound:", proxy)
         self.assertNotIn('"0.0.0.0"', compose)
-        self.assertIn("host_ip: ${RELAY_HOST_PRIVATE_IP", compose)
+        self.assertNotIn("ports:", relay)
+        self.assertNotIn("host_ip:", compose)
+        self.assertNotIn("RELAY_HOST_PRIVATE_IP", compose)
         self.assertNotIn("published: 8642", compose)
         self.assertIn("cap_drop: [ALL]", compose)
         self.assertIn("read_only: true", compose)
@@ -143,6 +145,8 @@ class OfflinePackageTests(unittest.TestCase):
             preflight.validate({**values, "FACADE_IMAGE": "facade:latest"})
         with self.assertRaisesRegex(preflight.PreflightError, "RFC1918 IPv4"):
             preflight.validate({**values, "RELAY_HOST_PRIVATE_IP": "169.254.169.254"})
+        with self.assertRaisesRegex(preflight.PreflightError, "must be 443"):
+            preflight.validate({**values, "RELAY_PUBLISH_PORT": "8443"})
         with self.assertRaisesRegex(preflight.PreflightError, "must not overlap"):
             preflight.validate({**values, "HERMES_API_CIDR": "172.30.62.0/29"})
         with self.assertRaisesRegex(preflight.PreflightError, "RFC1918 IPv4 subnet"):
@@ -172,3 +176,4 @@ class OfflinePackageTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

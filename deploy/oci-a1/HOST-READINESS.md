@@ -1,8 +1,5 @@
 # OCI A1 H2 host-readiness handoff (2026-10-21)
 
-> **2026-10-22 UPDATE — #62:** GO 1 `READY_TO_COMPOSE_UP` is owner-reported PASS: Docker/Compose installed, persistent data mount reboot-checked, images pinned/pulled, file secrets and Hermes config prepared, preflight/Compose static validation PASS. The 2026-10-21 SSH-only inventory below is historical bootstrap guidance, not a checklist to repeat. **GO 2 four-service launch/OAuth/live backend and GO 3 device test NOT STARTED**; formal E3/off-host backup+restore, isolation, load, STOP/cost and #27 ingress pending. Issue #62 flags an N100 SSH alias possibly authenticating as OCI `ubuntu` with passwordless sudo: verify actual privilege boundaries before unattended operation. No new access or runtime authorization by these docs.
-
-
 > **Evidence tier: owner-reported host SSH bootstrap, NOT E3 or OCI runtime readiness.** This is an operator handoff for [#62](https://github.com/smallgun01/amusant/issues/62). It does not authorize installing packages, changing cloud/host networking, adding sudo or Docker access, configuring credentials, starting containers, exposing ports, touching AWS resources or calling paid providers. [SPEC](../../SPEC.md), [ADR-0003](../../docs/adr/0003-oci-a1-hermes-sqlite.md) and [STATUS](../../STATUS.md) remain authoritative.
 
 ## What is known, and the limit of each observation
@@ -45,7 +42,7 @@ Also inspect **read-only** current container/service presence, mount availabilit
 2. Specify separate persistent storage and backup/restore for **Relay SQLite Ledger/Inbox**, **Facade artifact/ledger**, and **Hermes Home**. A boot disk/Block Volume alone is not an off-host backup. Require SQLite online backup, encrypted independent copy and a measured restore drill before E3 acceptance.
 3. Confirm pinned `linux/arm64` image digests, `deploy/oci-a1/compose.yaml` private-only networks and the four non-overlapping Docker subnets; ensure no direct Relay→Hermes, public Facade/Hermes API, unrestricted host mounts, Docker socket or privileged container.
 4. Pin secret ownership/mount policy outside Git/`.env`; document egress proxy, identity boundaries and rollback. Starting Compose, pulling a production image, writing secrets and changing OCI IAM/NSG/VNIC are **separate Owner-authorized operations**.
-5. **Device ingress is still G1/#27**: present a reviewed transport for existing StickS3 TLS-PSK and Relay's **private-host-IP TCP 8443** binding before any public ingress. SSH TCP 22 proves only management access; it does **not** prove S3/FAST transport.
+5. **Device ingress remains an uninstalled G1/#27 change**: the proposed transport binds host TCP/443 only to the private VNIC and forwards opaque TLS-PSK bytes to Relay's existing private Docker listener on TCP/8443. [The G1 decision and synthetic offline packet-flow test](G1-INGRESS-DECISION.md) do not prove OCI routing, firewall reachability, host compatibility, or physical StickS3 behavior. SSH TCP 22 proves only management access; it does **not** prove S3/FAST transport.
 6. Only after #62 host checks, full off-host restore, security/usage caps and explicit Owner-approved bounded window: run an OCI E3 canary. Then #46 genuine software S1; only afterward #27/G2 and physical G3a. No real provider run, firmware flash, public ingress or automatic AWS resource/data migration is authorized by this document.
 
 ## Useful starting references
@@ -53,3 +50,4 @@ Also inspect **read-only** current container/service presence, mount availabilit
 - [Current application status](../../STATUS.md) · [Execution order](../../PLAN.md) · [WS1–WS4](../../docs/project-management/workstreams.md)
 - [OCI deployment package](README.md) · [SQLite operations](SQLITE-OPERATIONS.md) · [ADR-0003](../../docs/adr/0003-oci-a1-hermes-sqlite.md)
 - [#62 host/canary](https://github.com/smallgun01/amusant/issues/62) · [#27 ingress](https://github.com/smallgun01/amusant/issues/27) · [#46 S1](https://github.com/smallgun01/amusant/issues/46) · [#56 result policy](https://github.com/smallgun01/amusant/issues/56) · [#58 timing/STOP](https://github.com/smallgun01/amusant/issues/58)
+
