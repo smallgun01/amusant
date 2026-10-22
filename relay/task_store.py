@@ -478,6 +478,18 @@ class SQLiteTaskStore:
             connection.execute(
                 "ALTER TABLE slow_tasks ADD COLUMN result_contract_version INTEGER NOT NULL DEFAULT 1"
             )
+        # Some deployed v5 databases were created before task_results existed.
+        # Keep that supported partial legacy shape migratable as later versions
+        # introduce result metadata.
+        connection.execute(
+            """CREATE TABLE IF NOT EXISTS task_results (
+                task_id TEXT PRIMARY KEY REFERENCES slow_tasks(task_id) ON DELETE CASCADE,
+                speak TEXT NOT NULL,
+                card_json TEXT NOT NULL,
+                details_md TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )"""
+        )
         result_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(task_results)")}
         for name, declaration in (
             ("artifact_status", "TEXT"),

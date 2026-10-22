@@ -274,16 +274,19 @@ def _version(row):
 
 def _v2_artifact_projection(row):
     status = row.get("artifact_status")
-    attempted = bool(row.get("writer_call_count") or row.get("writer_result_code"))
+    attempted = bool(row.get("writer_call_count") or row.get("writer_result_code") or row.get("writer_failure_code"))
     if status == "committed":
         artifact, error = _load_committed_artifact(row)
         if not artifact:
             return "failed", None, error
-        if row.get("writer_result_code") in {"artifact_conflict", "artifact_integrity_invalid"}:
-            return "committed", artifact, "artifact_conflict"
+        failure_code = row.get("writer_failure_code")
+        if failure_code is None and row.get("writer_result_code") in {"artifact_conflict", "artifact_integrity_invalid"}:
+            failure_code = row.get("writer_result_code")
+        if isinstance(failure_code, str):
+            return "committed", artifact, failure_code
         return "committed", artifact, None
     if status == "failed" or attempted:
-        return "failed", None, row.get("writer_result_code") or "artifact_write_failed"
+        return "failed", None, row.get("writer_failure_code") or row.get("writer_result_code") or "artifact_write_failed"
     return "none", None, None
 
 

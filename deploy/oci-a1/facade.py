@@ -147,6 +147,7 @@ def initialize():
             hermes_run_status TEXT,
             writer_call_count INTEGER NOT NULL DEFAULT 0,
             writer_result_code TEXT,
+            writer_failure_code TEXT,
             writer_report_bytes INTEGER,
             created_at REAL NOT NULL,
             PRIMARY KEY(owner_scope, task_id)
@@ -176,6 +177,9 @@ def initialize():
             conn.execute(
                 "ALTER TABLE requests ADD COLUMN result_contract_version INTEGER NOT NULL DEFAULT 1"
             )
+            columns.add("result_contract_version")
+        if "writer_failure_code" not in columns:
+            conn.execute("ALTER TABLE requests ADD COLUMN writer_failure_code TEXT")
     finally:
         conn.close()
     _secure_sqlite_permissions()
@@ -296,16 +300,19 @@ def v2_presentation_failure_envelope(artifact_status: str, artifact_ref: str | N
 def v2_artifact_state(row: dict):
     """Return the safe state/ref pair; pending is none only before any writer attempt."""
     status = row.get("artifact_status")
-    attempted = bool(row.get("writer_call_count") or row.get("writer_result_code"))
+    attempted = bool(row.get("writer_call_count") or row.get("writer_result_code") or row.get("writer_failure_code"))
     if status == "committed":
         artifact, error = _load_committed_artifact(row)
         if not artifact:
             return "failed", None, error or "artifact_integrity_invalid"
-        if row.get("writer_result_code") in {"artifact_conflict", "artifact_integrity_invalid"}:
-            return "committed", artifact["artifact_ref"], "artifact_conflict"
+        failure_code = row.get("writer_failure_code")
+        if failure_code is None and row.get("writer_result_code") in {"artifact_conflict", "artifact_integrity_invalid"}:
+            failure_code = row.get("writer_result_code")
+        if isinstance(failure_code, str):
+            return "committed", artifact["artifact_ref"], failure_code
         return "committed", artifact["artifact_ref"], None
     if status == "failed" or attempted:
-        return "failed", None, row.get("writer_result_code") or "artifact_write_failed"
+        return "failed", None, row.get("writer_failure_code") or row.get("writer_result_code") or "artifact_write_failed"
     return "none", None, None
 
 
@@ -459,15 +466,27 @@ def _record_writer_result(session_id, code, report_bytes=0, *, artifact_status=N
     }
     if code not in allowed:
         return
+    failure_code = None if code == "committed" else code
     try:
         with connect() as conn:
             conn.execute(
                 """UPDATE requests
                    SET writer_call_count=writer_call_count+1,
                        writer_result_code=?, writer_report_bytes=?,
-                       artifact_status=COALESCE(?, artifact_status)
+                       writer_failure_code=CASE
+                           WHEN ? IS NOT NULL THEN ?
+                           WHEN ?='committed' THEN NULL
+                           ELSE writer_failure_code
+                       END,
+                       artifact_status=CASE
+                           WHEN artifact_status='committed' AND ?='failed' THEN artifact_status
+                           ELSE COALESCE(?, artifact_status)
+                       END
                    WHERE session_id=? AND submit_state='accepted'""",
-                (code, report_bytes, artifact_status, session_id),
+                (
+                    code, report_bytes, failure_code, failure_code, code,
+                    artifact_status, artifact_status, session_id,
+                ),
             )
     except sqlite3.Error:
         pass
@@ -576,7 +595,8 @@ def commit_report(session_id, report):
                     """UPDATE requests
                        SET artifact_status='committed', artifact_ref=?,
                            writer_call_count=writer_call_count+1,
-                           writer_result_code='committed', writer_report_bytes=?
+                           writer_result_code='committed', writer_failure_code=NULL,
+                           writer_report_bytes=?
                        WHERE session_id=? AND submit_state='accepted'""",
                     (artifact_ref, len(encoded), session_id),
                 )
