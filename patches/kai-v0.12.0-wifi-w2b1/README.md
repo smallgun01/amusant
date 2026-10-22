@@ -1,5 +1,8 @@
 # Wi-Fi W2b-1 — configured BLE re-provisioning
 
+> **Later owner physical acceptance (2026-10-21; #36/#47, PR #95 merged): E2 PASS** for configured BLE re-provisioning, clean END/DEINIT/SETUP RETURN without fallback, and normal local Relay PTT/two-way speech. Official Android QR provisioning subsequently passed 5/5 (#97). Any pending-hardware language below describes the earlier offline PR stage, not the current slice status. **W2a multi-SSID and broad heap/power/negative tests Pending.**
+
+
 This downstream firmware patch implements Issue #91 on the exact Kai v0.12.0 pin. It adds a 5-second Button B setup gesture and a controlled, one-shot reboot into authenticated BLE provisioning. The existing `amu_wifi/profile` record remains unchanged until replacement credentials have joined Wi-Fi and acquired a nonzero IP address. USB Serial remains the recovery path.
 
 The architecture and owner review points are in [DESIGN.md](DESIGN.md); the separate future physical procedure is [HARDWARE_ACCEPTANCE.md](HARDWARE_ACCEPTANCE.md). This package does not change AWS, Relay, cloud ingress, the PTT/Opus/TLS-PSK/Bearer path, or normal deep-sleep behavior. It does not flash a device or make a paid/live call.
