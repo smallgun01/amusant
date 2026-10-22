@@ -1,5 +1,7 @@
 # Project Amusant — Current M1 execution plan
 
+> **2026-10-22 execution update:** #62 GO 2 backend functional PASS and GO 3 physical FAST PASS (temporary private SSH tunnel); physical Slow delegation **accepted**, but 120s deadline led to `hermes_stop_unconfirmed`, so G3a/S1 spoken Inbox remains **OPEN**. Next: independent Hermes terminal-state verification, safe operator reconciliation, deadline/poll diagnosis, then bounded device Slow result readback. Public ingress #27 and formal E3/E4 remain open. See [live evidence](docs/oci-go2-go3-live-evidence-20261022.md). Earlier GO 2/GO 3 NOT STARTED table below is the pre-test snapshot.
+
 > **Reviewed 2026-10-22 against `main@73436c6` and latest #36/#47/#62.** Read with [SPEC v0.5](SPEC.md), [ADR-0003](docs/adr/0003-oci-a1-hermes-sqlite.md), [STATUS](STATUS.md), [WS1–WS4](docs/project-management/workstreams.md), and [OCI host-readiness handoff](deploy/oci-a1/HOST-READINESS.md). OCI/Hermes/SQLite is the **accepted implementation target**, not an accepted live deployment. The archived AWS/OpenAB plan below is non-authoritative.
 
 ## Active plan and dependencies
