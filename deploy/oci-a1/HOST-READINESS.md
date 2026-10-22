@@ -1,5 +1,8 @@
 # OCI A1 H2 host-readiness handoff (2026-10-21)
 
+> **2026-10-22 UPDATE — #62:** GO 1 `READY_TO_COMPOSE_UP` is owner-reported PASS: Docker/Compose installed, persistent data mount reboot-checked, images pinned/pulled, file secrets and Hermes config prepared, preflight/Compose static validation PASS. The 2026-10-21 SSH-only inventory below is historical bootstrap guidance, not a checklist to repeat. **GO 2 four-service launch/OAuth/live backend and GO 3 device test NOT STARTED**; formal E3/off-host backup+restore, isolation, load, STOP/cost and #27 ingress pending. Issue #62 flags an N100 SSH alias possibly authenticating as OCI `ubuntu` with passwordless sudo: verify actual privilege boundaries before unattended operation. No new access or runtime authorization by these docs.
+
+
 > **Evidence tier: owner-reported host SSH bootstrap, NOT E3 or OCI runtime readiness.** This is an operator handoff for [#62](https://github.com/smallgun01/amusant/issues/62). It does not authorize installing packages, changing cloud/host networking, adding sudo or Docker access, configuring credentials, starting containers, exposing ports, touching AWS resources or calling paid providers. [SPEC](../../SPEC.md), [ADR-0003](../../docs/adr/0003-oci-a1-hermes-sqlite.md) and [STATUS](../../STATUS.md) remain authoritative.
 
 ## What is known, and the limit of each observation
