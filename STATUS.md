@@ -1,5 +1,7 @@
 # Amusant — Evidence and Status (reviewed 2026-10-22)
 
+> **2026-10-22 OCI live evidence supersedes earlier GO 1-only snapshot below:** GO 2 real backend Relay→Facade→Hermes→Artifact→bounded Inbox functional PASS; GO 3 physical StickS3→private SSH tunnel→OCI Relay→Gemini Live→audible device speech functional PASS. A physical Slow Task was accepted and assigned a Hermes Run ID but hit 120s `run_deadline`; STOP accepted without confirmed remote terminal, leaving `uncertain / hermes_stop_unconfirmed` and no result. `poll_attempts=662` needs diagnosis. No physical Slow→Inbox→spoken PASS or formal E3/E4. See [dated evidence](docs/oci-go2-go3-live-evidence-20261022.md); older GO 2/3 NOT STARTED text below is historical.
+
 > **Current sources:** `main@73436c6` and latest issue summaries [#36](https://github.com/smallgun01/amusant/issues/36), [#47](https://github.com/smallgun01/amusant/issues/47), [#62](https://github.com/smallgun01/amusant/issues/62). Later owner-observed hardware/OCI readiness evidence supersedes old PR/CI-only descriptions. No deployment authority is implied.
 
 ## Current M1 snapshot (verified repository artifacts vs pending external gates)
