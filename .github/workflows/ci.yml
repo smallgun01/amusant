@@ -49,6 +49,10 @@ jobs:
           PYTHONPATH: .:relay
         run: uv run --locked --python 3.13 --extra hardware-opus --group dev python -m unittest discover -s relay/tests -v
 
+      - name: Self-hosted bootstrap offline fixtures (Issue 101 B1)
+        # No apt/systemctl, Docker daemon, SSH, OCI or network calls.
+        run: uv run --locked --python 3.13 --extra hardware-opus --group dev python -m unittest discover -s deploy/self-hosted/tests -v
+
       - name: OCI offline deployment package guards
         run: uv run --locked --python 3.13 --extra hardware-opus --group dev python -m unittest discover -s deploy/oci-a1/tests -v
 
