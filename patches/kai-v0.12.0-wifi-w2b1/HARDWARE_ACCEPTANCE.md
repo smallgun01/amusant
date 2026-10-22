@@ -1,5 +1,8 @@
 # Owner-supervised W2b-1 physical acceptance checklist
 
+> **2026-10-21 owner E2 PASS (#36/#47):** W2b-1 configured BLE provisioning/teardown core flow completed on physical StickS3, Android authenticated provisioning and local PTT normal; QR follow-up (#97) scanned 5/5. The unchecked items below remain a regression/extended negative-case checklist, not evidence that every test individually passed. No additional flash or test is authorized by this update.
+
+
 Use this checklist only after PR review and separate owner authorization for the physical firmware/device session. This PR and checklist do not authorize a flash, NVS erase, Wi-Fi credential entry, or live service call by the coding agent.
 
 ## Before the session

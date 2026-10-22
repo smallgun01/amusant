@@ -1,5 +1,8 @@
 # W2b-QR optical experiment — pending owner acceptance
 
+> **2026-10-21 owner E2 hardware PASS (#36/#47):** Official Espressif Android scanner 5/5; complete authenticated QR-assisted Wi-Fi provisioning; clean END/DEINIT/setup return without drain fallback, then local Relay two-way PTT. PR #97 merged. The earlier NO-GO/pending description below refers to the *pre-hardware optical experiment* and is superseded. Remaining checklist items are useful future regression cases, not all individually certified; W2a, broader heap/battery/negative testing and OCI ingress remain pending.
+
+
 The PR #95 BLE teardown path has passed owner-supervised hardware acceptance. This revision is a combined optical experiment: QR v5-L at 3 pixels per module (135×135 with a full four-module white quiet zone) and QR-page backlight 45. The manual PoP page returns to the normal awake brightness of 90. Because size and brightness change together, this first run cannot attribute an improvement to either factor independently. No physical StickS3 was flashed for this patch, and the QR remains **physical scan NO-GO / production acceptance pending**.
 
 1. In an owner-supervised run, enter setup with the existing five-second Button B gesture while on USB power. Confirm the QR fills the 135px display height, is horizontally centered, has no text or overlays, and retains a complete white quiet zone.
