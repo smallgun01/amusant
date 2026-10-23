@@ -1,13 +1,12 @@
 name: Issue 27 G1 private ingress PoC
 
 on:
-  push:
-    branches:
-      - codex/issue-27-g1-ingress
   pull_request:
     paths:
-      - deploy/oci-a1/**
       - .github/workflows/issue-27-g1-offline.yml
+      - deploy/oci-a1/**
+      - '!**/*.md'
+      - '!**/*.mdx'
   workflow_dispatch:
 
 permissions:

@@ -17,7 +17,59 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Classify changed paths
+    runs-on: ubuntu-24.04
+    outputs:
+      heavy: ${{ steps.scope.outputs.heavy }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Classify
+        id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+        shell: bash
+        run: |
+          if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
+            echo heavy=true >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ ! "$BASE_SHA" =~ ^[a-fA-F0-9]{40}$ ]] || [[ ! "$HEAD_SHA" =~ ^[a-fA-F0-9]{40}$ ]] || [[ "$BASE_SHA" =~ ^0+$ ]]; then
+            echo heavy=true >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git diff --check "$BASE_SHA" "$HEAD_SHA" --
+          if git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- | grep -Ev '^$|\.(md|mdx)$' >/dev/null; then
+            echo heavy=true >> "$GITHUB_OUTPUT"
+          else
+            echo heavy=false >> "$GITHUB_OUTPUT"
+          fi
+
+  docs-only-check:
+    name: Lightweight documentation and diff check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check patch whitespace
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if [[ "$BASE_SHA" =~ ^[a-fA-F0-9]{40}$ ]] && [[ "$HEAD_SHA" =~ ^[a-fA-F0-9]{40}$ ]]; then
+            git diff --check "$BASE_SHA" "$HEAD_SHA" --
+          fi
+
   offline-regression:
+    needs: changes
+    if: needs.changes.outputs.heavy == 'true'
     name: Fast Voice / Relay / TLS-PSK (Python 3.13)
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -59,6 +111,8 @@ jobs:
         run: uv run --locked --python 3.13 --extra hardware-opus --group dev python relay/tests/psk_wss_integration.py
 
   oci-arm64-images:
+    needs: changes
+    if: needs.changes.outputs.heavy == 'true'
     name: OCI ARM64 Relay, facade and egress-proxy image smoke
     runs-on: ubuntu-24.04
     timeout-minutes: 35
@@ -181,14 +235,12 @@ jobs:
         run: docker run --rm --network none --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m --tmpfs /var/lib/amusant-results:rw,noexec,nosuid,size=16m,uid=10003,gid=10003,mode=700 amusant-facade-runtime-smoke
 
   issue-79-option-d-recovery:
+    needs: changes
     # Once Option D is part of the M1 runtime, proof must not be limited to
     # historical issue-73/79 branch names. Run on relevant PRs and main pushes.
     # Keep the expensive native ARM64 gate separate (manual / integration).
     name: Pinned Hermes Option D recovery proof
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      github.event_name == 'push' ||
-      github.event_name == 'pull_request'
+    if: needs.changes.outputs.heavy == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -246,3 +298,26 @@ jobs:
             spikes/003-hermes-option-d-poc/evidence/phase2.json
           if-no-files-found: warn
           retention-days: 14
+
+  ci-result:
+    name: CI result gate
+    if: ${{ always() }}
+    needs: [changes, docs-only-check, offline-regression, oci-arm64-images, issue-79-option-d-recovery]
+    runs-on: ubuntu-24.04
+    env:
+      SCOPE: ${{ needs.changes.result }}
+      LIGHT: ${{ needs.docs-only-check.result }}
+      HEAVY: ${{ needs.changes.outputs.heavy }}
+      REGRESSION: ${{ needs.offline-regression.result }}
+      IMAGES: ${{ needs.oci-arm64-images.result }}
+      OPTION_D: ${{ needs.issue-79-option-d-recovery.result }}
+    steps:
+      - name: Verify all selected checks passed
+        shell: bash
+        run: |
+          test "$SCOPE" = success && test "$LIGHT" = success
+          case "$HEAVY" in
+            true) test "$REGRESSION" = success && test "$IMAGES" = success && test "$OPTION_D" = success ;;
+            false) test "$REGRESSION" = skipped && test "$IMAGES" = skipped && test "$OPTION_D" = skipped ;;
+            *) echo 'Invalid scope result' >&2; exit 1 ;;
+          esac
