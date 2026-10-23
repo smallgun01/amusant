@@ -2,6 +2,7 @@ name: Issue #56 H1.2 Offline Toolset Security Preflight
 
 on:
   pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
     branches:
       - main
     paths:
@@ -62,6 +63,7 @@ concurrency:
 
 jobs:
   offline-toolset-preflight:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     name: H1.2 effective toolset preflight (native ARM64, fake provider)
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
