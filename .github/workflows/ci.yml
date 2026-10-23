@@ -17,6 +17,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  docs-only-check:
+    name: Lightweight documentation and diff check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check patch whitespace
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if [[ "$BASE_SHA" =~ ^[a-fA-F0-9]{40}$ ]] && [[ "$HEAD_SHA" =~ ^[a-fA-F0-9]{40}$ ]]; then
+            git diff --check "$BASE_SHA" "$HEAD_SHA" --
+          fi
+
   offline-regression:
     name: Fast Voice / Relay / TLS-PSK (Python 3.13)
     runs-on: ubuntu-24.04
