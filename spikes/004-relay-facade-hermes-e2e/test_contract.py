@@ -248,7 +248,7 @@ class Issue85E2EContractTests(unittest.TestCase):
         for event in ("pull_request:", "push:", "workflow_dispatch:"):
             self.assertIn(event, trigger)
         for relevant_path in (
-            '".github/workflows/**"',
+            '".github/workflows/issue-85-pr-b2-e2e.yml"',
             '"deploy/oci-a1/**"',
             '"fast_voice/**"',
             '"relay/**"',
@@ -257,6 +257,9 @@ class Issue85E2EContractTests(unittest.TestCase):
             '"uv.lock"',
         ):
             self.assertIn(relevant_path, trigger)
+        self.assertNotIn('".github/workflows/**"', trigger)
+        self.assertIn('"!**/*.md"', trigger)
+        self.assertIn('"!**/*.mdx"', trigger)
         self.assertIn("runs-on: ubuntu-24.04-arm", self.b2_workflow)
         self.assertIn("python3 spikes/004-relay-facade-hermes-e2e/run_e2e.py", self.b2_workflow)
         self.assertIn("name: issue-85-pr-b2-integrated-e2e-${{ github.run_id }}", self.b2_workflow)
