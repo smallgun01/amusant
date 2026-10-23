@@ -2,12 +2,13 @@
 
 > **2026-10-22 live test supersession:** OCI four-service backend live functional PASS; physical StickS3 → temporary private SSH tunnel → OCI Relay → Gemini Live audible FAST PASS; physical Slow task admitted but timed out at 120s, then Hermes was independently confirmed `completed` without a saved report. **2026-10-23 Owner operator reconciliation PASS** as `failed / hermes_operator_reconciled_completed_no_result`; old single-flight reservation cleared, but physical Slow→Inbox speech not yet accepted. This is not full E3/E4 or permanent/public device ingress. See [GO 2/3 evidence](../../docs/oci-go2-go3-live-evidence-20261022.md); earlier GO 2/3 NOT STARTED handoff below is historical.
 
-> **2026-10-22 UPDATE — #62:** GO 1 `READY_TO_COMPOSE_UP` is owner-reported PASS: Docker/Compose installed, persistent data mount reboot-checked, images pinned/pulled, file secrets and Hermes config prepared, preflight/Compose static validation PASS. The 2026-10-21 SSH-only inventory below is historical bootstrap guidance, not a checklist to repeat. **GO 2 four-service launch/OAuth/live backend and GO 3 device test NOT STARTED**; formal E3/off-host backup+restore, isolation, load, STOP/cost and #27 ingress pending. Issue #62 flags an N100 SSH alias possibly authenticating as OCI `ubuntu` with passwordless sudo: verify actual privilege boundaries before unattended operation. No new access or runtime authorization by these docs.
-
-
 > **Evidence tier: owner-reported host SSH bootstrap, NOT E3 or OCI runtime readiness.** This is an operator handoff for [#62](https://github.com/smallgun01/amusant/issues/62). It does not authorize installing packages, changing cloud/host networking, adding sudo or Docker access, configuring credentials, starting containers, exposing ports, touching AWS resources or calling paid providers. [SPEC](../../SPEC.md), [ADR-0003](../../docs/adr/0003-oci-a1-hermes-sqlite.md) and [STATUS](../../STATUS.md) remain authoritative.
 
-## What is known, and the limit of each observation
+## Historical 2026-10-21 host-access snapshot
+
+The runtime-state observations in the table below are a historical 2026-10-21 snapshot, superseded by the owner's [2026-10-22 #62 live evidence](https://github.com/smallgun01/amusant/issues/62#issuecomment-6344705541) and the consolidated [GO2/GO3 evidence record](../../docs/oci-go2-go3-live-evidence-20261022.md). The 2026-10-23 operator reconciliation is recorded there and in [PR #106](https://github.com/smallgun01/amusant/pull/106). Those records report a functional four-service backend and physical FAST through a temporary private SSH forward; the physical Slow path was reconciled as failed with no result. This does not establish formal E3/E4 acceptance or public ingress. The G1 TCP/443 systemd path remains **proposed and uninstalled**.
+
+## What was known at that snapshot, and the limit of each observation
 
 | Evidence source | Observation | What it does NOT prove |
 | --- | --- | --- |
@@ -18,7 +19,7 @@
 
 **Privacy and security:** Do not commit public IPs, client source IPs, private keys, credential filenames/contents, tokens, PoP, public endpoint details or machine-specific `.env` values. SSH public keys may be distributed through an operator-approved channel, not embedded in this repository. Preserve both Owner and Agent access while applying access controls.
 
-## Proposed read-only H2 inventory (requires explicit Owner instruction)
+## Historical proposed read-only H2 inventory (requires explicit Owner instruction)
 
 Only run the following after the Owner delegates this scoped inventory; editing or reading this document is **not** permission to log in or execute commands. From N100, use the **existing dedicated Agent SSH key** and the existing remote unprivileged account; never ask OpenClaw to print or transfer the key. Confirm which Unix/service or container identity actually launches OpenClaw and what SSH config it can access. A successful human-terminal `ssh` is not proof of an agent tool permission; the owner's one-time OpenClaw BatchMode smoke did pass.
 
@@ -47,8 +48,8 @@ Also inspect **read-only** current container/service presence, mount availabilit
 2. Specify separate persistent storage and backup/restore for **Relay SQLite Ledger/Inbox**, **Facade artifact/ledger**, and **Hermes Home**. A boot disk/Block Volume alone is not an off-host backup. Require SQLite online backup, encrypted independent copy and a measured restore drill before E3 acceptance.
 3. Confirm pinned `linux/arm64` image digests, `deploy/oci-a1/compose.yaml` private-only networks and the four non-overlapping Docker subnets; ensure no direct Relay→Hermes, public Facade/Hermes API, unrestricted host mounts, Docker socket or privileged container.
 4. Pin secret ownership/mount policy outside Git/`.env`; document egress proxy, identity boundaries and rollback. Starting Compose, pulling a production image, writing secrets and changing OCI IAM/NSG/VNIC are **separate Owner-authorized operations**.
-5. **Device ingress is still G1/#27**: present a reviewed transport for existing StickS3 TLS-PSK and Relay's **private-host-IP TCP 8443** binding before any public ingress. SSH TCP 22 proves only management access; it does **not** prove S3/FAST transport.
-6. Only after #62 host checks, full off-host restore, security/usage caps and explicit Owner-approved bounded window: run an OCI E3 canary. Then #46 genuine software S1; only afterward #27/G2 and physical G3a. No real provider run, firmware flash, public ingress or automatic AWS resource/data migration is authorized by this document.
+5. **Device ingress remains an uninstalled G1/#27 change**: the proposed transport binds host TCP/443 only to the private VNIC and forwards opaque TLS-PSK bytes to Relay's existing private Docker listener on TCP/8443. [The G1 decision and synthetic offline packet-flow test](G1-INGRESS-DECISION.md) do not prove OCI routing, firewall reachability, host compatibility, or physical StickS3 behavior. SSH TCP 22 proves only management access; it does **not** prove S3/FAST transport.
+6. The owner-observed GO2 backend and GO3 temporary private-tunnel/physical FAST results, plus the 2026-10-23 physical Slow reconciliation as failed/no result, are documented in the [GO2/GO3 evidence record](../../docs/oci-go2-go3-live-evidence-20261022.md). They do not close formal E3/E4: encrypted off-host restore, load/FAST-under-SLOW, real STOP/cost behavior, reconnection and permanent/public ingress remain open. Any G1 installation, OCI ingress rule, DNS change, provider run or physical-device test still requires its applicable explicit Owner authorization; this historical handoff authorizes none.
 
 ## Useful starting references
 

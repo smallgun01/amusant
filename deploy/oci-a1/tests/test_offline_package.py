@@ -90,7 +90,9 @@ class OfflinePackageTests(unittest.TestCase):
         self.assertIn("hermes_egress:", proxy)
         self.assertIn("proxy_outbound:", proxy)
         self.assertNotIn('"0.0.0.0"', compose)
-        self.assertIn("host_ip: ${RELAY_HOST_PRIVATE_IP", compose)
+        self.assertNotIn("ports:", relay)
+        self.assertNotIn("host_ip:", compose)
+        self.assertNotIn("RELAY_HOST_PRIVATE_IP", compose)
         self.assertNotIn("published: 8642", compose)
         self.assertIn("cap_drop: [ALL]", compose)
         self.assertIn("read_only: true", compose)
@@ -143,6 +145,10 @@ class OfflinePackageTests(unittest.TestCase):
             preflight.validate({**values, "FACADE_IMAGE": "facade:latest"})
         with self.assertRaisesRegex(preflight.PreflightError, "RFC1918 IPv4"):
             preflight.validate({**values, "RELAY_HOST_PRIVATE_IP": "169.254.169.254"})
+        preflight.validate({**values, "RELAY_PUBLISH_PORT": "8443"})
+        preflight.validate({name: value for name, value in values.items() if name != "RELAY_PUBLISH_PORT"})
+        with self.assertRaisesRegex(preflight.PreflightError, "valid legacy TCP port"):
+            preflight.validate({**values, "RELAY_PUBLISH_PORT": "70000"})
         with self.assertRaisesRegex(preflight.PreflightError, "must not overlap"):
             preflight.validate({**values, "HERMES_API_CIDR": "172.30.62.0/29"})
         with self.assertRaisesRegex(preflight.PreflightError, "RFC1918 IPv4 subnet"):

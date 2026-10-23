@@ -27,7 +27,7 @@ IP_NAMES_BY_NETWORK = {
 REQUIRED = (
     *IMAGE_NAMES, *NETWORK_NAMES,
     *(name for names in IP_NAMES_BY_NETWORK.values() for name in names),
-    "RELAY_HOST_PRIVATE_IP", "RELAY_PUBLISH_PORT",
+    "RELAY_HOST_PRIVATE_IP",
 )
 
 
@@ -116,12 +116,17 @@ def validate(values: dict[str, str]) -> None:
     host_ip = _literal_ip(values, "RELAY_HOST_PRIVATE_IP")
     if host_ip.version != 4 or not any(host_ip in private for private in RFC1918_NETWORKS):
         raise PreflightError("RELAY_HOST_PRIVATE_IP must be an RFC1918 IPv4 address")
-    try:
-        port = int(values["RELAY_PUBLISH_PORT"])
-    except ValueError:
-        raise PreflightError("RELAY_PUBLISH_PORT must be between 1 and 65535") from None
-    if not 1 <= port <= 65535:
-        raise PreflightError("RELAY_PUBLISH_PORT must be between 1 and 65535")
+    # This Compose variable is retained only so older operator .env files remain
+    # valid. Compose no longer publishes it, and G1 ingress is fixed at TCP/443
+    # by the systemd socket template, independently of this legacy value.
+    legacy_publish_port = values.get("RELAY_PUBLISH_PORT", "").strip()
+    if legacy_publish_port:
+        try:
+            port = int(legacy_publish_port)
+        except ValueError:
+            raise PreflightError("RELAY_PUBLISH_PORT must be a valid legacy TCP port when supplied") from None
+        if not 1 <= port <= 65535:
+            raise PreflightError("RELAY_PUBLISH_PORT must be a valid legacy TCP port when supplied")
 
 
 def main() -> int:

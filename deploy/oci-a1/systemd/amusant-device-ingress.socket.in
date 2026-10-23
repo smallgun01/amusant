@@ -1,0 +1,15 @@
+[Unit]
+Description=Amusant TLS-PSK device ingress on the private VNIC
+Wants=network-online.target
+After=network-online.target
+
+[Socket]
+ListenStream=@RELAY_HOST_PRIVATE_IP@:443
+Accept=no
+NoDelay=true
+Backlog=64
+Service=amusant-device-ingress.service
+
+[Install]
+WantedBy=sockets.target
+

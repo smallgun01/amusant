@@ -1,0 +1,24 @@
+[Unit]
+Description=Amusant opaque TLS-PSK TCP forwarder
+Requires=amusant-device-ingress.socket
+After=amusant-device-ingress.socket
+
+[Service]
+Type=notify
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd --connections-max=@MAX_CONNECTIONS@ --exit-idle-time=@EXIT_IDLE_SECONDS@s @RELAY_BIND_IP@:8443
+DynamicUser=yes
+User=amusant-device-ingress
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictSUIDSGID=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
