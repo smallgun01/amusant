@@ -4,6 +4,7 @@ name: CI
 # Gemini, AWS, device PSK, or Bearer credentials into these jobs.
 on:
   pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
   push:
     branches:
       - main
@@ -69,7 +70,7 @@ jobs:
 
   offline-regression:
     needs: changes
-    if: needs.changes.outputs.heavy == 'true'
+    if: needs.changes.outputs.heavy == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     name: Fast Voice / Relay / TLS-PSK (Python 3.13)
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -112,7 +113,7 @@ jobs:
 
   oci-arm64-images:
     needs: changes
-    if: needs.changes.outputs.heavy == 'true'
+    if: needs.changes.outputs.heavy == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     name: OCI ARM64 Relay, facade and egress-proxy image smoke
     runs-on: ubuntu-24.04
     timeout-minutes: 35
@@ -240,7 +241,7 @@ jobs:
     # historical issue-73/79 branch names. Run on relevant PRs and main pushes.
     # Keep the expensive native ARM64 gate separate (manual / integration).
     name: Pinned Hermes Option D recovery proof
-    if: needs.changes.outputs.heavy == 'true'
+    if: needs.changes.outputs.heavy == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -307,7 +308,7 @@ jobs:
     env:
       SCOPE: ${{ needs.changes.result }}
       LIGHT: ${{ needs.docs-only-check.result }}
-      HEAVY: ${{ needs.changes.outputs.heavy }}
+      RUN_HEAVY: ${{ needs.changes.outputs.heavy == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
       REGRESSION: ${{ needs.offline-regression.result }}
       IMAGES: ${{ needs.oci-arm64-images.result }}
       OPTION_D: ${{ needs.issue-79-option-d-recovery.result }}
@@ -316,7 +317,7 @@ jobs:
         shell: bash
         run: |
           test "$SCOPE" = success && test "$LIGHT" = success
-          case "$HEAVY" in
+          case "$RUN_HEAVY" in
             true) test "$REGRESSION" = success && test "$IMAGES" = success && test "$OPTION_D" = success ;;
             false) test "$REGRESSION" = skipped && test "$IMAGES" = skipped && test "$OPTION_D" = skipped ;;
             *) echo 'Invalid scope result' >&2; exit 1 ;;
