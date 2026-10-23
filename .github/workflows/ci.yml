@@ -298,11 +298,6 @@ jobs:
             spikes/003-hermes-option-d-poc/evidence/phase2.json
           if-no-files-found: warn
           retention-days: 14
- >/dev/null; then
-            echo heavy=true >> "$GITHUB_OUTPUT"
-          else
-            echo heavy=false >> "$GITHUB_OUTPUT"
-          fi
 
   ci-result:
     name: CI result gate
