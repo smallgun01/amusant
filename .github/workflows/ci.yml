@@ -553,7 +553,7 @@ jobs:
 
   ci-result:
     name: CI result gate
-    if: always()
+    if: ${{ always() }}
     needs: [changes, docs-only-check, offline-regression, oci-arm64-images, issue-79-option-d-recovery]
     runs-on: ubuntu-24.04
     env:
