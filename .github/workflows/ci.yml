@@ -154,6 +154,9 @@ jobs:
       - name: Build Relay for ARM64 without importing cross-platform cache
         run: docker buildx build --platform linux/arm64 --load -f deploy/oci-a1/Dockerfile.relay -t amusant-relay:oci-arm64-ci .
 
+      - name: Verify Relay source imports as non-root
+        run: docker run --rm --platform linux/arm64 --network none --read-only --user 10001:10001 --entrypoint /app/.venv/bin/python amusant-relay:oci-arm64-ci -c 'import relay.live_bridge; print("NONROOT_IMPORT_PASS")'
+
       - name: Exercise OpenCC on the Relay ARM64 runtime
         run: |
           docker run --rm --platform linux/arm64 --entrypoint /app/.venv/bin/python amusant-relay:oci-arm64-ci -c 'from opencc import OpenCC; assert OpenCC("s2twp.json").convert("没问题，我会回复你的。") == "沒問題，我會回覆你的。"'

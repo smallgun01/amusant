@@ -31,6 +31,7 @@ RUN groupadd --gid 10001 amusant \
 COPY --chown=root:root deploy/oci-a1/relay_entrypoint.py /opt/amusant/relay_entrypoint.py
 COPY --chown=root:root deploy/oci-a1/healthcheck.py /opt/amusant/healthcheck.py
 RUN chmod 0555 /opt/amusant/relay_entrypoint.py /opt/amusant/healthcheck.py
+RUN chmod -R a+rX /app/relay /app/fast_voice
 
 USER 10001:10001
 ENTRYPOINT ["/usr/local/bin/python", "/opt/amusant/relay_entrypoint.py"]

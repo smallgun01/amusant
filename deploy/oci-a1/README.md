@@ -1,5 +1,8 @@
 # OCI A1 offline deployment package — #85 B1/B2 merged (E1 GO only)
 
+> **2026-10-22 runtime status (#62):** Owner confirms GO 1 `READY_TO_COMPOSE_UP` (Docker/Compose, reboot-checked persistent mount, pulled digest-pinned ARM64 images, six file secrets, Hermes config, real preflight/Compose static PASS). The older SSH-only readiness section below records its original historical point in time. **GO 2 four-service startup, approved Codex OAuth and live backend E2E; GO 3 remote StickS3 E2E; and formal E3 remain pending.** Do not repeat GO 1 prep or infer authorization to deploy.
+
+
 [PR #87](https://github.com/smallgun01/amusant/pull/87) wires **Relay → authenticated Option D Facade → Hermes** with private Docker network isolation. [PR #90](https://github.com/smallgun01/amusant/pull/90) additionally proved the **integrated** Relay/Dispatcher/SQLite→Facade→pinned Hermes→Artifact/Inbox path with synthetic providers on a native ARM64 runner. Both are merged; [#85](https://github.com/smallgun01/amusant/issues/85) is closed as **E1 GO**. This does **not** establish OCI deployment, actual model/provider operation, production credentials, external device ingress, real cancellation or 1 OCPU performance.
 
 ## Host readiness is not a canary
