@@ -19,6 +19,7 @@ services:
       RELAY_BIND_IP: ${RELAY_BIND_IP:?set the static Relay IP on relay_api}
       RELAY_LISTEN_PORT: "8443"
       AMUSANT_LIVE_PROVIDER: gemini
+      AMUSANT_PERSONA_PROFILE: jellii
       AMUSANT_CLIENT_ID: ${AMUSANT_CLIENT_ID:?set the authenticated owner id}
       AMUSANT_BACKEND_ID: ${AMUSANT_BACKEND_ID:?set the approved backend id}
       AMUSANT_TASK_STORE: sqlite

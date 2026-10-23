@@ -1603,6 +1603,56 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
                 server.close()
                 await server.wait_closed()
 
+    async def test_spoken_handoff_restarts_timeout_after_slow_new_session_connect(self):
+        task_id = "4db5aabc-284a-4a01-8a6d-5cddcc7934f1"
+        marked = []
+
+        class Handler:
+            async def __call__(self, _event, _turn_id):
+                return {"status": "completed", "task_id": task_id, "speak": "Saved findings.", "speak_now": True}
+
+            async def mark_spoken(self, task_id_value):
+                marked.append(task_id_value)
+                return True
+
+        class DelayedSpokenProvider(FakeProvider):
+            async def connect(self):
+                await asyncio.sleep(0.12)
+                await super().connect()
+
+        tool_provider = FakeProvider(auto_complete=False)
+        spoken_provider = DelayedSpokenProvider(auto_complete=False)
+        server, ws = await self._open(
+            lambda: tool_provider,
+            slow_path_tool_handler=Handler(),
+            spoken_provider_factory=lambda: spoken_provider,
+            post_tool_ack_timeout_seconds=0.05,
+            post_tool_ack_max_duration_seconds=0.08,
+            spoken_ack_timeout_seconds=0.15,
+            spoken_ack_max_duration_seconds=0.4,
+        )
+        try:
+            await self._send_turn(ws)
+            await self._controls_until(ws, lambda item, _items: item.get("state") == "thinking")
+            await tool_provider.callbacks["tool"](
+                ToolCallEvent("lookup-delayed-speech", INBOX_TOOL_NAME, {"speak": True})
+            )
+            await tool_provider.callbacks["tool_batch_complete"]()
+            self.assertTrue(spoken_provider.connected)
+            self.assertEqual(len(spoken_provider.injected_text), 1)
+            await asyncio.sleep(0.02)
+            await spoken_provider.emit_response()
+            controls, audio_bytes = await self._controls_until(
+                ws, lambda item, _items: item.get("type") == "turn_complete"
+            )
+            self.assertGreater(audio_bytes, 0)
+            self.assertEqual(marked, [task_id])
+            self.assertFalse(any(item.get("title") == "Saved result available" for item in controls))
+        finally:
+            await ws.close()
+            server.close()
+            await server.wait_closed()
+
     async def test_interrupted_spoken_result_does_not_mark_spoken(self):
         spoken_calls = []
         class Handler:
@@ -1698,6 +1748,8 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
                     spoken_provider_factory=lambda: spoken_provider,
                     post_tool_ack_timeout_seconds=0.05,
                     post_tool_ack_max_duration_seconds=0.05,
+                    spoken_ack_timeout_seconds=0.05,
+                    spoken_ack_max_duration_seconds=0.05,
                 )
                 try:
                     await self._send_turn(ws)
@@ -1842,6 +1894,8 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
             spoken_provider_factory=lambda: spoken_provider,
             post_tool_ack_timeout_seconds=0.05,
             post_tool_ack_max_duration_seconds=0.1,
+            spoken_ack_timeout_seconds=0.05,
+            spoken_ack_max_duration_seconds=0.1,
         )
         try:
             await self._send_turn(ws)
@@ -1899,6 +1953,8 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
             spoken_provider_factory=lambda: spoken_provider,
             post_tool_ack_timeout_seconds=0.05,
             post_tool_ack_max_duration_seconds=0.1,
+            spoken_ack_timeout_seconds=0.05,
+            spoken_ack_max_duration_seconds=0.1,
         )
         try:
             await self._send_turn(ws)
