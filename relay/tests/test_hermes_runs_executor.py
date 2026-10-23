@@ -46,6 +46,7 @@ class HermesRunsExecutorTests(unittest.TestCase):
         run_deadline_at=None,
         next_poll_at=None,
         poll_attempts=0,
+        result_contract_version=1,
     ):
         now = datetime.now(timezone.utc)
         dispatch_started_at = dispatch_started_at or now.isoformat()
@@ -72,6 +73,7 @@ class HermesRunsExecutorTests(unittest.TestCase):
             run_deadline_at=run_deadline_at,
             next_poll_at=next_poll_at,
             poll_attempts=poll_attempts,
+            result_contract_version=result_contract_version,
         )
 
     def make_executor(self, request, saved, **kwargs):
@@ -130,6 +132,43 @@ class HermesRunsExecutorTests(unittest.TestCase):
         self.assertEqual(calls[0][3]["Idempotency-Key"], "task-01")
         self.assertEqual(calls[1][1], "/v1/runs/run-123")
         self.assertNotEqual(calls[0][3]["X-Hermes-Session-Key"], "client-a")
+
+    def test_v2_contract_is_sent_and_artifact_free_result_completes(self):
+        saved = []
+        calls = []
+        answer = json.dumps({
+            "schema_version": 2,
+            "speak": "I compared the options.",
+            "card": {"title": "Comparison", "lines": ["Option A costs less."]},
+            "execution_status": "completed",
+            "artifact_status": "none",
+            "presentation_status": "ready",
+            "artifact_ref": None,
+        })
+
+        def request(method, path, body, headers):
+            calls.append((method, path, body, headers))
+            if method == "POST":
+                return 200, {"run_id": "run-v2"}
+            return 200, {"status": "completed", "output": answer}
+
+        executor = self.make_executor(request, saved)
+        outcome = asyncio.run(executor.execute(self.make_task(result_contract_version=2)))
+        self.assertEqual(outcome.status, "completed")
+        self.assertEqual(outcome.result.artifact_status, "none")
+        self.assertIsNone(outcome.result.artifact_ref)
+        self.assertEqual([call[3]["X-Amusant-Result-Contract"] for call in calls], ["2", "2"])
+
+    def test_v2_invalid_presentation_does_not_rewrite_completed_execution(self):
+        executor = self.make_executor(
+            lambda method, *_args: (200, {"run_id": "run-v2"}) if method == "POST"
+            else (200, {"status": "completed", "output": "unbounded raw output"}),
+            [],
+        )
+        outcome = asyncio.run(executor.execute(self.make_task(result_contract_version=2)))
+        self.assertEqual(outcome.status, "completed")
+        self.assertEqual(outcome.result.presentation_status, "failed")
+        self.assertEqual(outcome.result.delivery_error, "presentation_invalid")
 
     def test_restart_resumes_known_run_id_without_resubmitting(self):
         calls = []
@@ -527,10 +566,23 @@ class HermesRunsExecutorTests(unittest.TestCase):
         }
         default_config = load_relay_process_config(common, expected_device_token="device-token-123")
         self.assertEqual(default_config.slow_executor_kind, "hermes_runs")
+        self.assertEqual(default_config.result_contract_version, 1)
         config = load_relay_process_config({**common, "AMUSANT_SLOW_EXECUTOR": "hermes_runs"}, expected_device_token="device-token-123")
         self.assertEqual(config.slow_executor_kind, "hermes_runs")
+        v2_config = load_relay_process_config({
+            **common,
+            "AMUSANT_SLOW_EXECUTOR": "hermes_runs",
+            "AMUSANT_RESULT_CONTRACT_VERSION": "2",
+        }, expected_device_token="device-token-123")
+        self.assertEqual(v2_config.result_contract_version, 2)
         legacy_config = load_relay_process_config({**common, "AMUSANT_SLOW_EXECUTOR": "openab_acp"}, expected_device_token="device-token-123")
         self.assertEqual(legacy_config.slow_executor_kind, "openab_acp")
+        with self.assertRaisesRegex(ValueError, "requires hermes_runs"):
+            load_relay_process_config({
+                **common,
+                "AMUSANT_SLOW_EXECUTOR": "openab_acp",
+                "AMUSANT_RESULT_CONTRACT_VERSION": "2",
+            }, expected_device_token="device-token-123")
         with self.assertRaises(ValueError):
             load_relay_process_config({**common, "AMUSANT_SLOW_EXECUTOR": "shell"}, expected_device_token="device-token-123")
 

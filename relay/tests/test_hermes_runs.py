@@ -878,12 +878,18 @@ class SQLiteHermesMappingTests(unittest.TestCase):
         self.assertEqual(row["executor_kind"], "openab_acp")
         self.assertIsNone(row["backend_run_id"])
         connection = sqlite3.connect(self.db)
-        self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 7)
+        self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 8)
         columns = {row[1] for row in connection.execute("PRAGMA table_info(slow_tasks)")}
         self.assertTrue({
             "run_started_at", "run_deadline_at", "next_poll_at", "poll_attempts",
             "stop_requested_at", "stop_reason", "stop_attempts", "stop_accepted_at",
+            "result_contract_version",
         } <= columns)
+        self.assertEqual(connection.execute(
+            "SELECT result_contract_version FROM slow_tasks WHERE task_id='legacy-task'"
+        ).fetchone()[0], 1)
+        result_columns = {row[1] for row in connection.execute("PRAGMA table_info(task_results)")}
+        self.assertTrue({"artifact_status", "artifact_ref", "presentation_status", "delivery_error"} <= result_columns)
         connection.close()
 
     def test_v5_known_run_migration_backfills_start_anchor_only(self):
@@ -922,13 +928,20 @@ class SQLiteHermesMappingTests(unittest.TestCase):
         store = self.store()
         row = store.get_by_task_id(task_id)
         self.assertEqual(row["run_started_at"], dispatch_started)
+        self.assertEqual(row["backend_run_id"], "run-legacy")
         self.assertIsNone(row["run_deadline_at"])
         self.assertIsNone(row["next_poll_at"])
         self.assertEqual(row["poll_attempts"], 0)
         self.assertIsNone(row["stop_requested_at"])
         self.assertEqual(row["stop_attempts"], 0)
         connection = sqlite3.connect(self.db)
-        self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 7)
+        self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 8)
+        self.assertEqual(connection.execute(
+            "SELECT result_contract_version FROM slow_tasks WHERE task_id=?", (task_id,)
+        ).fetchone()[0], 1)
+        self.assertIn("delivery_error", {
+            row[1] for row in connection.execute("PRAGMA table_info(task_results)")
+        })
         connection.close()
 
 

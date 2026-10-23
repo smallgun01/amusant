@@ -182,6 +182,19 @@ class FacadeRuntimeContractTests(unittest.TestCase):
         self.assertNotIn("private synthetic report", json.dumps(projected))
         return presentation, projected["output"]
 
+    def _v2_presentation(self):
+        return json.dumps({
+            "schema_version": 2,
+            "speak": "I compared the options.",
+            "card": {"title": "Comparison", "lines": ["Option A costs less."]},
+        }, separators=(",", ":"))
+
+    def _pin_v2(self, session=SESSION_ID):
+        with self.facade.connect() as conn:
+            conn.execute(
+                "UPDATE requests SET result_contract_version=2 WHERE session_id=?", (session,)
+            )
+
     def test_initialize_keeps_facade_state_private(self):
         if os.name != "posix":
             self.skipTest("POSIX file owner and mode checks")
@@ -190,6 +203,18 @@ class FacadeRuntimeContractTests(unittest.TestCase):
         self.assertEqual(Path(self.facade.DB_PATH).stat().st_uid, os.geteuid())
         self.assertEqual(Path(self.facade.DB_PATH).stat().st_mode & 0o777, 0o600)
         self.assertEqual(Path(self.facade.ARTIFACT_DIR).stat().st_mode & 0o777, 0o700)
+
+    def test_initialize_adds_writer_failure_state_to_legacy_request_schema(self):
+        with self.facade.connect() as conn:
+            conn.execute("ALTER TABLE requests DROP COLUMN writer_failure_code")
+
+        self.facade.initialize()
+
+        with self.facade.connect() as conn:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(requests)")}
+        self.assertIn("writer_failure_code", columns)
+        self.assertEqual(self.facade.request_by_session(SESSION_ID)["artifact_status"], "pending")
+        self.assertEqual(self.facade.request_by_session(SESSION_ID)["result_contract_version"], 1)
 
     def test_raw_runs_and_writer_routes_require_their_separate_credentials(self):
         code, _, _ = self._relay("GET", "/v1/runs/" + RUN_ID, key=None)
@@ -496,6 +521,276 @@ class FacadeRuntimeContractTests(unittest.TestCase):
                         "UPDATE requests SET artifact_status='committed' WHERE owner_scope=? AND task_id=?",
                         (owner_scope, "task-runtime-smoke"),
                     )
+
+    def test_v2_answer_without_writer_attempt_is_bound_and_replays_without_artifact(self):
+        self._pin_v2()
+        presentation = self._v2_presentation()
+        code, projected, _ = self._writer(
+            "POST", "/internal/v1/presentation", {"presentation": presentation}
+        )
+        self.assertEqual(code, 200, projected)
+        envelope = json.loads(projected["output"])
+        self.assertEqual(envelope["schema_version"], 2)
+        self.assertEqual(envelope["artifact_status"], "none")
+        self.assertIsNone(envelope["artifact_ref"])
+
+        self.upstream.return_value = (
+            200, {"status": "completed", "output": projected["output"]}, None,
+            len(projected["output"].encode("utf-8")),
+        )
+        headers = {"X-Amusant-Result-Contract": "2"}
+        code, result, _ = self._relay("GET", "/v1/runs/" + RUN_ID, extra_headers=headers)
+        self.assertEqual(code, 200, result)
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(json.loads(result["output"])["artifact_status"], "none")
+        self.assertEqual(self.facade.request_by_session(SESSION_ID)["writer_call_count"], 0)
+        with self.facade.connect() as conn:
+            repair = conn.execute(
+                "SELECT * FROM presentation_repairs WHERE session_hash=?",
+                (hashlib.sha256(SESSION_ID.encode()).hexdigest(),),
+            ).fetchone()
+        self.assertIsNotNone(repair)
+        self.assertEqual(repair["binding_sha256"], hashlib.sha256(
+            "\0".join((self.facade.owner_scope_from_header(OWNER_SESSION_KEY), "task-runtime-smoke", SESSION_ID, RUN_ID)).encode()
+        ).hexdigest())
+
+    def test_inflight_v1_run_remains_v1_under_v2_capable_facade(self):
+        row = self.facade.request_by_session(SESSION_ID)
+        self.assertEqual(row["result_contract_version"], 1)
+        _presentation, projected_output = self._commit_and_project()
+        self.assertEqual(json.loads(projected_output)["schema_version"], 1)
+        self.upstream.return_value = (
+            200, {"status": "completed", "output": projected_output}, None,
+            len(projected_output.encode("utf-8")),
+        )
+
+        # A compatible Facade must still accept the old v1 client without a
+        # result-contract header and preserve the in-flight request's pin.
+        code, result, _ = self._relay("GET", "/v1/runs/" + RUN_ID)
+        self.assertEqual(code, 200, result)
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(json.loads(result["output"])["schema_version"], 1)
+        self.assertEqual(self.facade.request_by_session(SESSION_ID)["result_contract_version"], 1)
+
+    def test_v2_report_commit_preserves_ref_and_failed_writer_is_not_none(self):
+        self._pin_v2()
+        code, committed, _ = self._writer(
+            "POST", "/internal/v1/artifacts", {"report": "private v2 report"}
+        )
+        self.assertEqual(code, 200, committed)
+        code, projected, _ = self._writer(
+            "POST", "/internal/v1/presentation", {"presentation": self._v2_presentation()}
+        )
+        self.assertEqual(code, 200, projected)
+        envelope = json.loads(projected["output"])
+        self.assertEqual(envelope["artifact_status"], "committed")
+        reference = envelope["artifact_ref"]
+        self.assertIsNotNone(reference)
+
+        self.upstream.return_value = (200, {"status": "completed", "output": projected["output"]}, None, 0)
+        code, result, _ = self._relay(
+            "GET", "/v1/runs/" + RUN_ID,
+            extra_headers={"X-Amusant-Result-Contract": "2"},
+        )
+        self.assertEqual(code, 200)
+        self.assertEqual(json.loads(result["output"])["artifact_ref"], reference)
+
+        other_session = "amusant-session-v2-failure-1234567890"
+        self._seed_request(other_session, "task-v2-failure", "run_v2_failure")
+        self._pin_v2(other_session)
+        code, failed_attempt, _ = self._writer(
+            "POST", "/internal/v1/artifact-attempt",
+            {"code": "artifact_attempt_invalid"}, session=other_session,
+        )
+        self.assertEqual(code, 400)
+        self.assertEqual(failed_attempt["error"]["code"], "artifact_attempt_invalid")
+        code, failure_projection, _ = self._writer(
+            "POST", "/internal/v1/presentation", {"presentation": self._v2_presentation()},
+            session=other_session,
+        )
+        self.assertEqual(code, 200)
+        failed_envelope = json.loads(failure_projection["output"])
+        self.assertEqual(failed_envelope["artifact_status"], "failed")
+        self.assertEqual(failed_envelope["presentation_status"], "failed")
+        self.assertIsNone(failed_envelope["artifact_ref"])
+        self.assertNotIn("private", failed_envelope["speak"].lower())
+
+        committed_session = "amusant-session-v2-committed-conflict-1234567890"
+        self._seed_request(committed_session, "task-v2-committed-conflict", "run_v2_committed_conflict")
+        self._pin_v2(committed_session)
+        code, committed, _ = self._writer(
+            "POST", "/internal/v1/artifacts", {"report": "preserved committed report"},
+            session=committed_session,
+        )
+        self.assertEqual(code, 200, committed)
+        committed_ref = self.facade.request_by_session(committed_session)["artifact_ref"]
+        code, conflict, _ = self._writer(
+            "POST", "/internal/v1/artifacts", {"report": "conflicting report"},
+            session=committed_session,
+        )
+        self.assertEqual(code, 409, conflict)
+        code, projected_after_conflict, _ = self._writer(
+            "POST", "/internal/v1/presentation", {"presentation": self._v2_presentation()},
+            session=committed_session,
+        )
+        self.assertEqual(code, 200, projected_after_conflict)
+        preserved = json.loads(projected_after_conflict["output"])
+        self.assertEqual(preserved["artifact_status"], "committed")
+        self.assertEqual(preserved["artifact_ref"], committed_ref)
+        self.assertEqual(preserved["presentation_status"], "failed")
+
+    def test_later_invalid_save_report_keeps_committed_ref_and_signals_failure_on_repeat_get(self):
+        plugin = sys.modules["hermes_plugin"]
+        cases = (
+            (
+                "amusant-session-v2-invalid-after-commit-123456",
+                "task-v2-invalid-after-commit", "run_v2_invalid_after_commit",
+                {"report": ""}, "artifact_attempt_invalid", "report_invalid",
+            ),
+            (
+                "amusant-session-v2-overcap-after-commit-123456",
+                "task-v2-overcap-after-commit", "run_v2_overcap_after_commit",
+                {"report": "x" * (self.facade.MAX_REPORT_BYTES + 1)},
+                "artifact_attempt_over_cap", "report_over_cap",
+            ),
+        )
+        for session, task_id, run_id, invalid_args, failure_code, plugin_error in cases:
+            with self.subTest(failure_code=failure_code):
+                self._seed_request(session, task_id, run_id)
+                self._pin_v2(session)
+                code, committed, _ = self._writer(
+                    "POST", "/internal/v1/artifacts", {"report": "previously committed private report"},
+                    session=session,
+                )
+                self.assertEqual(code, 200, committed)
+                original_ref = self.facade.request_by_session(session)["artifact_ref"]
+
+                def writer_request(path, session_id, body):
+                    status, payload, _ = self._writer("POST", path, body, session=session_id)
+                    return status, payload
+
+                with patch.object(plugin, "_writer_request", side_effect=writer_request):
+                    saved = json.loads(plugin.save_report(invalid_args, session_id=session))
+                self.assertEqual(saved["error"], plugin_error)
+                row = self.facade.request_by_session(session)
+                self.assertEqual(row["artifact_status"], "committed")
+                self.assertEqual(row["artifact_ref"], original_ref)
+                self.assertEqual(row["writer_failure_code"], failure_code)
+
+                code, projected, _ = self._writer(
+                    "POST", "/internal/v1/presentation", {"presentation": self._v2_presentation()},
+                    session=session,
+                )
+                self.assertEqual(code, 200, projected)
+                hook_envelope = json.loads(projected["output"])
+                self.assertEqual(hook_envelope["artifact_status"], "committed")
+                self.assertEqual(hook_envelope["artifact_ref"], original_ref)
+                self.assertEqual(hook_envelope["presentation_status"], "failed")
+
+                self.upstream.return_value = (
+                    200, {"status": "completed", "output": projected["output"]}, None,
+                    len(projected["output"].encode("utf-8")),
+                )
+                headers = {"X-Amusant-Result-Contract": "2"}
+                code, first_get, _ = self._relay(
+                    "GET", "/v1/runs/" + run_id, session=session, extra_headers=headers,
+                )
+                self.assertEqual(code, 200, first_get)
+                safe = json.loads(first_get["output"])
+                self.assertEqual(safe["artifact_status"], "committed")
+                self.assertEqual(safe["artifact_ref"], original_ref)
+                self.assertEqual(safe["presentation_status"], "failed")
+                self.assertNotIn("previously committed private report", first_get["output"])
+
+                code, replay, _ = self._relay(
+                    "GET", "/v1/runs/" + run_id, session=session, extra_headers=headers,
+                )
+                self.assertEqual(code, 200, replay)
+                self.assertEqual(replay["output"], first_get["output"])
+
+    def test_v2_get_refreshes_request_after_writer_commits_during_upstream_fetch(self):
+        self._pin_v2()
+        before = self.facade.request_by_session(SESSION_ID)
+        self.assertEqual(before["artifact_status"], "pending")
+        state = {}
+
+        def upstream(method, *_args, **_kwargs):
+            self.assertEqual(method, "GET")
+            code, committed, _ = self._writer(
+                "POST", "/internal/v1/artifacts", {"report": "race committed report"}
+            )
+            self.assertEqual(code, 200, committed)
+            code, projected, _ = self._writer(
+                "POST", "/internal/v1/presentation", {"presentation": self._v2_presentation()}
+            )
+            self.assertEqual(code, 200, projected)
+            state["output"] = projected["output"]
+            state["reference"] = self.facade.request_by_session(SESSION_ID)["artifact_ref"]
+            return 200, {"status": "completed", "output": projected["output"]}, None, 0
+
+        self.upstream.side_effect = upstream
+        code, result, _ = self._relay(
+            "GET", "/v1/runs/" + RUN_ID,
+            extra_headers={"X-Amusant-Result-Contract": "2"},
+        )
+        self.assertEqual(code, 200, result)
+        envelope = json.loads(result["output"])
+        self.assertEqual(envelope["artifact_status"], "committed")
+        self.assertEqual(envelope["artifact_ref"], state["reference"])
+        self.assertEqual(envelope["presentation_status"], "ready")
+
+    def test_v2_flood_output_returns_bounded_delivery_error_and_pins_digests(self):
+        session = "amusant-session-v2-flood-1234567890"
+        task_id = "task-v2-flood"
+        run_id = "run_v2_flood"
+        self._seed_request(session, task_id, run_id)
+        self._pin_v2(session)
+        raw = "x" * 500_000
+        self.upstream.return_value = (200, {"status": "completed", "output": raw}, None, len(raw))
+        code, result, _ = self._relay(
+            "GET", "/v1/runs/" + run_id,
+            session=session,
+            extra_headers={"X-Amusant-Result-Contract": "2"},
+        )
+        self.assertEqual(code, 200)
+        output = result["output"]
+        self.assertLessEqual(len(output.encode("utf-8")), self.facade.MAX_ENVELOPE_BYTES)
+        self.assertNotIn(raw, output)
+        failure = json.loads(output)
+        self.assertEqual(failure["execution_status"], "completed")
+        self.assertEqual(failure["presentation_status"], "failed")
+        with self.facade.connect() as conn:
+            repair = conn.execute(
+                "SELECT source_sha256,output_sha256 FROM presentation_repairs WHERE session_hash=?",
+                (hashlib.sha256(session.encode()).hexdigest(),),
+            ).fetchone()
+        self.assertEqual(repair["source_sha256"], hashlib.sha256(raw.encode()).hexdigest())
+        self.assertEqual(repair["output_sha256"], hashlib.sha256(output.encode()).hexdigest())
+
+    def test_result_contract_version_is_pinned_at_first_submit_and_retry(self):
+        task_id = "task-result-contract-pin"
+        run_id = "run_result_contract_pin"
+        self.upstream.return_value = (202, {"run_id": run_id}, None, 0)
+        headers = {
+            "Idempotency-Key": task_id,
+            "X-Amusant-Result-Contract": "2",
+        }
+        code, submitted, _ = self._relay("POST", "/v1/runs", {"input": "fixture"}, extra_headers=headers)
+        self.assertEqual(code, 202, submitted)
+        row = self.facade.request_by_owner_task(
+            self.facade.owner_scope_from_header(OWNER_SESSION_KEY), task_id
+        )
+        self.assertEqual(row["result_contract_version"], 2)
+        self.assertEqual(row["run_id"], run_id)
+
+        code, retry, _ = self._relay("POST", "/v1/runs", {"input": "fixture"}, extra_headers=headers)
+        self.assertEqual(code, 200, retry)
+        self.assertEqual(retry["run_id"], run_id)
+        mismatch = {**headers, "X-Amusant-Result-Contract": "1"}
+        code, rejected, _ = self._relay("POST", "/v1/runs", {"input": "fixture"}, extra_headers=mismatch)
+        self.assertEqual(code, 409)
+        self.assertEqual(rejected["error"]["code"], "idempotency_conflict")
+        self.upstream.assert_called_once()
 
 
 if __name__ == "__main__":

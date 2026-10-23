@@ -15,7 +15,7 @@ from typing import Any, Callable
 from urllib.parse import quote, urlparse
 
 from .dispatcher import ExecutionOutcome
-from .hermes_result import build_hermes_run_prompt, parse_hermes_run_result
+from .hermes_result import build_hermes_run_prompt, parse_hermes_run_result, v2_delivery_failure
 from .task_store import ClaimedTask
 
 MAX_RESPONSE_BYTES = 1024 * 1024
@@ -211,6 +211,7 @@ class HermesRunsExecutor:
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "X-Hermes-Session-Key": self._session_key(task.client_id),
+            "X-Amusant-Result-Contract": str(getattr(task, "result_contract_version", 1)),
             "Accept": "application/json",
         }
         now = self._clock()
@@ -338,13 +339,22 @@ class HermesRunsExecutor:
                 # The API has confirmed a terminal remote Run. Invalid output is
                 # a local result failure, not evidence of possible remote activity.
                 if payload.get("partial") is True or payload.get("interrupted") is True:
+                    if getattr(task, "result_contract_version", 1) == 2:
+                        return ExecutionOutcome(status="completed", result=v2_delivery_failure("presentation_failed"))
                     return ExecutionOutcome(status="failed", code="hermes_invalid_result")
                 output = _extract_output(payload)
                 if output is None:
+                    if getattr(task, "result_contract_version", 1) == 2:
+                        return ExecutionOutcome(status="completed", result=v2_delivery_failure("presentation_missing"))
                     return ExecutionOutcome(status="failed", code="hermes_invalid_result")
                 try:
-                    result = parse_hermes_run_result(output)
+                    result = parse_hermes_run_result(
+                        output,
+                        expected_version=getattr(task, "result_contract_version", 1),
+                    )
                 except ValueError:
+                    if getattr(task, "result_contract_version", 1) == 2:
+                        return ExecutionOutcome(status="completed", result=v2_delivery_failure("presentation_invalid"))
                     return ExecutionOutcome(status="failed", code="hermes_invalid_result")
                 return ExecutionOutcome(status="completed", result=result)
             if state in _TERMINAL_FAILURE:
@@ -507,13 +517,22 @@ class HermesRunsExecutor:
                 # terminal but not speakable; Dispatcher records failed and frees
                 # the slot without storing or reading the untrusted payload.
                 if payload.get("partial") is True or payload.get("interrupted") is True:
+                    if getattr(task, "result_contract_version", 1) == 2:
+                        return ExecutionOutcome(status="completed", result=v2_delivery_failure("presentation_failed"))
                     return ExecutionOutcome(status="failed", code="hermes_invalid_result")
                 output = _extract_output(payload)
                 if output is None:
+                    if getattr(task, "result_contract_version", 1) == 2:
+                        return ExecutionOutcome(status="completed", result=v2_delivery_failure("presentation_missing"))
                     return ExecutionOutcome(status="failed", code="hermes_invalid_result")
                 try:
-                    result = parse_hermes_run_result(output)
+                    result = parse_hermes_run_result(
+                        output,
+                        expected_version=getattr(task, "result_contract_version", 1),
+                    )
                 except ValueError:
+                    if getattr(task, "result_contract_version", 1) == 2:
+                        return ExecutionOutcome(status="completed", result=v2_delivery_failure("presentation_invalid"))
                     return ExecutionOutcome(status="failed", code="hermes_invalid_result")
                 return ExecutionOutcome(status="completed", result=result)
             if state in _TERMINAL_FAILURE:

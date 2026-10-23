@@ -46,6 +46,7 @@ MAX_PENDING_TASKS_ENV = "AMUSANT_MAX_PENDING_TASKS"
 ACCEPTANCE_TIMEOUT_ENV = "AMUSANT_ACCEPTANCE_TIMEOUT_SECONDS"
 DISPATCHER_POLL_INTERVAL_ENV = "AMUSANT_DISPATCHER_POLL_INTERVAL_SECONDS"
 SLOW_EXECUTOR_ENV = "AMUSANT_SLOW_EXECUTOR"
+RESULT_CONTRACT_VERSION_ENV = "AMUSANT_RESULT_CONTRACT_VERSION"
 # Product default: Hermes Native Runs. OpenAB ACP is an explicit legacy/rollback choice.
 DEFAULT_SLOW_EXECUTOR = "hermes_runs"
 DEFAULT_TASK_KIND = "research"
@@ -70,6 +71,7 @@ class RelayProcessConfig:
     acceptance_timeout_seconds: float
     dispatcher_poll_interval_seconds: float
     slow_executor_kind: str
+    result_contract_version: int = 1
 
 
 def _require_env(environ: Mapping[str, str], name: str) -> str:
@@ -126,6 +128,11 @@ def load_relay_process_config(
     slow_executor_kind = (environ.get(SLOW_EXECUTOR_ENV) or DEFAULT_SLOW_EXECUTOR).strip().lower() or DEFAULT_SLOW_EXECUTOR
     if slow_executor_kind not in {"openab_acp", "hermes_runs"}:
         raise ValueError(f"{SLOW_EXECUTOR_ENV} must be openab_acp or hermes_runs")
+    result_contract_version = _optional_positive_int(environ, RESULT_CONTRACT_VERSION_ENV, 1)
+    if result_contract_version not in {1, 2}:
+        raise ValueError(f"{RESULT_CONTRACT_VERSION_ENV} must be 1 or 2")
+    if result_contract_version == 2 and slow_executor_kind != "hermes_runs":
+        raise ValueError(f"{RESULT_CONTRACT_VERSION_ENV}=2 requires hermes_runs")
     store_kind = (environ.get(TASK_STORE_ENV) or "sqlite").strip().lower() or "sqlite"
     if store_kind not in {"sqlite", "dynamodb"}:
         raise ValueError("AMUSANT_TASK_STORE must be sqlite or dynamodb")
@@ -166,6 +173,7 @@ def load_relay_process_config(
         ),
         dispatcher_poll_interval_seconds=dispatcher_poll,
         slow_executor_kind=slow_executor_kind,
+        result_contract_version=result_contract_version,
     )
 
 
@@ -186,6 +194,7 @@ def build_relay_handler(
     post_tool_ack_timeout_seconds: float = POST_TOOL_ACK_TIMEOUT_SECONDS,
     post_tool_ack_max_duration_seconds: float = POST_TOOL_ACK_MAX_DURATION_SECONDS,
     executor_kind: str = DEFAULT_SLOW_EXECUTOR,
+    result_contract_version: int = 1,
 ):
     """Compose Live tool declaration + per-authenticated-session admission.
 
@@ -242,6 +251,7 @@ def build_relay_handler(
             acceptance_timeout_seconds=acceptance_timeout_seconds,
             on_admitted=on_admitted,
             executor_kind=executor_kind,
+            result_contract_version=result_contract_version,
         )
 
     return make_handler(
@@ -327,6 +337,7 @@ def build_supported_relay_runtime(
         acceptance_timeout_seconds=config.acceptance_timeout_seconds,
         on_admitted=None if dispatcher is None else dispatcher.notify,
         executor_kind=config.slow_executor_kind,
+        result_contract_version=config.result_contract_version,
         client_factory=client_factory,
         sdk_types=sdk_types,
         conversation_id_factory=conversation_id_factory,

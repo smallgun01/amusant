@@ -32,7 +32,7 @@ class SlowStore:
         return self.inner.admit(request)
 
 
-def make_router(store, *, timeout=1.0, task_id=TASK_ID, client_id=CLIENT, conversation_id=CONVERSATION, on_admitted=None):
+def make_router(store, *, timeout=1.0, task_id=TASK_ID, client_id=CLIENT, conversation_id=CONVERSATION, on_admitted=None, result_contract_version=1, executor_kind="openab_acp"):
     return SlowPathToolRouter(
         store=store,
         client_id=client_id,
@@ -44,6 +44,8 @@ def make_router(store, *, timeout=1.0, task_id=TASK_ID, client_id=CLIENT, conver
         now=lambda: NOW,
         new_task_id=lambda: task_id,
         on_admitted=on_admitted,
+        result_contract_version=result_contract_version,
+        executor_kind=executor_kind,
     )
 
 
@@ -427,6 +429,20 @@ class SingleFlightSlowPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(accepted["status"], "accepted")
         self.assertEqual(claimed.backend_run_id, None)
         self.assertEqual(store.get_by_task_id(TASK_ID)["backend_run_id"], "run-ddb-slot")
+
+    async def test_server_configured_result_version_is_admitted_and_persisted(self):
+        ledger = InMemoryDynamoLedger()
+        store = DynamoDbTaskStore(ledger, client_id=CLIENT, max_pending_tasks=8)
+        router = make_router(
+            store, result_contract_version=2, executor_kind="hermes_runs", task_id=TASK_ID
+        )
+        accepted = await router(
+            ToolCallEvent("versioned-call", "delegate_task", {"task": "Summarize fixture"}), 12
+        )
+        self.assertEqual(accepted["status"], "accepted")
+        task = ledger.get_item(CLIENT, "TASK#" + TASK_ID, consistent=True)
+        self.assertEqual(task["result_contract_version"], 2)
+        self.assertEqual(store.claim_due(now=NOW, lease_seconds=30)[0].result_contract_version, 2)
 
 
 class CheckTaskStatusDescriptionTests(unittest.TestCase):

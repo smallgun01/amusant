@@ -8,6 +8,7 @@ from unittest.mock import patch
 from fast_voice.contracts import ToolCallEvent
 from relay.application import build_supported_relay_handler
 from relay.dispatcher import AsyncDispatcher, ExecutionOutcome
+from relay.hermes_runs_executor import HermesRunsExecutor
 from relay.slow_path import INBOX_TOOL_NAME, SlowPathToolRouter, build_relay_tools
 from relay.task_store import BoundedTaskResult, SQLiteTaskStore, TaskAdmissionRequest
 
@@ -58,6 +59,7 @@ def request_for(
     created=NOW,
     ttl=600,
     executor_kind="openab_acp",
+    result_contract_version=1,
 ):
     return TaskAdmissionRequest(
         task_id=task_id,
@@ -71,6 +73,7 @@ def request_for(
         created_at=created,
         expires_at=created + timedelta(seconds=ttl),
         executor_kind=executor_kind,
+        result_contract_version=result_contract_version,
     )
 
 
@@ -136,6 +139,70 @@ class InboxTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(store.get_inbox(TASK_ID)["delivery_state"], "read")
         self.assertTrue(await router.mark_spoken(TASK_ID))
         self.assertEqual(store.get_inbox(TASK_ID)["delivery_state"], "spoken")
+
+    async def test_invalid_or_missing_v2_output_stays_completed_but_readback_flags_delivery_failure(self):
+        store = self.store()
+        cases = (
+            (TASK_ID, "invalid", "x" * 500_000, "presentation_invalid"),
+            (TASK_ID_2, "missing", None, "presentation_missing"),
+        )
+        router = make_router(store)
+        for task_id, label, output, expected_error in cases:
+            with self.subTest(output=label):
+                store.admit(request_for(
+                    task_id,
+                    turn_id=1 if task_id == TASK_ID else 2,
+                    call_id="call-v2-" + label,
+                    executor_kind="hermes_runs",
+                    result_contract_version=2,
+                ))
+
+                def request_json(method, _path, _body, _headers):
+                    if method == "POST":
+                        return 200, {"run_id": "run-v2-" + label}
+                    payload = {"status": "completed"}
+                    if output is not None:
+                        payload["output"] = output
+                    return 200, payload
+
+                executor = HermesRunsExecutor(
+                    url="http://127.0.0.1:8642",
+                    api_key="local-test-api-key-123",
+                    save_backend_run_id=lambda *_args, **_kwargs: None,
+                    update_poll_state=lambda *_args, **_kwargs: None,
+                    run_deadline_seconds=60.0,
+                    poll_cycle_seconds=0.01,
+                    http_timeout_seconds=0.05,
+                    poll_interval_seconds=0.001,
+                    update_stop_state=lambda *_args, **_kwargs: None,
+                    stop_grace_seconds=2.0,
+                    stop_max_attempts=3,
+                    stop_retry_base_seconds=0.001,
+                    stop_retry_max_seconds=0.01,
+                    request_json=request_json,
+                    clock=lambda: NOW,
+                )
+                await AsyncDispatcher(store, executor, now=lambda: NOW).dispatch_available()
+
+                status = await router(ToolCallEvent(
+                    "lookup-v2-" + label, INBOX_TOOL_NAME, {"task_id": task_id},
+                ), 3)
+                self.assertEqual(status["status"], "completed")
+                self.assertEqual(status["result_delivery_status"], "failed")
+                self.assertEqual(status["result_delivery_error"], expected_error)
+                self.assertEqual(status["speak"], "The task finished, but result delivery needs recovery.")
+                self.assertNotIn("x" * 1024, str(status))
+
+                readback = await router(ToolCallEvent(
+                    "readback-v2-" + label, INBOX_TOOL_NAME,
+                    {"task_id": task_id, "speak": True},
+                ), 4)
+                self.assertTrue(readback["speak_now"])
+                self.assertEqual(readback["result_delivery_status"], "failed")
+                self.assertEqual(readback["result_delivery_error"], expected_error)
+                self.assertEqual(readback["delivery_state"], "read")
+                self.assertTrue(await router.mark_spoken(task_id))
+                self.assertEqual(store.get_inbox(task_id)["delivery_state"], "spoken")
         self.assertTrue(await router.mark_spoken(TASK_ID))
         self.assertEqual(store.get_inbox(TASK_ID)["delivery_state"], "spoken")
 
