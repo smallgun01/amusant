@@ -2,7 +2,11 @@
 
 > **Evidence tier: owner-reported host SSH bootstrap, NOT E3 or OCI runtime readiness.** This is an operator handoff for [#62](https://github.com/smallgun01/amusant/issues/62). It does not authorize installing packages, changing cloud/host networking, adding sudo or Docker access, configuring credentials, starting containers, exposing ports, touching AWS resources or calling paid providers. [SPEC](../../SPEC.md), [ADR-0003](../../docs/adr/0003-oci-a1-hermes-sqlite.md) and [STATUS](../../STATUS.md) remain authoritative.
 
-## What is known, and the limit of each observation
+## Historical 2026-10-21 host-access snapshot
+
+The runtime-state observations in the table below are historical and superseded by the owner's [2026-10-22 #62 live evidence](https://github.com/smallgun01/amusant/issues/62#issuecomment-6344705541) and the 2026-10-23 reconciliation documented in [Draft PR #106](https://github.com/smallgun01/amusant/pull/106). That update records a functional four-service backend and physical FAST test through a temporary private SSH forward; the physical Slow path was not accepted and ended with no result. This does not establish formal E3/E4 acceptance or public ingress. The G1 TCP/443 systemd path remains **proposed and uninstalled**.
+
+## What was known at that snapshot, and the limit of each observation
 
 | Evidence source | Observation | What it does NOT prove |
 | --- | --- | --- |
@@ -13,7 +17,7 @@
 
 **Privacy and security:** Do not commit public IPs, client source IPs, private keys, credential filenames/contents, tokens, PoP, public endpoint details or machine-specific `.env` values. SSH public keys may be distributed through an operator-approved channel, not embedded in this repository. Preserve both Owner and Agent access while applying access controls.
 
-## Proposed read-only H2 inventory (requires explicit Owner instruction)
+## Historical proposed read-only H2 inventory (requires explicit Owner instruction)
 
 Only run the following after the Owner delegates this scoped inventory; editing or reading this document is **not** permission to log in or execute commands. From N100, use the **existing dedicated Agent SSH key** and the existing remote unprivileged account; never ask OpenClaw to print or transfer the key. Confirm which Unix/service or container identity actually launches OpenClaw and what SSH config it can access. A successful human-terminal `ssh` is not proof of an agent tool permission; the owner's one-time OpenClaw BatchMode smoke did pass.
 
@@ -50,4 +54,3 @@ Also inspect **read-only** current container/service presence, mount availabilit
 - [Current application status](../../STATUS.md) · [Execution order](../../PLAN.md) · [WS1–WS4](../../docs/project-management/workstreams.md)
 - [OCI deployment package](README.md) · [SQLite operations](SQLITE-OPERATIONS.md) · [ADR-0003](../../docs/adr/0003-oci-a1-hermes-sqlite.md)
 - [#62 host/canary](https://github.com/smallgun01/amusant/issues/62) · [#27 ingress](https://github.com/smallgun01/amusant/issues/27) · [#46 S1](https://github.com/smallgun01/amusant/issues/46) · [#56 result policy](https://github.com/smallgun01/amusant/issues/56) · [#58 timing/STOP](https://github.com/smallgun01/amusant/issues/58)
-

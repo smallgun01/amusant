@@ -140,7 +140,7 @@ def write_synthetic_env(path: Path, gateway: str) -> None:
         "HERMES_EGRESS_IP": "172.30.65.2",
         "EGRESS_PROXY_HERMES_BIND_IP": "172.30.65.3",
         "RELAY_HOST_PRIVATE_IP": gateway,
-        "RELAY_PUBLISH_PORT": "443",
+        "RELAY_PUBLISH_PORT": "8443",
     }
     path.write_text("".join(f"{name}={value}\n" for name, value in values.items()), encoding="utf-8")
     path.chmod(0o600)
@@ -303,4 +303,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

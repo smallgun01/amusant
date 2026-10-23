@@ -33,7 +33,7 @@ def valid_values():
         "HERMES_EGRESS_IP": "172.30.65.2",
         "EGRESS_PROXY_HERMES_BIND_IP": "172.30.65.3",
         "RELAY_HOST_PRIVATE_IP": "10.0.0.10",
-        "RELAY_PUBLISH_PORT": "443",
+        "RELAY_PUBLISH_PORT": "8443",
     }
 
 
@@ -63,11 +63,16 @@ class DeviceIngressUnitTests(unittest.TestCase):
         self.assertNotIn("synthetic-secret-marker", rendered)
         self.assertNotIn("another-synthetic-marker", rendered)
 
-    def test_only_raw_tls_psk_port_443_is_accepted(self):
+    def test_legacy_compose_port_does_not_change_fixed_ingress_port(self):
         values = valid_values()
         values["RELAY_PUBLISH_PORT"] = "8443"
-        with self.assertRaisesRegex(ValueError, "must be 443"):
-            render(values)
+        units = render(values)
+        self.assertIn("ListenStream=10.0.0.10:443", units["amusant-device-ingress.socket"])
+        self.assertIn("172.30.62.2:8443", units["amusant-device-ingress.service"])
+
+        values.pop("RELAY_PUBLISH_PORT")
+        units = render(values)
+        self.assertIn("ListenStream=10.0.0.10:443", units["amusant-device-ingress.socket"])
 
     def test_upstream_must_be_the_relay_address_on_the_relay_api_network(self):
         values = valid_values()
@@ -107,4 +112,3 @@ class DeviceIngressUnitTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

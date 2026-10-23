@@ -49,7 +49,7 @@ def valid_values():
         "HERMES_EGRESS_IP": "172.30.65.2",
         "EGRESS_PROXY_HERMES_BIND_IP": "172.30.65.3",
         "RELAY_HOST_PRIVATE_IP": "10.0.0.10",
-        "RELAY_PUBLISH_PORT": "443",
+        "RELAY_PUBLISH_PORT": "8443",
     }
 
 
@@ -145,8 +145,10 @@ class OfflinePackageTests(unittest.TestCase):
             preflight.validate({**values, "FACADE_IMAGE": "facade:latest"})
         with self.assertRaisesRegex(preflight.PreflightError, "RFC1918 IPv4"):
             preflight.validate({**values, "RELAY_HOST_PRIVATE_IP": "169.254.169.254"})
-        with self.assertRaisesRegex(preflight.PreflightError, "must be 443"):
-            preflight.validate({**values, "RELAY_PUBLISH_PORT": "8443"})
+        preflight.validate({**values, "RELAY_PUBLISH_PORT": "8443"})
+        preflight.validate({name: value for name, value in values.items() if name != "RELAY_PUBLISH_PORT"})
+        with self.assertRaisesRegex(preflight.PreflightError, "valid legacy TCP port"):
+            preflight.validate({**values, "RELAY_PUBLISH_PORT": "70000"})
         with self.assertRaisesRegex(preflight.PreflightError, "must not overlap"):
             preflight.validate({**values, "HERMES_API_CIDR": "172.30.62.0/29"})
         with self.assertRaisesRegex(preflight.PreflightError, "RFC1918 IPv4 subnet"):
@@ -176,4 +178,3 @@ class OfflinePackageTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
