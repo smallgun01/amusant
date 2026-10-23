@@ -2,6 +2,7 @@ name: Issue 27 G1 private ingress PoC
 
 on:
   pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
     paths:
       - .github/workflows/issue-27-g1-offline.yml
       - deploy/oci-a1/**
@@ -19,6 +20,7 @@ concurrency:
 
 jobs:
   private-ingress-isolation:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     name: Docker isolation and systemd TCP ingress (synthetic only)
     runs-on: ubuntu-24.04
     timeout-minutes: 35

@@ -2,6 +2,7 @@ name: Jellii CJK host and StickS3 firmware build
 
 on:
   pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
     paths:
       - ".github/workflows/jellii-cjk-build.yml"
       - "patches/kai-v0.12.0-cjk-display/**"
@@ -13,6 +14,7 @@ permissions:
 
 jobs:
   cjk-patch-and-firmware:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:

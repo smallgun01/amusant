@@ -2,6 +2,7 @@ name: StickS3 W1.5 BLE + production CJK + W2b-1 + W2b-QR optical experiment
 
 on:
   pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
     paths:
       - ".github/workflows/sticks3-w15-cjk-integration.yml"
       - "patches/sticks3-w15-cjk/**"
@@ -17,6 +18,7 @@ permissions:
 
 jobs:
   integrate-and-build:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-24.04
     timeout-minutes: 55
     steps:
