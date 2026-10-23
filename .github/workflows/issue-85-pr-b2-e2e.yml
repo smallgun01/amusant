@@ -2,6 +2,7 @@ name: Issue #85 PR-B2 E2E
 
 on:
   pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
     branches:
       - main
     paths:
@@ -46,6 +47,7 @@ concurrency:
 
 jobs:
   relay-facade-hermes-e2e:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     name: Relay to Facade to Hermes offline E2E (native ARM64)
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 90
