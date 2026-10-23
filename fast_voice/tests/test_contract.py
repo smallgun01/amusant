@@ -180,9 +180,27 @@ class GeminiAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(session.calls[1]["activity_start"], FakeTypes.ActivityStart)
         self.assertIsInstance(session.calls[2]["activity_end"], FakeTypes.ActivityEnd)
         self.assertEqual(len(session.calls), 3)
-        self.assertEqual(session.client_contents, [{"turns": {"parts": [{"text": "test"}]}}])
+        self.assertEqual(session.client_contents, [{
+            "turns": {"role": "user", "parts": [{"text": "test"}]},
+            "turn_complete": True,
+        }])
         await provider.close()
         self.assertTrue(client.connection.exited)
+
+    @unittest.skipIf(google_types is None, "google-genai is installed only in the project uv environment")
+    async def test_inject_text_has_sdk_serializable_user_role(self):
+        session = FakeSession()
+        provider = GeminiLiveProvider(FakeClient(session), "test-model", {}, google_types)
+        await provider.connect()
+        await provider.inject_text("Speak the saved task result.")
+        self.assertEqual(len(session.client_contents), 1)
+        content = session.client_contents[0]
+        self.assertIs(content["turn_complete"], True)
+        sdk_content = google_types.Content.model_validate(content["turns"])
+        self.assertEqual(sdk_content.role, "user")
+        self.assertEqual([part.text for part in sdk_content.parts], ["Speak the saved task result."])
+        self.assertEqual(sdk_content.model_dump(exclude_none=True)["role"], "user")
+        await provider.close()
 
     async def test_receive_dispatches_ordered_events_and_correlates_tool_result(self):
         function_call = SimpleNamespace(id="call-1", name="lookup", args={"q": "x"})
