@@ -5,28 +5,36 @@ on:
     branches:
       - main
     paths:
-      - ".github/workflows/**"
+      - ".github/workflows/issue-85-pr-b2-e2e.yml"
       - ".dockerignore"
       - "Dockerfile"
       - "pyproject.toml"
       - "uv.lock"
       - "deploy/oci-a1/**"
+      - "!deploy/oci-a1/**/*.md"
+      - "!deploy/oci-a1/**/*.mdx"
       - "fast_voice/**"
       - "relay/**"
       - "spikes/004-relay-facade-hermes-e2e/**"
+      - "!**/*.md"
+      - "!**/*.mdx"
   push:
     branches:
       - main
     paths:
-      - ".github/workflows/**"
+      - ".github/workflows/issue-85-pr-b2-e2e.yml"
       - ".dockerignore"
       - "Dockerfile"
       - "pyproject.toml"
       - "uv.lock"
       - "deploy/oci-a1/**"
+      - "!deploy/oci-a1/**/*.md"
+      - "!deploy/oci-a1/**/*.mdx"
       - "fast_voice/**"
       - "relay/**"
       - "spikes/004-relay-facade-hermes-e2e/**"
+      - "!**/*.md"
+      - "!**/*.mdx"
   workflow_dispatch:
 
 permissions:
