@@ -6,6 +6,7 @@ import unittest
 from relay.hermes_result import (
     HERMES_RESULT_INSTRUCTIONS,
     HERMES_RESULT_V2_INSTRUCTIONS,
+    CONTENTFUL_SPEECH_INSTRUCTIONS,
     build_hermes_run_prompt,
     parse_hermes_run_result,
 )
@@ -91,6 +92,31 @@ class HermesResultTests(unittest.TestCase):
         self.assertIn("details_md to at most 512", HERMES_RESULT_INSTRUCTIONS)
         task = SimpleNamespace(task_kind="summarize", task="summarize the fixture")
         self.assertIn("Task request:", build_hermes_run_prompt(task))
+
+    def test_prompt_requests_contentful_spoken_findings_for_both_contract_versions(self):
+        for version in (1, 2):
+            with self.subTest(version=version):
+                task = SimpleNamespace(
+                    task_kind="compare",
+                    task="Compare BLE and SoftAP provisioning.",
+                    result_contract_version=version,
+                )
+                prompt = build_hermes_run_prompt(task)
+                self.assertIn("self-contained spoken answer", prompt)
+                self.assertIn("key trade-off", prompt)
+                self.assertIn("Taiwan Traditional Chinese", prompt)
+                self.assertIn("within 240 characters", prompt)
+                self.assertIn("Do not expose full reports", prompt)
+                self.assertIn(f"schema_version={version}", prompt)
+
+    def test_contentful_speech_instruction_preserves_bounded_relay_contract(self):
+        self.assertIn("not just a completion notice", CONTENTFUL_SPEECH_INSTRUCTIONS)
+        self.assertIn("meaningful uncertainty", CONTENTFUL_SPEECH_INSTRUCTIONS)
+        self.assertEqual(parse_hermes_run_result(envelope()).details_md, "The report is ready.")
+        self.assertRaisesRegex(
+            ValueError, "speak_invalid",
+            parse_hermes_run_result, envelope(speak="x" * 241),
+        )
 
     def test_v2_accepts_optional_and_committed_artifact_envelopes(self):
         base = {
