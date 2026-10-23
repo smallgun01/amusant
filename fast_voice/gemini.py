@@ -172,8 +172,10 @@ class GeminiLiveProvider:
         documented discrete text-turn path is ``send_client_content``.
         """
         session = self._require_session()
-        turns = {"parts": [{"text": text}]}
-        await self._send(lambda: session.send_client_content(turns=turns))
+        # The Live API expects an explicit role for client-content turns.
+        # Mark this as a complete user turn so Gemini can speak the saved result.
+        turns = {"role": "user", "parts": [{"text": text}]}
+        await self._send(lambda: session.send_client_content(turns=turns, turn_complete=True))
 
     async def _emit(self, callback: Callable[[Any], Any] | None, event: Any) -> None:
         if callback is None:
