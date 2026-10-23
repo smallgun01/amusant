@@ -4,9 +4,15 @@ name: CI
 # Gemini, AWS, device PSK, or Bearer credentials into these jobs.
 on:
   pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - '**/*.mdx'
   push:
     branches:
       - main
+    paths-ignore:
+      - '**/*.md'
+      - '**/*.mdx'
   workflow_dispatch:
 
 permissions:
