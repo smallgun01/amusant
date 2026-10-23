@@ -44,7 +44,13 @@ jobs:
             exit 0
           fi
           git diff --check "$BASE_SHA" "$HEAD_SHA" --
-          if git diff --name-only -z "$BASE_SHA" "$HEAD_SHA" -- | tr '\0' '\n' | grep -Ev '^$|\\.(md|mdx)
+          if git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- | grep -Ev '^$|\.(md|mdx)$' >/dev/null; then
+            echo heavy=true >> "$GITHUB_OUTPUT"
+          else
+            echo heavy=false >> "$GITHUB_OUTPUT"
+          fi
+
+  docs-only-check:
     name: Lightweight documentation and diff check
     runs-on: ubuntu-24.04
     steps:
