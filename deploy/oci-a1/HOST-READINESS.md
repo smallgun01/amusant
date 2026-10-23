@@ -1,5 +1,7 @@
 # OCI A1 H2 host-readiness handoff (2026-10-21)
 
+> **2026-10-22 live test supersession:** OCI four-service backend live functional PASS; physical StickS3 → temporary private SSH tunnel → OCI Relay → Gemini Live audible FAST PASS; physical Slow task admitted but timed out at 120s, then Hermes was independently confirmed `completed` without a saved report. **2026-10-23 Owner operator reconciliation PASS** as `failed / hermes_operator_reconciled_completed_no_result`; old single-flight reservation cleared, but physical Slow→Inbox speech not yet accepted. This is not full E3/E4 or permanent/public device ingress. See [GO 2/3 evidence](../../docs/oci-go2-go3-live-evidence-20261022.md); earlier GO 2/3 NOT STARTED handoff below is historical.
+
 > **2026-10-22 UPDATE — #62:** GO 1 `READY_TO_COMPOSE_UP` is owner-reported PASS: Docker/Compose installed, persistent data mount reboot-checked, images pinned/pulled, file secrets and Hermes config prepared, preflight/Compose static validation PASS. The 2026-10-21 SSH-only inventory below is historical bootstrap guidance, not a checklist to repeat. **GO 2 four-service launch/OAuth/live backend and GO 3 device test NOT STARTED**; formal E3/off-host backup+restore, isolation, load, STOP/cost and #27 ingress pending. Issue #62 flags an N100 SSH alias possibly authenticating as OCI `ubuntu` with passwordless sudo: verify actual privilege boundaries before unattended operation. No new access or runtime authorization by these docs.
 
 
