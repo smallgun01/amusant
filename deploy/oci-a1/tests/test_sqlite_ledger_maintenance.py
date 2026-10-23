@@ -137,7 +137,11 @@ class LedgerMaintenanceTests(unittest.TestCase):
         self.assertEqual(restored_store.get_by_task_id(self._task_id_for("done-read"))["status"], "completed")
         with closing(sqlite3.connect(destination)) as db:
             self.assertEqual(db.execute("SELECT count(*) FROM slow_tasks").fetchone()[0], 12)
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 7)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 8)
+            task_columns = {row[1] for row in db.execute("PRAGMA table_info(slow_tasks)")}
+            result_columns = {row[1] for row in db.execute("PRAGMA table_info(task_results)")}
+            self.assertIn("result_contract_version", task_columns)
+            self.assertTrue({"artifact_status", "artifact_ref", "presentation_status", "delivery_error"} <= result_columns)
         if os.name == "posix":
             self.assertEqual(destination.stat().st_mode & 0o777, 0o600)
         with self.assertRaises(ValueError):
@@ -166,7 +170,7 @@ class LedgerMaintenanceTests(unittest.TestCase):
         fixtures = (
             ("empty.sqlite3", ""),
             ("unrelated.sqlite3", "CREATE TABLE unrelated (value TEXT)"),
-            ("incomplete-v7.sqlite3", "PRAGMA user_version=7; CREATE TABLE slow_tasks (task_id TEXT)"),
+            ("incomplete-v8.sqlite3", "PRAGMA user_version=8; CREATE TABLE slow_tasks (task_id TEXT)"),
         )
         for filename, setup_sql in fixtures:
             with self.subTest(filename=filename):

@@ -162,6 +162,7 @@ class HttpAudit:
         self.original = original
         self.lock = threading.Lock()
         self.relay_submit_calls: dict[str, int] = {}
+        self.result_contract_versions: dict[str, str | None] = {}
         self.get_calls = 0
         self.stop_calls = 0
         self.stop_targeted_posts = 0
@@ -192,6 +193,8 @@ class HttpAudit:
         task_id = headers.get("Idempotency-Key", "")
         task_text = body.get("input", "") if isinstance(body, dict) else ""
         if method == "POST" and path == "/v1/runs":
+            with self.lock:
+                self.result_contract_versions[task_id] = headers.get("X-Amusant-Result-Contract")
             if "[POC_CASE=restart_10k]" in task_text:
                 with self.lock:
                     count = self.relay_submit_calls.get(task_id, 0)
@@ -872,6 +875,161 @@ async def run():
                 "Relay replayed an uncertain submission after restart")
         CHECKS["ambiguous_run_stays_uncertain_without_replay"] = "PASS"
 
+        PHASE = "v2-runtime"
+        # The v1 ambiguous-submit fixture intentionally remains busy. Use a
+        # separate synthetic owner for fresh v2 admissions in the same ledger.
+        v2_client_id = "b2-v2-offline-owner"
+        environ["AMUSANT_CLIENT_ID"] = v2_client_id
+        environ["AMUSANT_RESULT_CONTRACT_VERSION"] = "2"
+        handler3, dispatcher3, store3 = start_runtime(environ, providers, conversation_counter)
+        await dispatcher3.start()
+        server3 = await serve(
+            adapt_device_handler(handler3, hardware_mode=True),
+            "127.0.0.1",
+            0,
+            ssl=build_server_context({DEVICE_IDENTITY: DEVICE_PSK}),
+            max_size=64 * 1024,
+            ping_interval=None,
+        )
+
+        async def submit_v2(case):
+            ws, provider = await open_turn(server3, providers.instances)
+            accepted = await invoke_tool(
+                provider, "b2-" + case, "delegate_task",
+                {"task": f"[POC_CASE={case}] Run this deterministic v2 delivery scenario.", "task_kind": "research"},
+            )
+            require(accepted.get("status") == "accepted", case + " task was not admitted")
+            task_id = accepted["task_id"]
+            await finish_synthetic_turn(ws, provider)
+            await ws.close()
+            row = await wait_row(
+                store3, task_id, lambda value: value.get("status") == "completed",
+                timeout=60.0, description=case + " completed Relay task",
+            )
+            require(audit.result_contract_versions.get(task_id) == "2", case + " was not pinned to result contract v2")
+            result = store3.get_result(task_id)
+            require(isinstance(result, dict), case + " bounded result is missing")
+            return task_id, row, result
+
+        async def lookup_v2(task_id, call_id, *, speak):
+            ws, provider = await open_turn(server3, providers.instances)
+            payload = await invoke_tool(
+                provider, call_id, "check_task_status", {"task_id": task_id, "speak": speak},
+            )
+            await finish_synthetic_turn(ws, provider)
+            await ws.close()
+            return payload
+
+        PHASE = "v2-no-artifact-answer"
+        v2_answer_id, _v2_answer_row, v2_answer = await submit_v2("v2_no_artifact")
+        require(
+            v2_answer.get("artifact_status") == "none"
+            and v2_answer.get("presentation_status") == "ready"
+            and v2_answer.get("delivery_error") is None,
+            "v2 short answer was not delivered without an Artifact",
+        )
+        v2_answer_lookup = await lookup_v2(v2_answer_id, "b2-v2-answer-readback", speak=False)
+        require(
+            v2_answer_lookup.get("status") == "completed"
+            and v2_answer_lookup.get("result_delivery_status") == "ready",
+            "v2 short answer Inbox status was not ready",
+        )
+        require("POC_REPORT_SECRET_" not in json.dumps(v2_answer_lookup), "v2 no-Artifact answer exposed report data")
+        CHECKS["v2_no_artifact_answer_and_inbox_readback"] = "PASS"
+
+        PHASE = "v2-committed-report"
+        v2_report_id, v2_report_row, v2_report = await submit_v2("v2_report")
+        require(
+            v2_report.get("artifact_status") == "committed"
+            and isinstance(v2_report.get("artifact_ref"), str)
+            and v2_report.get("presentation_status") == "ready",
+            "v2 report was not integrity-bound to a committed Artifact",
+        )
+        require("POC_REPORT_SECRET_" not in json.dumps(v2_report), "v2 full report reached the Relay result")
+        report_lookup = await lookup_v2(v2_report_id, "b2-v2-report-readback", speak=False)
+        require(
+            report_lookup.get("status") == "completed"
+            and report_lookup.get("result_delivery_status") == "ready"
+            and "POC_REPORT_SECRET_" not in json.dumps(report_lookup),
+            "v2 report Inbox readback was not bounded and ready",
+        )
+
+        run_headers = {
+            "Authorization": "Bearer " + FACADE_KEY,
+            # The dispatcher wraps the executor in a private router. Derive the
+            # same opaque owner key independently for this read-only Facade check.
+            "X-Hermes-Session-Key": hmac.new(
+                FACADE_KEY.encode("utf-8"), v2_client_id.encode("utf-8"), "sha256",
+            ).hexdigest(),
+            "X-Amusant-Result-Contract": "2",
+            "Accept": "application/json",
+        }
+
+        def completed_get(run_id):
+            connection = http.client.HTTPConnection("facade", 8643, timeout=3)
+            try:
+                connection.request("GET", "/v1/runs/" + quote(run_id, safe=""), headers=run_headers)
+                response = connection.getresponse()
+                body = response.read(32 * 1024 + 1)
+                require(len(body) <= 32 * 1024, "v2 completed Run response exceeded its test bound")
+                payload = json.loads(body or b"{}")
+                require(isinstance(payload, dict), "v2 completed Run response was not an object")
+                return response.status, payload
+            finally:
+                connection.close()
+
+        replay_one = await asyncio.to_thread(completed_get, v2_report_row["backend_run_id"])
+        replay_two = await asyncio.to_thread(completed_get, v2_report_row["backend_run_id"])
+        require(
+            replay_one[0] == replay_two[0] == 200
+            and replay_one[1].get("output") == replay_two[1].get("output"),
+            "v2 committed presentation replay changed its bounded GET response",
+        )
+        replay_output = json.loads(replay_two[1]["output"])
+        require(
+            replay_output.get("artifact_status") == "committed"
+            and replay_output.get("artifact_ref") == v2_report.get("artifact_ref"),
+            "v2 replay did not preserve the committed Artifact reference",
+        )
+        report_spoken = await lookup_v2(v2_report_id, "b2-v2-report-spoken", speak=True)
+        require(
+            report_spoken.get("speak_now") is True
+            and report_spoken.get("result_delivery_status") == "ready",
+            "v2 user-requested spoken report readback was not marked ready",
+        )
+        CHECKS["v2_committed_report_inbox_spoken_readback_and_replay"] = "PASS"
+
+        PHASE = "v2-malformed-and-flood-delivery"
+        for case in ("v2_malformed", "v2_flood"):
+            task_id, row, result = await submit_v2(case)
+            require(
+                result.get("artifact_status") == "none"
+                and result.get("presentation_status") == "failed"
+                and result.get("delivery_error") == "presentation_failed",
+                case + " did not become a bounded delivery failure",
+            )
+            require(
+                result.get("speak") == "The task finished, but result delivery needs recovery."
+                and "POC_FINAL_SECRET_" not in json.dumps(result),
+                case + " result exposed malformed or oversized model output",
+            )
+            failed_lookup = await lookup_v2(task_id, "b2-" + case + "-lookup", speak=False)
+            require(
+                failed_lookup.get("status") == "completed"
+                and failed_lookup.get("result_delivery_status") == "failed"
+                and failed_lookup.get("result_delivery_error") == "presentation_failed"
+                and "POC_FINAL_SECRET_" not in json.dumps(failed_lookup),
+                case + " Inbox hid delivery failure or exposed the raw model output",
+            )
+            spoken_lookup = await lookup_v2(task_id, "b2-" + case + "-spoken", speak=True)
+            require(
+                spoken_lookup.get("speak_now") is True
+                and spoken_lookup.get("result_delivery_status") == "failed"
+                and "POC_FINAL_SECRET_" not in json.dumps(spoken_lookup),
+                case + " spoken readback hid the recovery state or exposed raw output",
+            )
+            CHECKS[case + "_inbox_delivery_failure_and_spoken_readback"] = "PASS"
+
         PHASE = "final-evidence"
         markers = (
             f"POC_REPORT_SECRET_{RUN_TAG}_",
@@ -904,6 +1062,7 @@ async def run():
                 "relay_stop_calls": audit.stop_calls,
                 "restart_bounded_result_bytes": restart_result_bytes,
                 "thirty_k_bounded_result_bytes": report_result_bytes,
+                "v2_report_result_bytes": len(json.dumps(v2_report, ensure_ascii=False, separators=(",", ":")).encode("utf-8")),
             },
         }
         EVIDENCE_PATH.parent.mkdir(parents=True, exist_ok=True)

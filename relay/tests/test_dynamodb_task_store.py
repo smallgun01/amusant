@@ -179,6 +179,38 @@ class DynamoDbTaskStoreTests(unittest.TestCase):
         with self.assertRaises(AdmissionConflict):
             store.admit(_request(str(uuid4()), task="Different payload"))
 
+    def test_result_contract_pin_and_delivery_metadata_survive_dynamodb_adapter(self):
+        ledger, store = _store()
+        task_id = str(uuid4())
+        request = replace(_request(task_id), result_contract_version=2)
+        store.admit(request)
+        restarted_store = DynamoDbTaskStore(ledger, client_id=CLIENT, max_pending_tasks=8)
+        claimed = restarted_store.claim_due(now=NOW, lease_seconds=30, limit=1)
+        self.assertEqual(claimed[0].result_contract_version, 2)
+        result = BoundedTaskResult(
+            speak="The task finished, but result delivery needs recovery.",
+            card={"title": "Result needs recovery", "lines": ["The short result could not be safely delivered."]},
+            details_md="The task finished, but result delivery needs recovery.",
+            artifact_status="committed",
+            artifact_ref="art_" + "a" * 24,
+            presentation_status="failed",
+            delivery_error="presentation_failed",
+        )
+        restarted_store.complete(task_id, result=result)
+        saved = restarted_store.get_result(task_id)
+        self.assertEqual(saved["artifact_status"], "committed")
+        self.assertEqual(saved["artifact_ref"], result.artifact_ref)
+        self.assertEqual(saved["presentation_status"], "failed")
+        self.assertEqual(saved["delivery_error"], "presentation_failed")
+
+        legacy_id = str(uuid4())
+        legacy_request = _request(legacy_id, call_id="legacy", turn_id=2)
+        restarted_store.admit(legacy_request)
+        ledger.items[(CLIENT, "TASK#" + legacy_id)].pop("result_contract_version", None)
+        legacy_claimed = restarted_store.claim_due(now=NOW, lease_seconds=30, limit=1)
+        self.assertEqual(legacy_claimed[0].task_id, legacy_id)
+        self.assertEqual(legacy_claimed[0].result_contract_version, 1)
+
     def test_ambiguous_transact_is_unknown_when_unread(self):
         ledger, store = _store()
         ledger.ambiguous_next = True

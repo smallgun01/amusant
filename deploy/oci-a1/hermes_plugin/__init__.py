@@ -17,13 +17,15 @@ MAX_PRESENTATION_BYTES = 3000
 MAX_RESPONSE_BYTES = 8192
 SESSION_ID_RE = re.compile(r"^amusant-session-[A-Za-z0-9_-]{20,80}$")
 ARTIFACT_REF_RE = re.compile(r"^art_[A-Za-z0-9_-]{20,80}$")
-PRESENTATION_FIELDS = {"schema_version", "speak", "card", "details_md"}
+PRESENTATION_FIELDS_V1 = {"schema_version", "speak", "card", "details_md"}
+PRESENTATION_FIELDS_V2 = {"schema_version", "speak", "card"}
 _SAFE_ERRORS = {
     "invalid_arguments", "report_invalid", "report_over_cap",
     "trusted_request_context_unavailable", "artifact_conflict",
     "artifact_commit_failed", "artifact_integrity_invalid",
     "artifact_unavailable", "presentation_invalid",
     "presentation_conflict", "writer_unavailable",
+    "artifact_attempt_invalid", "artifact_attempt_over_cap",
 }
 
 
@@ -90,7 +92,7 @@ def _writer_settings():
 def _writer_request(path: str, session_id: str, body: dict):
     if not isinstance(session_id, str) or not SESSION_ID_RE.fullmatch(session_id):
         return 400, {"error": {"code": "trusted_request_context_unavailable"}}
-    if path not in {"/internal/v1/artifacts", "/internal/v1/presentation"}:
+    if path not in {"/internal/v1/artifacts", "/internal/v1/artifact-attempt", "/internal/v1/presentation"}:
         return 404, {"error": {"code": "writer_unavailable"}}
     try:
         host, port, key = _writer_settings()
@@ -131,15 +133,19 @@ def _safe_error(payload, fallback):
 def save_report(args, *, session_id=None, **_kwargs):
     """Send report text to the private Facade writer; no identity/ref is model supplied."""
     if not isinstance(args, dict) or set(args) != {"report"}:
+        _writer_request("/internal/v1/artifact-attempt", session_id, {"code": "artifact_attempt_invalid"})
         return _json({"error": "invalid_arguments"})
     report = args.get("report")
     if not isinstance(report, str) or not report.strip():
+        _writer_request("/internal/v1/artifact-attempt", session_id, {"code": "artifact_attempt_invalid"})
         return _json({"error": "report_invalid"})
     try:
         encoded = report.encode("utf-8")
     except UnicodeError:
+        _writer_request("/internal/v1/artifact-attempt", session_id, {"code": "artifact_attempt_invalid"})
         return _json({"error": "report_invalid"})
     if len(encoded) > MAX_REPORT_BYTES:
+        _writer_request("/internal/v1/artifact-attempt", session_id, {"code": "artifact_attempt_over_cap"})
         return _json({"error": "report_over_cap"})
     status, payload = _writer_request(
         "/internal/v1/artifacts", session_id, {"report": report}
@@ -150,26 +156,39 @@ def save_report(args, *, session_id=None, **_kwargs):
 
 
 def _valid_presentation(value):
-    if not isinstance(value, dict) or set(value) != PRESENTATION_FIELDS:
+    if not isinstance(value, dict):
         return False
-    if type(value.get("schema_version")) is not int or value["schema_version"] != 1:
+    version = value.get("schema_version")
+    if type(version) is not int:
+        return False
+    expected = PRESENTATION_FIELDS_V1 if version == 1 else PRESENTATION_FIELDS_V2 if version == 2 else None
+    if expected is None or set(value) != expected:
         return False
     speak = value.get("speak")
-    details = value.get("details_md")
+    details = value.get("details_md") if version == 1 else None
     card = value.get("card")
-    if not isinstance(speak, str) or not 1 <= len(speak) <= 240:
+    if not _valid_text(speak, 240):
         return False
-    if not isinstance(details, str) or len(details) > 512:
+    if version == 1 and (not isinstance(details, str) or len(details) > 512):
         return False
     if not isinstance(card, dict) or set(card) != {"title", "lines"}:
         return False
-    if not isinstance(card.get("title"), str) or not 1 <= len(card["title"]) <= 80:
+    if not _valid_text(card.get("title"), 80):
         return False
     lines = card.get("lines")
     return (
         isinstance(lines, list)
         and 1 <= len(lines) <= 4
-        and all(isinstance(line, str) and 1 <= len(line) <= 120 for line in lines)
+        and all(_valid_text(line, 120) for line in lines)
+    )
+
+
+def _valid_text(value, maximum):
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= maximum
+        and value.strip() == value
+        and all(ord(char) >= 32 or char == "\t" for char in value)
     )
 
 
@@ -199,11 +218,38 @@ def transform_llm_output(response_text, session_id="", **_kwargs):
         return None
     if (
         not isinstance(envelope, dict)
-        or envelope.get("presentation_status") != "ready"
-        or not isinstance(envelope.get("artifact_ref"), str)
-        or not ARTIFACT_REF_RE.fullmatch(envelope["artifact_ref"])
+        or set(envelope) != {
+            "schema_version", "speak", "card", "execution_status",
+            "artifact_status", "presentation_status", "artifact_ref",
+        }
+        or type(envelope.get("schema_version")) is not int
+        or envelope.get("schema_version") != value.get("schema_version")
+        or envelope.get("execution_status") != "completed"
+        or envelope.get("presentation_status") not in {"ready", "failed"}
+        or envelope.get("artifact_status") not in {"none", "committed", "failed"}
+        or not _valid_text(envelope.get("speak"), 240)
+        or not isinstance(envelope.get("card"), dict)
+        or set(envelope.get("card", {})) != {"title", "lines"}
+        or not _valid_text(envelope.get("card", {}).get("title"), 80)
+        or not isinstance(envelope.get("card", {}).get("lines"), list)
+        or not 1 <= len(envelope.get("card", {}).get("lines", [])) <= 4
+        or any(not _valid_text(line, 120) for line in envelope.get("card", {}).get("lines", []))
     ):
         return None
+    artifact_ref = envelope.get("artifact_ref")
+    if value["schema_version"] == 1 and envelope["artifact_status"] != "committed":
+        return None
+    if envelope["artifact_status"] == "committed":
+        if not isinstance(artifact_ref, str) or not ARTIFACT_REF_RE.fullmatch(artifact_ref):
+            return None
+    elif artifact_ref is not None:
+        return None
+    if envelope["presentation_status"] == "failed":
+        if value["schema_version"] == 1:
+            if envelope.get("speak") != "The report is saved; its short presentation needs recovery." or envelope["card"] != {"title": "Report saved", "lines": ["Short presentation needs recovery."]}:
+                return None
+        elif envelope.get("speak") != "The task finished, but result delivery needs recovery." or envelope["card"] != {"title": "Result needs recovery", "lines": ["The short result could not be safely delivered."]}:
+            return None
     return output
 
 
@@ -213,7 +259,7 @@ def register(ctx):
         toolset="amusant_option_d",
         schema={
             "name": "save_report",
-            "description": "Save the complete report to the trusted artifact sink. Pass only report text.",
+            "description": "Use only when the task asks for a complete document or report. Wait for committed=true before saying it was saved; pass only report text.",
             "parameters": {
                 "type": "object",
                 "properties": {"report": {"type": "string"}},
@@ -222,7 +268,7 @@ def register(ctx):
             },
         },
         handler=save_report,
-        description="Write the complete report to the private runtime artifact sink.",
+        description="For a requested complete document only, write the report and verify the committed acknowledgement.",
         emoji="📄",
     )
     ctx.register_hook("transform_llm_output", transform_llm_output)

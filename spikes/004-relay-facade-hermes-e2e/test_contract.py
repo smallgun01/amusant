@@ -18,7 +18,7 @@ from unittest.mock import patch
 
 
 os.environ.setdefault("POC_RUN_TAG", "offline-contract-test")
-from fake_provider import report_body, request_tool  # noqa: E402
+from fake_provider import report_body, request_tool, standard_presentation  # noqa: E402
 import run_e2e  # noqa: E402
 
 
@@ -52,6 +52,36 @@ class Issue85E2EContractTests(unittest.TestCase):
         self.assertEqual(len(large.encode("utf-8")), 30_000)
         self.assertIn("POC_REPORT_SECRET_", small)
         self.assertIn("POC_REPORT_SECRET_", large)
+
+    def test_fake_model_covers_v2_answer_report_and_over_cap_presentation(self):
+        answer = json.loads(standard_presentation("v2_no_artifact"))
+        report = json.loads(standard_presentation("v2_report"))
+        flood = json.loads(standard_presentation("v2_flood"))
+        self.assertEqual(answer["schema_version"], 2)
+        self.assertEqual(set(answer), {"schema_version", "speak", "card"})
+        self.assertEqual(report["schema_version"], 2)
+        self.assertIn("report", report["speak"].lower())
+        self.assertEqual(len(flood["speak"].encode("utf-8")), 500_000)
+        self.assertIn("POC_FINAL_SECRET_", flood["speak"])
+
+    def test_native_integration_runs_v2_delivery_and_replay_scenarios(self):
+        relay_e2e = (PROJECT / "relay_e2e.py").read_text(encoding="utf-8")
+        self.assertIn('environ["AMUSANT_RESULT_CONTRACT_VERSION"] = "2"', relay_e2e)
+        self.assertIn('environ["AMUSANT_CLIENT_ID"] = v2_client_id', relay_e2e)
+        self.assertIn('audit.result_contract_versions.get(task_id) == "2"', relay_e2e)
+        self.assertIn('connection = http.client.HTTPConnection("facade", 8643, timeout=3)', relay_e2e)
+        self.assertIn('return response.status, payload', relay_e2e)
+        self.assertNotIn("dispatcher3._executor", relay_e2e)
+        self.assertNotIn("replay_one[2]", relay_e2e)
+        for marker in (
+            'submit_v2("v2_no_artifact")',
+            'submit_v2("v2_report")',
+            'for case in ("v2_malformed", "v2_flood")',
+            '"v2 committed presentation replay changed its bounded GET response"',
+            '"speak": speak',
+            'result_delivery_status',
+        ):
+            self.assertIn(marker, relay_e2e)
 
     def test_fake_model_uses_the_production_artifact_tool_name(self):
         report = {"report": report_body("restart_10k")}

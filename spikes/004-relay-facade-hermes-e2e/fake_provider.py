@@ -20,6 +20,11 @@ PRESENTATION = {
     "card": {"title": "Report ready", "lines": ["Synthetic report saved.", "Review the recorded findings."]},
     "details_md": "A deterministic synthetic report was saved for this proof.",
 }
+PRESENTATION_V2 = {
+    "schema_version": 2,
+    "speak": "The synthetic research answer is ready.",
+    "card": {"title": "Research complete", "lines": ["This answer has no attached report."]},
+}
 
 
 def json_bytes(value):
@@ -216,9 +221,15 @@ def report_body(case):
 
 
 def standard_presentation(case):
-    value = dict(PRESENTATION)
+    value = dict(PRESENTATION_V2 if case.startswith("v2_") else PRESENTATION)
     if case == "missing_speech":
         value.pop("speak")
+    elif case == "v2_report":
+        value["speak"] = "The complete synthetic report was saved."
+        value["card"] = {"title": "Report saved", "lines": ["The complete report is available in the Artifact."]}
+    elif case == "v2_flood":
+        prefix = f"POC_FINAL_SECRET_{RUN_TAG}_{case}_"
+        value["speak"] = prefix + ("F" * (500_000 - len(prefix)))
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
@@ -303,7 +314,7 @@ class Handler(BaseHTTPRequestHandler):
                 1 for row in self.server.state.requests
                 if row.get("case") == case and row.get("write_file_requested") is True
             )
-        should_write = case != "no_writer" and (
+        should_write = case not in {"no_writer", "v2_no_artifact", "v2_malformed", "v2_flood"} and (
             writer_calls == 0 or (case == "writer_redelivery" and writer_calls == 1)
         )
         if should_write:
@@ -393,7 +404,7 @@ class Handler(BaseHTTPRequestHandler):
         else:
             if stop_release_requested:
                 content = "Synthetic stop fixture yielded after the accepted cancellation request."
-            elif case == "malformed_json":
+            elif case in {"malformed_json", "v2_malformed"}:
                 content = "{ malformed synthetic envelope"
             elif case == "oversized_final":
                 prefix = f"POC_FINAL_SECRET_{RUN_TAG}_{case}_"

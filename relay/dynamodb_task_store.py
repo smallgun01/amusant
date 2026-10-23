@@ -527,6 +527,7 @@ class DynamoDbTaskStore:
                 "task_kind": request.task_kind,
                 "backend": request.backend,
                 "executor_kind": request.executor_kind,
+                "result_contract_version": request.result_contract_version,
                 "status": "queued",
                 "created_at": created,
                 "expires_at": expires,
@@ -783,6 +784,7 @@ class DynamoDbTaskStore:
                     stop_reason=str(updated["stop_reason"]) if updated.get("stop_reason") else None,
                     stop_attempts=int(updated.get("stop_attempts") or 0),
                     stop_accepted_at=str(updated["stop_accepted_at"]) if updated.get("stop_accepted_at") else None,
+                    result_contract_version=int(updated.get("result_contract_version") or 1),
                 )
             )
         wake_candidates: list[datetime] = []
@@ -1351,6 +1353,10 @@ class DynamoDbTaskStore:
             patch["speak"] = result.speak
             patch["card_json"] = result.card
             patch["details_md"] = result.details_md
+            patch["artifact_status"] = result.artifact_status
+            patch["artifact_ref"] = result.artifact_ref
+            patch["presentation_status"] = result.presentation_status
+            patch["delivery_error"] = result.delivery_error
         try:
             self._ledger.update_item(
                 self._client_id,
@@ -1396,6 +1402,7 @@ class DynamoDbTaskStore:
             "dispatch_started_at": row.get("dispatch_started_at"),
             "last_error": row.get("last_error"),
             "executor_kind": row.get("executor_kind", "openab_acp"),
+            "result_contract_version": int(row.get("result_contract_version") or 1),
             "backend_run_id": row.get("backend_run_id"),
             "run_started_at": row.get("run_started_at"),
             "run_deadline_at": row.get("run_deadline_at"),
@@ -1480,6 +1487,10 @@ class DynamoDbTaskStore:
                 "speak": row["speak"],
                 "card": row.get("card_json") or {},
                 "details_md": row.get("details_md") or "",
+                "artifact_status": row.get("artifact_status"),
+                "artifact_ref": row.get("artifact_ref"),
+                "presentation_status": row.get("presentation_status"),
+                "delivery_error": row.get("delivery_error"),
             }
         next_delivery = delivery
         if status in {"completed", "failed", "uncertain", "timed_out", "cancelled", "expired"}:
@@ -1571,6 +1582,10 @@ class DynamoDbTaskStore:
                 "speak": row.get("speak"),
                 "card": row.get("card_json") or {},
                 "details_md": row.get("details_md") or "",
+                "artifact_status": row.get("artifact_status"),
+                "artifact_ref": row.get("artifact_ref"),
+                "presentation_status": row.get("presentation_status"),
+                "delivery_error": row.get("delivery_error"),
             }
 
     def pending_dispatch_count(self) -> int:

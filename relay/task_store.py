@@ -14,7 +14,7 @@ from uuid import UUID
 
 MAX_TASK_CHARS = 4096
 TASK_KINDS = frozenset({"research", "compare", "summarize"})
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 EXECUTOR_KINDS = frozenset({"openab_acp", "hermes_runs"})
 DELIVERY_STATES = frozenset({"pending", "notified", "read", "spoken"})
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
@@ -65,10 +65,18 @@ class TaskAdmissionRequest:
     created_at: datetime
     expires_at: datetime
     executor_kind: str = "openab_acp"
+    result_contract_version: int = 1
 
     def fingerprint(self) -> str:
+        payload_fields: dict[str, object] = {
+            "task": self.task, "task_kind": self.task_kind, "backend": self.backend,
+        }
+        # Preserve the historical v1 digest so old admission retries remain
+        # deduplicated across this additive schema migration.
+        if self.result_contract_version != 1:
+            payload_fields["result_contract_version"] = self.result_contract_version
         payload = json.dumps(
-            {"task": self.task, "task_kind": self.task_kind, "backend": self.backend},
+            payload_fields,
             sort_keys=True,
             separators=(",", ":"),
             ensure_ascii=False,
@@ -105,6 +113,7 @@ class ClaimedTask:
     stop_reason: str | None = None
     stop_attempts: int = 0
     stop_accepted_at: str | None = None
+    result_contract_version: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +135,10 @@ class BoundedTaskResult:
     speak: str
     card: dict[str, object]
     details_md: str
+    artifact_status: str | None = None
+    artifact_ref: str | None = None
+    presentation_status: str | None = None
+    delivery_error: str | None = None
 
 
 def _utc_iso(value: datetime) -> str:
@@ -302,6 +315,9 @@ class SQLiteTaskStore:
                     version = 6
                 if version < 7:
                     self._migrate_v6_to_v7(connection)
+                    version = 7
+                if version < 8:
+                    self._migrate_v7_to_v8(connection)
             os.chmod(self._path, 0o600)
         except (sqlite3.Error, OSError, AdmissionUnavailable):
             raise AdmissionUnavailable("task_store_unavailable") from None
@@ -336,6 +352,7 @@ class SQLiteTaskStore:
                 manual_reconciliation_ref TEXT,
                 manual_reconciled_state TEXT,
                 manual_reconciled_run_id TEXT,
+                result_contract_version INTEGER NOT NULL DEFAULT 1,
                 status TEXT NOT NULL CHECK(status IN {_V2_TASK_STATUSES}),
                 created_at TEXT NOT NULL,
                 expires_at TEXT NOT NULL,
@@ -355,6 +372,10 @@ class SQLiteTaskStore:
                 speak TEXT NOT NULL,
                 card_json TEXT NOT NULL,
                 details_md TEXT NOT NULL,
+                artifact_status TEXT,
+                artifact_ref TEXT,
+                presentation_status TEXT,
+                delivery_error TEXT,
                 created_at TEXT NOT NULL
             );
             CREATE TABLE task_inbox (
@@ -450,6 +471,36 @@ class SQLiteTaskStore:
             connection.execute("ALTER TABLE slow_tasks ADD COLUMN manual_reconciled_run_id TEXT")
         connection.execute("PRAGMA user_version=7")
 
+    def _migrate_v7_to_v8(self, connection: sqlite3.Connection) -> None:
+        """Pin each admission's result contract and retain bounded delivery metadata."""
+        task_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(slow_tasks)")}
+        if "result_contract_version" not in task_columns:
+            connection.execute(
+                "ALTER TABLE slow_tasks ADD COLUMN result_contract_version INTEGER NOT NULL DEFAULT 1"
+            )
+        # Some deployed v5 databases were created before task_results existed.
+        # Keep that supported partial legacy shape migratable as later versions
+        # introduce result metadata.
+        connection.execute(
+            """CREATE TABLE IF NOT EXISTS task_results (
+                task_id TEXT PRIMARY KEY REFERENCES slow_tasks(task_id) ON DELETE CASCADE,
+                speak TEXT NOT NULL,
+                card_json TEXT NOT NULL,
+                details_md TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )"""
+        )
+        result_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(task_results)")}
+        for name, declaration in (
+            ("artifact_status", "TEXT"),
+            ("artifact_ref", "TEXT"),
+            ("presentation_status", "TEXT"),
+            ("delivery_error", "TEXT"),
+        ):
+            if name not in result_columns:
+                connection.execute(f"ALTER TABLE task_results ADD COLUMN {name} {declaration}")
+        connection.execute("PRAGMA user_version=8")
+
     def _migrate_v1_to_v2(self, connection: sqlite3.Connection) -> None:
         connection.execute("PRAGMA foreign_keys=OFF")
         try:
@@ -529,6 +580,8 @@ class SQLiteTaskStore:
             raise AdmissionUnavailable("invalid_backend")
         if request.executor_kind not in EXECUTOR_KINDS:
             raise AdmissionUnavailable("invalid_executor_kind")
+        if type(request.result_contract_version) is not int or request.result_contract_version not in {1, 2}:
+            raise AdmissionUnavailable("invalid_result_contract_version")
         if (request.created_at.tzinfo is None or request.created_at.utcoffset() is None
                 or request.expires_at.tzinfo is None or request.expires_at.utcoffset() is None):
             raise AdmissionUnavailable("invalid_task_time")
@@ -577,10 +630,12 @@ class SQLiteTaskStore:
 
             connection.execute(
                 "INSERT INTO slow_tasks(task_id,client_id,conversation_id,turn_id,call_id,payload_sha256,"
-                "task_text,task_kind,backend,executor_kind,status,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "task_text,task_kind,backend,executor_kind,result_contract_version,status,created_at,expires_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     request.task_id, request.client_id, request.conversation_id, request.turn_id, request.call_id,
                     fingerprint, request.task, request.task_kind, request.backend, request.executor_kind,
+                    request.result_contract_version,
                     "queued", created, expires,
                 ),
             )
@@ -702,7 +757,8 @@ class SQLiteTaskStore:
                 "SELECT t.task_id,t.client_id,t.conversation_id,t.turn_id,t.call_id,"
                 "t.task_text,t.task_kind,t.backend,t.executor_kind,t.backend_run_id,"
                 "t.run_started_at,t.run_deadline_at,t.next_poll_at,t.poll_attempts,o.dispatch_started_at,o.attempts,"
-                "t.stop_requested_at,t.stop_reason,t.stop_attempts,t.stop_accepted_at "
+                "t.stop_requested_at,t.stop_reason,t.stop_attempts,t.stop_accepted_at,"
+                "t.result_contract_version "
                 "FROM slow_tasks AS t JOIN dispatch_outbox AS o USING(task_id) "
                 "WHERE o.state='pending' AND ("
                 "(t.status='queued' AND t.expires_at>? "
@@ -758,6 +814,7 @@ class SQLiteTaskStore:
                         stop_reason=row[17],
                         stop_attempts=int(row[18] or 0),
                         stop_accepted_at=row[19],
+                        result_contract_version=int(row[20] or 1),
                     )
                 )
             connection.execute("COMMIT")
@@ -1261,12 +1318,17 @@ class SQLiteTaskStore:
             finished_at = datetime.now(timezone.utc).isoformat()
             if result is not None:
                 connection.execute(
-                    "INSERT INTO task_results(task_id,speak,card_json,details_md,created_at) VALUES(?,?,?,?,?)",
+                    "INSERT INTO task_results(task_id,speak,card_json,details_md,artifact_status,artifact_ref,"
+                    "presentation_status,delivery_error,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
                     (
                         task_id,
                         result.speak,
                         json.dumps(result.card, separators=(",", ":"), ensure_ascii=False),
                         result.details_md,
+                        result.artifact_status,
+                        result.artifact_ref,
+                        result.presentation_status,
+                        result.delivery_error,
                         finished_at,
                     ),
                 )
@@ -1371,7 +1433,8 @@ class SQLiteTaskStore:
                 row = connection.execute(
                     "SELECT t.task_id,t.status,t.task_kind,t.expires_at,i.delivery_state,"
                     "r.speak,r.card_json,r.details_md,t.backend_run_id,t.executor_kind,o.last_error,"
-                    "t.stop_requested_at,t.stop_reason,t.stop_attempts,t.stop_accepted_at "
+                    "t.stop_requested_at,t.stop_reason,t.stop_attempts,t.stop_accepted_at,"
+                    "r.artifact_status,r.artifact_ref,r.presentation_status,r.delivery_error "
                     "FROM slow_tasks AS t LEFT JOIN dispatch_outbox AS o USING(task_id) "
                     "LEFT JOIN task_inbox AS i USING(task_id) "
                     "LEFT JOIN task_results AS r USING(task_id) "
@@ -1382,7 +1445,8 @@ class SQLiteTaskStore:
                 row = connection.execute(
                     "SELECT t.task_id,t.status,t.task_kind,t.expires_at,i.delivery_state,"
                     "r.speak,r.card_json,r.details_md,t.backend_run_id,t.executor_kind,o.last_error,"
-                    "t.stop_requested_at,t.stop_reason,t.stop_attempts,t.stop_accepted_at "
+                    "t.stop_requested_at,t.stop_reason,t.stop_attempts,t.stop_accepted_at,"
+                    "r.artifact_status,r.artifact_ref,r.presentation_status,r.delivery_error "
                     "FROM slow_tasks AS t LEFT JOIN dispatch_outbox AS o USING(task_id) "
                     "LEFT JOIN task_inbox AS i USING(task_id) "
                     "LEFT JOIN task_results AS r USING(task_id) "
@@ -1417,6 +1481,10 @@ class SQLiteTaskStore:
                     "speak": row[5],
                     "card": json.loads(row[6]),
                     "details_md": row[7],
+                    "artifact_status": row[15],
+                    "artifact_ref": row[16],
+                    "presentation_status": row[17],
+                    "delivery_error": row[18],
                 }
             next_delivery = delivery
             if status in {"completed", "failed", "uncertain", "timed_out", "cancelled", "expired"}:
@@ -1527,12 +1595,17 @@ class SQLiteTaskStore:
         connection = self._connect()
         try:
             row = connection.execute(
-                "SELECT speak,card_json,details_md FROM task_results WHERE task_id=?",
+                "SELECT speak,card_json,details_md,artifact_status,artifact_ref,presentation_status,delivery_error "
+                "FROM task_results WHERE task_id=?",
                 (task_id,),
             ).fetchone()
             if row is None:
                 return None
-            return {"speak": row[0], "card": json.loads(row[1]), "details_md": row[2]}
+            return {
+                "speak": row[0], "card": json.loads(row[1]), "details_md": row[2],
+                "artifact_status": row[3], "artifact_ref": row[4],
+                "presentation_status": row[5], "delivery_error": row[6],
+            }
         except (sqlite3.Error, json.JSONDecodeError):
             raise AdmissionUnavailable("task_store_unavailable") from None
         finally:
