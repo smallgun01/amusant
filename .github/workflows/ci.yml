@@ -272,6 +272,7 @@ jobs:
         run: |
           uv run --locked --python 3.13 --extra hardware-opus --group dev python -m unittest discover -s deploy/oci-a1/tests -p test_facade_runtime_contract.py -v
           uv run --locked --python 3.13 --extra hardware-opus --group dev python -m unittest discover -s deploy/oci-a1/tests -p test_result_contract_v2_cutover_precheck.py -v
+          uv run --locked --python 3.13 --extra hardware-opus --group dev python -m unittest discover -s deploy/oci-a1/tests -p test_hermes_runs_inventory.py -v
           uv run --locked --python 3.13 --extra hardware-opus --group dev python -m unittest discover -s spikes/004-relay-facade-hermes-e2e -p 'test_*.py' -v
   issue-82-arm64-go-no-go:
     name: Native ARM64 Hermes and Relay offline gates

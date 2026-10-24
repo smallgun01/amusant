@@ -1389,7 +1389,7 @@ class SQLiteTaskStore:
                 "SELECT t.task_id,t.status,o.state,o.attempts,o.dispatch_started_at,o.last_error, "
                 "t.executor_kind,t.backend_run_id,t.run_started_at,t.run_deadline_at,"
                 "t.next_poll_at,t.poll_attempts,t.stop_requested_at,t.stop_reason,"
-                "t.stop_attempts,t.stop_accepted_at "
+                "t.stop_attempts,t.stop_accepted_at,t.result_contract_version "
                 "FROM slow_tasks AS t JOIN dispatch_outbox AS o USING(task_id) WHERE t.task_id=?",
                 (task_id,),
             ).fetchone()
@@ -1413,6 +1413,7 @@ class SQLiteTaskStore:
                 "stop_reason": row[13],
                 "stop_attempts": int(row[14] or 0),
                 "stop_accepted_at": row[15],
+                "result_contract_version": int(row[16] or 1),
             }
         except sqlite3.Error:
             raise AdmissionUnavailable("task_store_unavailable") from None

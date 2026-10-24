@@ -36,15 +36,35 @@ python3 deploy/oci-a1/result_contract_v2_cutover_precheck.py \
   --hermes-home "$OCI_DATA_DIR/hermes"
 ```
 
-Exit `0` means only that the read-only checks found no recorded active or unresolved task and the directories/databases are present. Exit `2` blocks cutover; stop and investigate the reported condition. A missing table/column, database error, unknown state, unresolved Facade request, or active task is not permission to repair or edit the database. This script cannot discover an orphan Hermes Run absent from both ledgers; the operator must also use the existing authenticated read-only Hermes Runs API to inventory/reconcile any unmapped Runs. Do not call model/provider APIs as part of that check.
+Exit `0` means only that the read-only checks found no recorded active or unresolved task and the directories/databases are present. Exit `2` blocks cutover; stop and investigate the reported condition. A missing table/column, database error, unknown state, unresolved Facade request, or active task is not permission to repair or edit the database.
+
+### Hermes Runs registry inventory
+
+The pinned Hermes `v2026.9.24` API has `POST /v1/runs` and authenticated `GET /v1/runs/{run_id}`; it has no `GET /v1/runs` listing route. `/api/sessions` lists sessions, not durable Runs. The Run idempotency store is `HERMES_HOME/runs_idempotency.db`; the checked-in OCI Compose sets `HERMES_HOME=/opt/data`, ordinarily mounted at `$OCI_DATA_DIR/hermes`. Resolve this path from the active Compose mounts instead of assuming the default.
+
+Run this inventory with ingress paused. It opens the Hermes registry, Relay ledger, and Facade ledger in SQLite read-only mode. It prints aggregate status and join counts only: no owner scopes, task keys, Run IDs, `status_json`, prompts, reports, or secrets. `--dry-run` is required.
+
+```sh
+python3 deploy/oci-a1/hermes_runs_inventory.py \
+  --dry-run \
+  --hermes-db "$OCI_DATA_DIR/hermes/runs_idempotency.db" \
+  --relay-db "$OCI_DATA_DIR/relay/task-ledger.sqlite3" \
+  --facade-db "$OCI_DATA_DIR/results/facade/facade-ledger.sqlite3"
+```
+
+The inventory matches Hermes `idempotency_key` values to Relay/Facade task keys and Hermes `run_id` values to their saved Run IDs. Relay sends the task ID as the `Idempotency-Key`; Facade persists the same task/run binding. The script parses `status_json` only in memory to count allowlisted status names and classifies everything else as `unknown`. A successful read is **not** a cutover approval. Any unresolved/unknown Run, unmatched registry row, binding conflict, absent registry, incomplete schema, or SQLite read failure blocks cutover until safely reconciled. The command does not call the Runs API or any model/provider.
+
+The registry covers only keyed Runs whose records remain in the durable SQLite store. The pinned implementation uses a 24-hour default retention and a 24-hour acknowledged retention; stale rows are pruned lazily during later reserve/lookup operations, and only after a Run is terminal. Active grants may extend retention. The API server can fall back to in-memory idempotency storage if SQLite cannot be opened, so a missing/empty file or an observed startup fallback is not evidence that no Run exists. This registry also cannot prove the absence of arbitrary non-idempotent work. If the runtime's durable backing cannot be established, or any row cannot be mapped to the two ledgers, leave services stopped and ingress closed for an owner-controlled investigation. Do not print raw rows or invent a list endpoint.
+
+The route and store behavior above were checked against the pinned source: [`api_server_runs.py`](https://github.com/NousResearch/hermes-agent/blob/f97608f178d1ffeca59860195ab7da295f7c8e5f/gateway/platforms/api_server_runs.py) and [`api_server_run_idempotency.py`](https://github.com/NousResearch/hermes-agent/blob/f97608f178d1ffeca59860195ab7da295f7c8e5f/gateway/platforms/api_server_run_idempotency.py).
 
 ## One-time operator-controlled retirement
 
 The smallest safe strategy is to leave the two terminal v1 rows and their existing artifacts in place, pinned to their historical contract, and make them ineligible for v2 execution. Do not migrate a v1 payload into a fabricated v2 result, initialize over the current databases, delete rows, or remove WAL files. No schema rewrite is required. Physical row/artifact cleanup, if ever wanted, needs a separate retention and evidence decision after this backup.
 
 1. Identify the currently active release directory, Compose project, `.env` file, Hermes config, image IDs/digests, and mounted data paths. In particular inspect the existing local Relay image override (for example `RELAY_IMAGE=amusant-relay:oci-arm64`) and all versioned release directories; do not assume the checked-in `compose.yaml` or a shell's current directory is the live deployment. Record which plugin directory is mounted read-only. Do not overwrite a shared local image tag while services still use it.
-2. Close or pause the operator-controlled ingress for new Slow admissions. Run the dry-run precheck and the separate read-only Hermes Runs inventory. Wait for/reconcile every active or uncertain task using authenticated evidence; never clear a slot based only on time or a timeout. Any queued, running, uncertain, submitting, unknown, or nonterminal remote state blocks cutover.
-3. After both inventories are clear, stop Relay first to prevent new admissions, then stop Facade and Hermes. Keep the Egress proxy and persistent volumes intact until the backup completes. Run the read-only precheck again against the stopped services' mounted data. If any check changes or becomes unavailable, do not continue.
+2. Close or pause the operator-controlled ingress for new Slow admissions. Run the dry-run Relay/Facade precheck and the read-only Hermes Runs registry inventory against the active mounted databases. Wait for/reconcile every active or uncertain task using authenticated evidence; never clear a slot based only on time or a timeout. Any queued, running, uncertain, submitting, unknown, unmatched, conflicting, or nonterminal remote state blocks cutover.
+3. After both inventories are clear, stop Relay first to prevent new admissions, then stop Facade and Hermes. Keep the Egress proxy and persistent volumes intact until the backup completes. Run both read-only inventories again against the stopped services' mounted data. If any count changes, any finding appears, or a database becomes unavailable, do not continue.
 4. Create one operator-controlled, encrypted, access-restricted archive from the stopped services' complete data roots: `$OCI_DATA_DIR/relay`, `$OCI_DATA_DIR/results/facade` (including the Facade ledger, artifacts, and any SQLite `-wal`/`-shm` files), and `$OCI_DATA_DIR/hermes` (including Hermes's own Run/session state). Include the active release's Compose file, mounted plugin source, non-secret runtime configuration, image references, and a manifest of secret file paths/versions; keep secret values in the existing secret manager. Do not copy individual SQLite main files while their services are writing. Keep the original data and release directories untouched.
 5. Verify the archive can be listed, record its SHA-256 in the operator evidence, and run `PRAGMA quick_check` on database copies from the archive in an isolated read-only verification location. Verify the artifact directory and Hermes Home are present. Keep a separate encrypted off-host copy and confirm it is readable before cutover. This PR does not execute these steps against OCI.
 6. Prepare a new versioned release directory from one source revision. Build/publish the matching Relay and Facade images; place the matching mounted `deploy/oci-a1/hermes_plugin` and `compose.yaml` there; keep the reviewed Hermes config and pinned Hermes image; preserve the existing isolated networks, secrets, volumes, and writer boundary. Do not copy the old v1 POC database into the runtime volume. Validate the rendered Compose file and image IDs before starting services.
@@ -110,7 +130,7 @@ Targeted tests cover default v2 admission and prompt, no-Artifact short answers,
 
 Material limitations:
 
-- The precheck cannot identify Hermes Runs absent from both Relay and Facade ledgers; perform a separate authenticated read-only Runs inventory.
+- The Relay/Facade precheck does not inspect Hermes's idempotency registry. The separate inventory matches keyed records across all three ledgers, but cannot identify arbitrary non-idempotent or in-memory Runs.
 - This PR does not access OCI, validate the current deployment inventory, modify production databases, restart containers, or verify an off-host restore. Repeat the precheck at deployment time.
 - Result Contract v2 prompts Hermes to use the Artifact writer for a requested report. If no writer attempt reaches Facade, an ordinary bounded answer may complete without an Artifact; the runtime will not claim a report was saved. Any observed writer failure is surfaced as failure.
 - Hermes execution completion and Artifact commit are separate events. The authenticated writer ledger and Artifact integrity/bindings remain the source of preservation evidence.

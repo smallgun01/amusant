@@ -81,6 +81,20 @@ class SQLiteSlowPathTests(unittest.IsolatedAsyncioTestCase):
         if os.name == "posix":
             self.assertEqual(self.db_path.stat().st_mode & 0o777, 0o600)
 
+    async def test_hermes_admission_version_is_visible_in_durable_task_row(self):
+        store = self.store()
+        result = await make_router(store, executor_kind="hermes_runs")(
+            ToolCallEvent(
+                "call-v2-contract", "delegate_task",
+                {"task": "Use the v2 Hermes contract", "task_kind": "research"},
+            ),
+            8,
+        )
+        self.assertEqual(result["status"], "accepted")
+        row = store.get_by_task_id(result["task_id"])
+        self.assertIsNotNone(row)
+        self.assertEqual(row["result_contract_version"], 2)
+
     async def test_same_call_replays_durable_receipt_after_store_reopen(self):
         first = await make_router(self.store(), task_id=TASK_ID)(
             ToolCallEvent("call-repeat", "delegate_task", {"task": "Summarize sources"}), 3

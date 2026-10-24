@@ -68,13 +68,59 @@ class Issue85E2EContractTests(unittest.TestCase):
         relay_e2e = (PROJECT / "relay_e2e.py").read_text(encoding="utf-8")
         self.assertNotIn("AMUSANT_RESULT_CONTRACT_VERSION", relay_e2e)
         self.assertIn('environ["AMUSANT_CLIENT_ID"] = v2_client_id', relay_e2e)
-        self.assertIn('audit.result_contract_versions.get(task_id) == "2"', relay_e2e)
-        self.assertIn('audit.result_contract_versions.get(restart_task_id) == "2"', relay_e2e)
-        self.assertIn('audit.result_contract_versions.get(report_task_id) == "2"', relay_e2e)
-        self.assertIn('audit.result_contract_versions.get(stop_task_id) == "2"', relay_e2e)
-        self.assertIn('audit.result_contract_versions.get(ambiguous_task_id) == "2"', relay_e2e)
+        self.assertNotIn("audit.result_contract_versions.get(", relay_e2e)
+        self.assertIn('def require_v2_admission(store, task_id: str, description: str)', relay_e2e)
+        self.assertIn('row.get("result_contract_version") == 2', relay_e2e)
+        self.assertIn('def require_v2_submission(audit, task_id: str, description: str)', relay_e2e)
+        self.assertIn('audit.result_contract_version_for(task_id) == "2"', relay_e2e)
+        for scenario in (
+            'require_v2_admission(store, restart_task_id',
+            'require_v2_admission(store2, report_task_id',
+            'require_v2_admission(store2, stop_task_id',
+            'require_v2_admission(store2, ambiguous_task_id',
+            'require_v2_admission(store3, task_id',
+        ):
+            self.assertIn(scenario, relay_e2e)
+        for scenario in (
+            'require_v2_submission(audit, restart_task_id',
+            'require_v2_submission(audit, report_task_id',
+            'require_v2_submission(audit, stop_task_id',
+            'require_v2_submission(audit, ambiguous_task_id',
+            'require_v2_submission(audit, task_id',
+        ):
+            self.assertIn(scenario, relay_e2e)
+
+        restart_admission = relay_e2e.split('PHASE = "slow-restart-admission"', 1)[1].split(
+            'PHASE = "drop-completed-envelope"', 1
+        )[0]
+        self.assertLess(
+            restart_admission.index("require_v2_admission("),
+            restart_admission.index("await slow_ws.close()"),
+        )
+        restart_dispatch = relay_e2e.split('PHASE = "drop-completed-envelope"', 1)[1].split(
+            'PHASE = "relay-restart"', 1
+        )[0]
+        self.assertLess(
+            restart_dispatch.index("row = await wait_row("),
+            restart_dispatch.index("require_v2_submission("),
+        )
+        for start, end, admission, event, submission in (
+            ('PHASE = "thirty-k-report"', 'PHASE = "stop-run"',
+             "require_v2_admission(", "await wait_row(store2, report_task_id", "require_v2_submission("),
+            ('PHASE = "stop-run"', 'PHASE = "ambiguous-submit"',
+             "require_v2_admission(", "await wait_row(store2, stop_task_id", "require_v2_submission("),
+            ('PHASE = "ambiguous-submit"', 'PHASE = "continued-v2-runtime"',
+             "require_v2_admission(", "uncertain = await wait_row(", "require_v2_submission("),
+        ):
+            scenario = relay_e2e.split(start, 1)[1].split(end, 1)[0]
+            self.assertLess(scenario.index(admission), scenario.index(event))
+            self.assertLess(scenario.index(event), scenario.index(submission))
+        submit_v2 = relay_e2e.split("async def submit_v2(case):", 1)[1].split(
+            "async def lookup_v2", 1
+        )[0]
+        self.assertLess(submit_v2.index("require_v2_admission("), submit_v2.index("row = await wait_row("))
+        self.assertLess(submit_v2.index("row = await wait_row("), submit_v2.index("require_v2_submission("))
         self.assertIn('"X-Amusant-Result-Contract": "2"', (PROJECT / "toolset_runner.py").read_text(encoding="utf-8"))
-        self.assertIn("Result Contract v2 by default", relay_e2e)
         self.assertIn('connection = http.client.HTTPConnection("facade", 8643, timeout=3)', relay_e2e)
         self.assertIn('return response.status, payload', relay_e2e)
         self.assertNotIn("dispatcher3._executor", relay_e2e)

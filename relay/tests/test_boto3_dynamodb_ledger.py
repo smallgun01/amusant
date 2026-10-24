@@ -55,6 +55,16 @@ def _admit_request(task_id: str) -> TaskAdmissionRequest:
     )
 
 
+def _admit_hermes_request(task_id: str, **changes) -> TaskAdmissionRequest:
+    """Build a Hermes fixture with the same v2 pin required of production admissions."""
+    return replace(
+        _admit_request(task_id),
+        executor_kind="hermes_runs",
+        result_contract_version=2,
+        **changes,
+    )
+
+
 class _TransactFaultClient:
     def __init__(self, inner, *, commit: bool, get_fails: bool = False, code: str = "InternalServerError", status: int = 500):
         self._inner = inner
@@ -314,21 +324,19 @@ class Boto3DynamoLedgerTests(unittest.TestCase):
 
             store = DynamoDbTaskStore(Boto3DynamoLedger(client, TABLE), client_id=CLIENT, max_pending_tasks=8)
             expired_id = str(uuid4())
-            expired_request = replace(
-                _admit_request(expired_id),
+            expired_request = _admit_hermes_request(
+                expired_id,
                 expires_at=NOW + timedelta(seconds=1),
-                executor_kind="hermes_runs",
             )
             store.admit(expired_request)
             new_id = str(uuid4())
-            next_request = replace(
-                _admit_request(new_id),
+            next_request = _admit_hermes_request(
+                new_id,
                 conversation_id="after-expiry",
                 turn_id=2,
                 call_id="after-expiry",
                 created_at=NOW + timedelta(seconds=2),
                 expires_at=NOW + timedelta(minutes=10),
-                executor_kind="hermes_runs",
             )
 
             receipt = store.admit(next_request)
