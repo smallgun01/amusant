@@ -29,10 +29,9 @@ TASK_ID = "task-two-uid-runtime-smoke"
 RUN_ID = "run_two_uid_runtime_smoke_123"
 REPORT = "Synthetic private report committed through the writer channel."
 PRESENTATION = json.dumps({
-    "schema_version": 1,
+    "schema_version": 2,
     "speak": "The synthetic report is ready.",
     "card": {"title": "Report ready", "lines": ["One bounded summary."]},
-    "details_md": "Short legacy detail.",
 }, ensure_ascii=False, separators=(",", ":"))
 
 

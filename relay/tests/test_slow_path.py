@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
+import os
 from pathlib import Path
 import tempfile
 import threading
@@ -32,7 +33,7 @@ class SlowStore:
         return self.inner.admit(request)
 
 
-def make_router(store, *, timeout=1.0, task_id=TASK_ID, client_id=CLIENT, conversation_id=CONVERSATION, on_admitted=None, result_contract_version=1, executor_kind="openab_acp"):
+def make_router(store, *, timeout=1.0, task_id=TASK_ID, client_id=CLIENT, conversation_id=CONVERSATION, on_admitted=None, executor_kind="openab_acp"):
     return SlowPathToolRouter(
         store=store,
         client_id=client_id,
@@ -44,7 +45,6 @@ def make_router(store, *, timeout=1.0, task_id=TASK_ID, client_id=CLIENT, conver
         now=lambda: NOW,
         new_task_id=lambda: task_id,
         on_admitted=on_admitted,
-        result_contract_version=result_contract_version,
         executor_kind=executor_kind,
     )
 
@@ -78,7 +78,8 @@ class SQLiteSlowPathTests(unittest.IsolatedAsyncioTestCase):
             "dispatch_state": "pending",
         })
         self.assertEqual(store.pending_dispatch_count(), 1)
-        self.assertEqual(self.db_path.stat().st_mode & 0o777, 0o600)
+        if os.name == "posix":
+            self.assertEqual(self.db_path.stat().st_mode & 0o777, 0o600)
 
     async def test_same_call_replays_durable_receipt_after_store_reopen(self):
         first = await make_router(self.store(), task_id=TASK_ID)(
@@ -430,12 +431,10 @@ class SingleFlightSlowPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(claimed.backend_run_id, None)
         self.assertEqual(store.get_by_task_id(TASK_ID)["backend_run_id"], "run-ddb-slot")
 
-    async def test_server_configured_result_version_is_admitted_and_persisted(self):
+    async def test_new_hermes_admission_uses_v2_and_persists_it(self):
         ledger = InMemoryDynamoLedger()
         store = DynamoDbTaskStore(ledger, client_id=CLIENT, max_pending_tasks=8)
-        router = make_router(
-            store, result_contract_version=2, executor_kind="hermes_runs", task_id=TASK_ID
-        )
+        router = make_router(store, executor_kind="hermes_runs", task_id=TASK_ID)
         accepted = await router(
             ToolCallEvent("versioned-call", "delegate_task", {"task": "Summarize fixture"}), 12
         )

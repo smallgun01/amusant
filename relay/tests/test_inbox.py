@@ -59,7 +59,7 @@ def request_for(
     created=NOW,
     ttl=600,
     executor_kind="openab_acp",
-    result_contract_version=1,
+    result_contract_version=None,
 ):
     return TaskAdmissionRequest(
         task_id=task_id,

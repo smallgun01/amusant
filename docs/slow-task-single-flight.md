@@ -14,7 +14,7 @@ A new Slow Task is accepted only when its authenticated owner has no outstanding
 | uncertain | Remote activity or persistence outcome cannot be confirmed | Held; operator reconciliation required |
 | terminal | Confirmed result/failure/stop, or a known pre-POST rejection/cancel | Released |
 
-A Hermes GET that confirms remote `completed` but has missing, partial, malformed, or unsupported output becomes failed with `hermes_invalid_result`; the untrusted payload is never stored or spoken, and the confirmed terminal Run releases the owner slot. A transport failure or expired/unresolved Run remains uncertain and busy.
+A Hermes GET that confirms remote `completed` but has missing, partial, malformed, or unsupported v2 output preserves the confirmed execution state and stores only a fixed bounded delivery-failure result; the untrusted payload is never stored or spoken, and the confirmed terminal Run releases the owner slot. A transport failure or expired/unresolved Run remains uncertain and busy. A pre-cutover v1-pinned task is not submitted or polled under v2 and requires operator reconciliation before runtime cutover.
 
 A distinct admission while busy returns structured slow_busy and may include active_task_id; it creates no task, outbox, or Inbox row and sends no Hermes POST. Duplicate trusted call identity plus identical payload is resolved before the busy check and returns its original receipt; a changed payload remains a conflict. Busy applies to new Slow Tasks, not FAST conversation, status lookup, or cancel.
 

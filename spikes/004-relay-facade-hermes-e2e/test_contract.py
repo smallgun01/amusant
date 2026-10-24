@@ -66,9 +66,15 @@ class Issue85E2EContractTests(unittest.TestCase):
 
     def test_native_integration_runs_v2_delivery_and_replay_scenarios(self):
         relay_e2e = (PROJECT / "relay_e2e.py").read_text(encoding="utf-8")
-        self.assertIn('environ["AMUSANT_RESULT_CONTRACT_VERSION"] = "2"', relay_e2e)
+        self.assertNotIn("AMUSANT_RESULT_CONTRACT_VERSION", relay_e2e)
         self.assertIn('environ["AMUSANT_CLIENT_ID"] = v2_client_id', relay_e2e)
         self.assertIn('audit.result_contract_versions.get(task_id) == "2"', relay_e2e)
+        self.assertIn('audit.result_contract_versions.get(restart_task_id) == "2"', relay_e2e)
+        self.assertIn('audit.result_contract_versions.get(report_task_id) == "2"', relay_e2e)
+        self.assertIn('audit.result_contract_versions.get(stop_task_id) == "2"', relay_e2e)
+        self.assertIn('audit.result_contract_versions.get(ambiguous_task_id) == "2"', relay_e2e)
+        self.assertIn('"X-Amusant-Result-Contract": "2"', (PROJECT / "toolset_runner.py").read_text(encoding="utf-8"))
+        self.assertIn("Result Contract v2 by default", relay_e2e)
         self.assertIn('connection = http.client.HTTPConnection("facade", 8643, timeout=3)', relay_e2e)
         self.assertIn('return response.status, payload', relay_e2e)
         self.assertNotIn("dispatcher3._executor", relay_e2e)

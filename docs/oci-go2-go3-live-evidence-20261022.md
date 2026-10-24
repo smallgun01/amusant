@@ -1,5 +1,7 @@
 # OCI GO 2 / GO 3 — Owner-observed live evidence (2026-10-22)
 
+> Historical evidence snapshot. The Owner's later decision retires Hermes Result Contract v1 and selects v2 as the only contract for new Hermes Slow Tasks. This does not revise the 2026-10-22/23 observed task facts or claim that the v2 bundle has been deployed. See [Result Contract v2 cutover and rollback](result-contract-v2-cutover.md) and [v1 retirement evidence](result-contract-v1-retirement-evidence.md).
+
 > Evidence record only; **not** full E3/E4, production ingress, or authorization for more provider runs. Source: owner terminal outputs and physical listening, correlated with current Relay/Facade/Hermes implementation. No secrets, private IPs, raw prompts, transcript or audio are retained here.
 
 ## Gate verdicts

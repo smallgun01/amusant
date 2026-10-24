@@ -24,13 +24,13 @@ from relay.task_store import ClaimedTask
 def facade_result(speak: str) -> str:
     line = " ".join(speak.split())[:120] or "Result"
     return json.dumps({
-        "schema_version": 1,
+        "schema_version": 2,
         "speak": speak,
         "card": {"title": "Result", "lines": [line]},
         "execution_status": "completed",
-        "artifact_status": "committed",
+        "artifact_status": "none",
         "presentation_status": "ready",
-        "artifact_ref": "art_" + "a" * 24,
+        "artifact_ref": None,
     })
 
 
@@ -46,7 +46,7 @@ class HermesRunsExecutorTests(unittest.TestCase):
         run_deadline_at=None,
         next_poll_at=None,
         poll_attempts=0,
-        result_contract_version=1,
+        result_contract_version=2,
     ):
         now = datetime.now(timezone.utc)
         dispatch_started_at = dispatch_started_at or now.isoformat()
@@ -169,6 +169,15 @@ class HermesRunsExecutorTests(unittest.TestCase):
         self.assertEqual(outcome.status, "completed")
         self.assertEqual(outcome.result.presentation_status, "failed")
         self.assertEqual(outcome.result.delivery_error, "presentation_invalid")
+
+    def test_v1_pinned_task_is_not_submitted_or_polled(self):
+        calls = []
+        executor = self.make_executor(
+            lambda *args: calls.append(args) or (200, {"status": "completed"}), []
+        )
+        outcome = asyncio.run(executor.execute(self.make_task(result_contract_version=1)))
+        self.assertEqual((outcome.status, outcome.code), ("uncertain", "unsupported_result_contract"))
+        self.assertEqual(calls, [])
 
     def test_restart_resumes_known_run_id_without_resubmitting(self):
         calls = []
@@ -330,8 +339,8 @@ class HermesRunsExecutorTests(unittest.TestCase):
 
         no_result = self.make_executor(lambda *args: (200, {"status": "completed"}), [])
         outcome = asyncio.run(no_result.execute(self.make_task(run_id="run-3")))
-        self.assertEqual((outcome.status, outcome.code), ("failed", "hermes_invalid_result"))
-        self.assertIsNone(outcome.result)
+        self.assertEqual(outcome.status, "completed")
+        self.assertEqual(outcome.result.delivery_error, "presentation_missing")
 
         denied_status = self.make_executor(lambda *args: (403, {"error": "forbidden"}), [])
         denied = asyncio.run(denied_status.execute(self.make_task(run_id="run-4")))
@@ -363,27 +372,30 @@ class HermesRunsExecutorTests(unittest.TestCase):
         self.assertEqual(posts[1]["Idempotency-Key"], "task-b")
 
     def test_completed_truncated_json_is_failed_without_speech(self):
-        output = '{"schema_version":1,"speak":"unfinished'
+        output = '{"schema_version":2,"speak":"unfinished'
         executor = self.make_executor(
             lambda *args: (200, {"status": "completed", "output": output}), []
         )
         outcome = asyncio.run(executor.execute(self.make_task(run_id="run-truncated-json")))
-        self.assertEqual((outcome.status, outcome.code), ("failed", "hermes_invalid_result"))
-        self.assertIsNone(outcome.result)
+        self.assertEqual(outcome.status, "completed")
+        self.assertEqual(outcome.result.delivery_error, "presentation_invalid")
 
     def test_completed_partial_payload_is_failed_without_speech(self):
         result = json.dumps({
-            "schema_version": 1,
+            "schema_version": 2,
             "speak": "Partial result.",
             "card": {"title": "Partial", "lines": ["Some data"]},
-            "details_md": "Partial detail.",
+            "execution_status": "completed",
+            "artifact_status": "none",
+            "presentation_status": "ready",
+            "artifact_ref": None,
         })
         executor = self.make_executor(
             lambda *args: (200, {"status": "completed", "partial": True, "output": result}), []
         )
         outcome = asyncio.run(executor.execute(self.make_task(run_id="run-partial")))
-        self.assertEqual((outcome.status, outcome.code), ("failed", "hermes_invalid_result"))
-        self.assertIsNone(outcome.result)
+        self.assertEqual(outcome.status, "completed")
+        self.assertEqual(outcome.result.delivery_error, "presentation_failed")
 
     def test_tool_failure_does_not_publish_partial_output(self):
         executor = self.make_executor(
@@ -393,7 +405,7 @@ class HermesRunsExecutorTests(unittest.TestCase):
         self.assertEqual((outcome.status, outcome.code), ("failed", "hermes_failed"))
         self.assertIsNone(outcome.result)
 
-    def test_untrusted_and_legacy_details_fields_are_rejected(self):
+    def test_v1_schema_and_forged_fields_are_rejected(self):
         output = json.dumps({
             "schema_version": 1,
             "speak": "A normal answer.",
@@ -407,8 +419,9 @@ class HermesRunsExecutorTests(unittest.TestCase):
         })
         executor = self.make_executor(lambda *args: (200, {"status": "completed", "output": output}), [])
         outcome = asyncio.run(executor.execute(self.make_task(task_id="task-owner-a", run_id="run-owner-a")))
-        self.assertEqual((outcome.status, outcome.code), ("failed", "hermes_invalid_result"))
-        self.assertIsNone(outcome.result)
+        self.assertEqual(outcome.status, "completed")
+        self.assertEqual(outcome.result.delivery_error, "presentation_invalid")
+        self.assertEqual(outcome.result.speak, "The task finished, but result delivery needs recovery.")
 
     def test_public_dns_result_is_rejected_before_connect(self):
         executor = HermesRunsExecutor(
@@ -566,22 +579,23 @@ class HermesRunsExecutorTests(unittest.TestCase):
         }
         default_config = load_relay_process_config(common, expected_device_token="device-token-123")
         self.assertEqual(default_config.slow_executor_kind, "hermes_runs")
-        self.assertEqual(default_config.result_contract_version, 1)
         config = load_relay_process_config({**common, "AMUSANT_SLOW_EXECUTOR": "hermes_runs"}, expected_device_token="device-token-123")
         self.assertEqual(config.slow_executor_kind, "hermes_runs")
-        v2_config = load_relay_process_config({
-            **common,
-            "AMUSANT_SLOW_EXECUTOR": "hermes_runs",
-            "AMUSANT_RESULT_CONTRACT_VERSION": "2",
-        }, expected_device_token="device-token-123")
-        self.assertEqual(v2_config.result_contract_version, 2)
+        v2_config = load_relay_process_config({**common, "AMUSANT_RESULT_CONTRACT_VERSION": "2"}, expected_device_token="device-token-123")
+        self.assertEqual(v2_config.slow_executor_kind, "hermes_runs")
         legacy_config = load_relay_process_config({**common, "AMUSANT_SLOW_EXECUTOR": "openab_acp"}, expected_device_token="device-token-123")
         self.assertEqual(legacy_config.slow_executor_kind, "openab_acp")
-        with self.assertRaisesRegex(ValueError, "requires hermes_runs"):
+        self.assertEqual(
+            load_relay_process_config(
+                {**common, "AMUSANT_SLOW_EXECUTOR": "openab_acp", "AMUSANT_RESULT_CONTRACT_VERSION": "2"},
+                expected_device_token="device-token-123",
+            ).slow_executor_kind,
+            "openab_acp",
+        )
+        with self.assertRaisesRegex(ValueError, "only accepts 2"):
             load_relay_process_config({
                 **common,
-                "AMUSANT_SLOW_EXECUTOR": "openab_acp",
-                "AMUSANT_RESULT_CONTRACT_VERSION": "2",
+                "AMUSANT_RESULT_CONTRACT_VERSION": "1",
             }, expected_device_token="device-token-123")
         with self.assertRaises(ValueError):
             load_relay_process_config({**common, "AMUSANT_SLOW_EXECUTOR": "shell"}, expected_device_token="device-token-123")

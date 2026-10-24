@@ -119,7 +119,7 @@ class OfflinePackageTests(unittest.TestCase):
         self.assertNotIn("POC_FACADE_KEY", facade)
         self.assertIn("credentials must be distinct", facade)
         self.assertIn("facade-ledger.sqlite3", facade)
-        self.assertIn('"details_md"', plugin)
+        self.assertNotIn('"details_md"', plugin)
         self.assertNotIn('"details_md": value["details_md"]', projection)
         self.assertNotIn('"details_md"', relay_parser.split("expected = {", 1)[1].split("}", 1)[0])
         self.assertNotIn('payload["details_md"]', slow_path)
@@ -167,6 +167,21 @@ class OfflinePackageTests(unittest.TestCase):
                 "RELAY_BIND_IP": "172.30.62.2",
                 "FACADE_RELAY_BIND_IP": "172.30.62.3",
             })
+
+    def test_preflight_rejects_stale_v1_contract_selector_from_operator_env(self):
+        preflight = load_preflight()
+        values = valid_values()
+        preflight.validate(values)
+        preflight.validate({**values, "AMUSANT_RESULT_CONTRACT_VERSION": ""})
+        preflight.validate({**values, "AMUSANT_RESULT_CONTRACT_VERSION": "2"})
+
+        env_file = "\n".join(f"{name}={value}" for name, value in values.items())
+        path = write_temp_file(
+            self,
+            env_file + "\nAMUSANT_RESULT_CONTRACT_VERSION=1\n",
+        )
+        with self.assertRaisesRegex(preflight.PreflightError, "AMUSANT_RESULT_CONTRACT_VERSION is obsolete"):
+            preflight.validate(preflight.read_env_file(path))
 
     def test_env_file_parser_rejects_duplicate_keys_without_echoing_values(self):
         preflight = load_preflight()

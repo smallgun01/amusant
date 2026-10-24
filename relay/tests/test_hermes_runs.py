@@ -35,13 +35,13 @@ CONVERSATION = "phase2b-test-conversation"
 def facade_output(speak: str) -> str:
     line = " ".join(speak.split())[:120] or "Result"
     return json.dumps({
-        "schema_version": 1,
+        "schema_version": 2,
         "speak": speak,
         "card": {"title": "Result", "lines": [line]},
         "execution_status": "completed",
-        "artifact_status": "committed",
+        "artifact_status": "none",
         "presentation_status": "ready",
-        "artifact_ref": "art_" + "a" * 24,
+        "artifact_ref": None,
     })
 
 
@@ -256,7 +256,7 @@ def dispatch_stop_cycle(database_path: Path, url: str, clock: list[datetime], **
 
 def dispatch_invalid_completed_result(store, task_id: str) -> tuple[int, list[tuple[str, str]]]:
     calls: list[tuple[str, str]] = []
-    malformed_output = '{"schema_version":1,"speak":"unfinished'
+    malformed_output = '{"schema_version":2,"speak":"unfinished'
 
     def request_json(method, path, body, headers):
         calls.append((method, path))
@@ -698,7 +698,7 @@ class SQLiteHermesMappingTests(unittest.TestCase):
         self.assertEqual(audit, ("operator-1", "INC-61-no-run-check", "no_remote_run"))
         self.assertFalse(store.admit(next_request).duplicate)
 
-    def test_sqlite_confirmed_completed_invalid_result_fails_and_releases_owner(self):
+    def test_sqlite_confirmed_completed_invalid_v2_result_is_completed_with_delivery_error(self):
         store = self.store()
         task_id = str(uuid4())
         store.admit(request(task_id))
@@ -707,12 +707,12 @@ class SQLiteHermesMappingTests(unittest.TestCase):
         self.assertEqual(handled, 1)
         self.assertEqual([method for method, _ in calls], ["POST", "GET"])
         row = store.get_by_task_id(task_id)
-        self.assertEqual((row["status"], row["last_error"]), ("failed", "hermes_invalid_result"))
-        self.assertIsNone(store.get_result(task_id))
+        self.assertEqual((row["status"], row["last_error"]), ("completed", None))
+        self.assertEqual(store.get_result(task_id)["delivery_error"], "presentation_invalid")
         inbox = store.lookup_inbox(client_id=CLIENT, task_id=task_id, now=NOW)
-        self.assertEqual((inbox["status"], inbox["code"]), ("failed", "hermes_invalid_result"))
-        self.assertNotIn("speak", inbox)
-        self.assertNotIn("speak_now", inbox)
+        self.assertEqual(inbox["status"], "completed")
+        self.assertEqual(inbox["delivery_error"], "presentation_invalid")
+        self.assertNotIn("unfinished", json.dumps(inbox))
 
         next_request = replace(
             request(str(uuid4())),
@@ -1044,7 +1044,7 @@ class DynamoHermesMappingTests(unittest.TestCase):
         self.assertEqual(audit["manual_reconciled_run_id"], run_id)
         self.assertFalse(store.admit(next_request).duplicate)
 
-    def test_moto_confirmed_completed_invalid_result_fails_and_releases_owner(self):
+    def test_moto_confirmed_completed_invalid_v2_result_is_completed_with_delivery_error(self):
         try:
             import boto3
             from moto import mock_aws
@@ -1076,11 +1076,11 @@ class DynamoHermesMappingTests(unittest.TestCase):
             self.assertEqual(handled, 1)
             self.assertEqual([method for method, _ in calls], ["POST", "GET"])
             row = store.get_by_task_id(task_id)
-            self.assertEqual((row["status"], row["last_error"]), ("failed", "hermes_invalid_result"))
-            self.assertIsNone(store.get_result(task_id))
+            self.assertEqual((row["status"], row["last_error"]), ("completed", None))
+            self.assertEqual(store.get_result(task_id)["delivery_error"], "presentation_invalid")
             inbox = store.lookup_inbox(client_id=CLIENT, task_id=task_id, now=NOW)
-            self.assertEqual((inbox["status"], inbox["code"]), ("failed", "hermes_invalid_result"))
-            self.assertNotIn("speak", inbox)
+            self.assertEqual(inbox["status"], "completed")
+            self.assertEqual(inbox["delivery_error"], "presentation_invalid")
             slot = client.get_item(
                 TableName="issue61-task-ledger",
                 Key={"pk": {"S": CLIENT}, "sk": {"S": "SLOT#SLOW"}},
@@ -1126,7 +1126,7 @@ class DynamoHermesMappingTests(unittest.TestCase):
         self.assertEqual(store.get_by_task_id(task_id)["status"], "uncertain")
         self.assertNotIn("speak", result)
 
-    def test_dynamo_confirmed_completed_invalid_result_fails_and_releases_owner(self):
+    def test_dynamo_confirmed_completed_invalid_v2_result_is_completed_with_delivery_error(self):
         ledger = InMemoryDynamoLedger()
         store = DynamoDbTaskStore(ledger, client_id=CLIENT, max_pending_tasks=8)
         task_id = str(uuid4())
@@ -1136,11 +1136,11 @@ class DynamoHermesMappingTests(unittest.TestCase):
         self.assertEqual(handled, 1)
         self.assertEqual([method for method, _ in calls], ["POST", "GET"])
         row = store.get_by_task_id(task_id)
-        self.assertEqual((row["status"], row["last_error"]), ("failed", "hermes_invalid_result"))
-        self.assertIsNone(store.get_result(task_id))
+        self.assertEqual((row["status"], row["last_error"]), ("completed", None))
+        self.assertEqual(store.get_result(task_id)["delivery_error"], "presentation_invalid")
         inbox = store.lookup_inbox(client_id=CLIENT, task_id=task_id, now=NOW)
-        self.assertEqual((inbox["status"], inbox["code"]), ("failed", "hermes_invalid_result"))
-        self.assertNotIn("speak", inbox)
+        self.assertEqual(inbox["status"], "completed")
+        self.assertEqual(inbox["delivery_error"], "presentation_invalid")
         self.assertNotIn("speak_now", inbox)
         self.assertIsNone(ledger.get_item(CLIENT, "SLOT#SLOW"))
 

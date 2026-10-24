@@ -15,12 +15,6 @@ SLOW_DELAY = float(os.environ.get("FAKE_SLOW_DELAY_SECONDS", "8"))
 STOP_DELAY = float(os.environ.get("FAKE_STOP_DELAY_SECONDS", "60"))
 CONTROL_DIR = Path(os.environ.get("FAKE_CONTROL_DIR", "/evidence"))
 PRESENTATION = {
-    "schema_version": 1,
-    "speak": "The report is ready for review.",
-    "card": {"title": "Report ready", "lines": ["Synthetic report saved.", "Review the recorded findings."]},
-    "details_md": "A deterministic synthetic report was saved for this proof.",
-}
-PRESENTATION_V2 = {
     "schema_version": 2,
     "speak": "The synthetic research answer is ready.",
     "card": {"title": "Research complete", "lines": ["This answer has no attached report."]},
@@ -221,7 +215,7 @@ def report_body(case):
 
 
 def standard_presentation(case):
-    value = dict(PRESENTATION_V2 if case.startswith("v2_") else PRESENTATION)
+    value = dict(PRESENTATION)
     if case == "missing_speech":
         value.pop("speak")
     elif case == "v2_report":

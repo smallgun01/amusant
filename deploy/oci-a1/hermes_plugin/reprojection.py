@@ -20,10 +20,9 @@ ARTIFACT_DIR = STATE / "artifacts"
 MAX_REPORT_BYTES = 64 * 1024
 MAX_PRESENTATION_BYTES = 3000
 ARTIFACT_REF_RE = re.compile(r"^art_[A-Za-z0-9_-]{20,80}$")
-PRESENTATION_FIELDS_V1 = {"schema_version", "speak", "card", "details_md"}
-PRESENTATION_FIELDS_V2 = {"schema_version", "speak", "card"}
-V2_FAILURE_SPEAK = "The task finished, but result delivery needs recovery."
-V2_FAILURE_CARD = {"title": "Result needs recovery", "lines": ["The short result could not be safely delivered."]}
+PRESENTATION_FIELDS = {"schema_version", "speak", "card"}
+FAILURE_SPEAK = "The task finished, but result delivery needs recovery."
+FAILURE_CARD = {"title": "Result needs recovery", "lines": ["The short result could not be safely delivered."]}
 
 
 def _valid_text(value, maximum):
@@ -47,7 +46,7 @@ def _compact_json(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
-def _presentation(response_text, result_contract_version=None):
+def _presentation(response_text):
     if not isinstance(response_text, str):
         return None, "input_invalid"
     try:
@@ -62,18 +61,13 @@ def _presentation(response_text, result_contract_version=None):
         return None, "input_invalid"
     if not isinstance(value, dict):
         return None, "presentation_invalid"
-    version = result_contract_version if result_contract_version is not None else value.get("schema_version")
-    expected = PRESENTATION_FIELDS_V2 if version == 2 else PRESENTATION_FIELDS_V1
-    if type(version) is not int or version not in {1, 2} or set(value) != expected:
+    if set(value) != PRESENTATION_FIELDS:
         return None, "presentation_invalid"
-    if type(value.get("schema_version")) is not int or value["schema_version"] != version:
+    if type(value.get("schema_version")) is not int or value["schema_version"] != 2:
         return None, "presentation_invalid"
     speak = value.get("speak")
-    details = value.get("details_md") if version == 1 else None
     card = value.get("card")
     if not _valid_text(speak, 240):
-        return None, "presentation_invalid"
-    if version == 1 and (not isinstance(details, str) or len(details) > 512):
         return None, "presentation_invalid"
     if not isinstance(card, dict) or set(card) != {"title", "lines"}:
         return None, "presentation_invalid"
@@ -140,29 +134,23 @@ def _load_committed_artifact(row):
         return None, "artifact_unavailable"
 
 
-def project_presentation(response_text, artifact_ref, result_contract_version=1, artifact_status="committed", *, force_failure=False):
+def project_presentation(response_text, artifact_ref, artifact_status="none", *, force_failure=False):
     """Apply the same allowlisted projection used by both hook and recovery."""
-    if result_contract_version == 1:
-        if artifact_status != "committed" or not isinstance(artifact_ref, str) or not ARTIFACT_REF_RE.fullmatch(artifact_ref):
+    if artifact_status not in {"none", "committed", "failed"}:
+        return None, "artifact_binding_invalid"
+    if artifact_status == "committed":
+        if not isinstance(artifact_ref, str) or not ARTIFACT_REF_RE.fullmatch(artifact_ref):
             return None, "artifact_binding_invalid"
-    elif result_contract_version == 2:
-        if artifact_status not in {"none", "committed", "failed"}:
-            return None, "artifact_binding_invalid"
-        if artifact_status == "committed":
-            if not isinstance(artifact_ref, str) or not ARTIFACT_REF_RE.fullmatch(artifact_ref):
-                return None, "artifact_binding_invalid"
-        elif artifact_ref is not None:
-            return None, "artifact_binding_invalid"
-    else:
-        return None, "presentation_invalid"
-    value, status = _presentation(response_text, result_contract_version)
+    elif artifact_ref is not None:
+        return None, "artifact_binding_invalid"
+    value, status = _presentation(response_text)
     if value is None:
         return None, status
-    if result_contract_version == 2 and (artifact_status == "failed" or force_failure):
+    if artifact_status == "failed" or force_failure:
         encoded = _compact_json({
             "schema_version": 2,
-            "speak": V2_FAILURE_SPEAK,
-            "card": V2_FAILURE_CARD,
+            "speak": FAILURE_SPEAK,
+            "card": FAILURE_CARD,
             "execution_status": "completed",
             # Preserve a verified earlier commit when a later writer attempt
             # conflicts or only the short presentation fails.
@@ -171,15 +159,15 @@ def project_presentation(response_text, artifact_ref, result_contract_version=1,
             "artifact_ref": artifact_ref if artifact_status == "committed" else None,
         })
     else:
-        encoded = _envelope(value, artifact_ref, result_contract_version, artifact_status)
+        encoded = _envelope(value, artifact_ref, artifact_status)
     if len(encoded.encode("utf-8")) > MAX_PRESENTATION_BYTES:
         return None, "presentation_invalid"
     return encoded, "ready"
 
 
-def _envelope(value, artifact_ref, result_contract_version=1, artifact_status="committed"):
+def _envelope(value, artifact_ref, artifact_status="none"):
     return _compact_json({
-        "schema_version": result_contract_version,
+        "schema_version": 2,
         "speak": value["speak"],
         "card": value["card"],
         "execution_status": "completed",
@@ -269,7 +257,7 @@ def _store_projection(row, artifact, source_text, output_text, *, require_no_hoo
 
 def _version(row):
     value = row.get("result_contract_version", 1)
-    return value if type(value) is int and value in {1, 2} else 1
+    return value if type(value) is int and value == 2 else None
 
 
 def _v2_artifact_projection(row):
@@ -298,19 +286,18 @@ def _valid_envelope(output_text, row, artifact_status, artifact):
         return False
     if len(encoded) > MAX_PRESENTATION_BYTES or not isinstance(value, dict):
         return False
-    version = _version(row)
+    if _version(row) != 2:
+        return False
     expected = {
         "schema_version", "speak", "card", "execution_status",
         "artifact_status", "presentation_status", "artifact_ref",
     }
-    if version == 1 and set(value) != expected:
-        return False
-    if version == 2 and set(value) != expected:
+    if set(value) != expected:
         return False
     ref = artifact["artifact_ref"] if artifact else None
     if (
         type(value.get("schema_version")) is not int
-        or value["schema_version"] != version
+        or value["schema_version"] != 2
         or value.get("execution_status") != "completed"
         or value.get("artifact_status") != artifact_status
         or value.get("artifact_ref") != ref
@@ -320,24 +307,13 @@ def _valid_envelope(output_text, row, artifact_status, artifact):
     if artifact_status == "failed" and value.get("presentation_status") != "failed":
         return False
     if value.get("presentation_status") == "failed":
-        return (
-            version == 1
-            and artifact_status == "committed"
-            and value.get("speak") == "The report is saved; its short presentation needs recovery."
-            and value.get("card") == {"title": "Report saved", "lines": ["Short presentation needs recovery."]}
-        ) or (
-            version == 2
-            and value.get("speak") == V2_FAILURE_SPEAK
-            and value.get("card") == V2_FAILURE_CARD
-        )
+        return value.get("speak") == FAILURE_SPEAK and value.get("card") == FAILURE_CARD
     presentation, status = _presentation(
         _compact_json({
-            "schema_version": version,
+            "schema_version": 2,
             "speak": value.get("speak"),
             "card": value.get("card"),
-            **({"details_md": value.get("speak")} if version == 1 else {}),
         }),
-        version,
     )
     return presentation is not None and status == "ready"
 
@@ -356,21 +332,15 @@ def record_hook_projection(response_text, projected_output, session_id):
         row = dict(found) if found else None
         if not row or row.get("submit_state") != "accepted" or not row.get("run_id"):
             return "session_unmapped"
-        version = _version(row)
-        value, status = _presentation(response_text, version)
+        if _version(row) != 2:
+            return "contract_unsupported"
+        value, status = _presentation(response_text)
         if value is None:
             return status
-        if version == 1:
-            artifact, artifact_status = _load_committed_artifact(row)
-            if not artifact:
-                return artifact_status
-            state, reference = "committed", artifact["artifact_ref"]
-        else:
-            state, artifact, _error = _v2_artifact_projection(row)
-            reference = artifact["artifact_ref"] if artifact else None
+        state, artifact, error = _v2_artifact_projection(row)
+        reference = artifact["artifact_ref"] if artifact else None
         expected, projection_status = project_presentation(
-            response_text, reference, version, state,
-            force_failure=bool(version == 2 and _error),
+            response_text, reference, state, force_failure=bool(error)
         )
         if not expected or expected != projected_output:
             return "projection_mismatch"
@@ -391,14 +361,9 @@ def record_existing_projection(projected_output, session_id, *, source_text=None
         row = dict(found) if found else None
         if not row or row.get("submit_state") != "accepted" or not row.get("run_id"):
             return "session_unmapped"
-        version = _version(row)
-        if version == 1:
-            artifact, artifact_status = _load_committed_artifact(row)
-            if not artifact:
-                return artifact_status
-            state = "committed"
-        else:
-            state, artifact, _error = _v2_artifact_projection(row)
+        if _version(row) != 2:
+            return "contract_unsupported"
+        state, artifact, _error = _v2_artifact_projection(row)
         if not _valid_envelope(projected_output, row, state, artifact):
             return "presentation_invalid"
         source = source_text if isinstance(source_text, str) else projected_output
@@ -438,16 +403,11 @@ def check_existing_reprojection(response_text, session_id):
             return "unavailable", "session_unmapped"
         if row.get("hermes_run_status") != "completed":
             return "unavailable", "run_not_completed"
-        version = _version(row)
-        if version == 1:
-            artifact, artifact_status = _load_committed_artifact(row)
-            if not artifact:
-                return "unavailable", artifact_status
-            state = "committed"
-        else:
-            state, artifact, artifact_status = _v2_artifact_projection(row)
-            if artifact_status and state == "failed" and row.get("artifact_status") == "committed":
-                return "unavailable", artifact_status
+        if _version(row) != 2:
+            return "unavailable", "contract_unsupported"
+        state, artifact, artifact_status = _v2_artifact_projection(row)
+        if artifact_status and state == "failed" and row.get("artifact_status") == "committed":
+            return "unavailable", artifact_status
         reference = artifact["artifact_ref"] if artifact else ""
         reference_hash = hashlib.sha256(reference.encode("utf-8")).hexdigest()
         binding_material = chr(0).join(
@@ -497,21 +457,16 @@ def reproject_missing_hook(response_text, session_id):
         if row.get("submit_state") != "accepted" or row.get("hermes_run_status") != "completed":
             return None, "run_not_completed"
 
-        version = _version(row)
-        value, input_status = _presentation(response_text, version)
+        if _version(row) != 2:
+            return None, "contract_unsupported"
+        value, input_status = _presentation(response_text)
         if value is None:
             return None, input_status
-        if version == 1:
-            artifact, artifact_status = _load_committed_artifact(row)
-            if not artifact:
-                return None, artifact_status
-            state, reference, force_failure = "committed", artifact["artifact_ref"], False
-        else:
-            state, artifact, artifact_error = _v2_artifact_projection(row)
-            reference = artifact["artifact_ref"] if artifact else None
-            force_failure = bool(artifact_error)
+        state, artifact, artifact_error = _v2_artifact_projection(row)
+        reference = artifact["artifact_ref"] if artifact else None
+        force_failure = bool(artifact_error)
         projected, projection_status = project_presentation(
-            response_text, reference, version, state, force_failure=force_failure
+            response_text, reference, state, force_failure=force_failure
         )
         if not projected:
             return None, projection_status
