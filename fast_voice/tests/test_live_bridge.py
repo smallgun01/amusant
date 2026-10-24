@@ -14,6 +14,7 @@ from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosedError
 
 from fast_voice.contracts import AudioFrame, ProviderCapabilities, ProviderError, ToolCallEvent, TranscriptEvent, TurnCompleteEvent
+from fast_voice.gemini import GeminiLiveProvider
 from relay.application import (
     build_relay_handler,
     build_supported_relay_handler,
@@ -59,6 +60,8 @@ class FakeProvider:
         self.audio_input = bytearray()
         self.tool_results = []
         self.injected_text = []
+        self.connected_event = asyncio.Event()
+        self.injected_event = asyncio.Event()
 
     def on_audio(self, callback): self.callbacks["audio"] = callback
     def on_transcript(self, callback): self.callbacks["transcript"] = callback
@@ -73,6 +76,7 @@ class FakeProvider:
         self.closed = False
         self.connect_calls += 1
         self.events.append("connect")
+        self.connected_event.set()
 
     async def close(self):
         self.connected = False
@@ -103,7 +107,9 @@ class FakeProvider:
 
     async def send_tool_result(self, call_id, result): self.tool_results.append((call_id, dict(result)))
     async def cancel_response(self): raise NotImplementedError
-    async def inject_text(self, text): self.injected_text.append(text)
+    async def inject_text(self, text):
+        self.injected_text.append(text)
+        self.injected_event.set()
 
 
 class FakeSchemaTypes:
@@ -207,6 +213,15 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
             audio = bytes([132, 3]) * (MIN_UTTERANCE_BYTES // 2)
         await ws.send(audio)
         await ws.send(json.dumps({"type": "ptt_end"}))
+
+    async def _wait_for_spoken_handoff(self):
+        tasks = [
+            task for task in asyncio.all_tasks()
+            if task is not asyncio.current_task()
+            and task.get_name().startswith("inbox-spoken-handoff-")
+        ]
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def test_ptt_pcm_input_streams_to_fake_live_and_audio_returns(self):
         fake = FakeProvider()
@@ -1575,6 +1590,8 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
                     ToolCallEvent("lookup-speak", INBOX_TOOL_NAME, {"task_id": task_id, "speak": True})
                 )
                 await tool_provider.callbacks["tool_batch_complete"]()
+                await asyncio.wait_for(spoken_provider.injected_event.wait(), timeout=1)
+                await self._wait_for_spoken_handoff()
                 self.assertTrue(tool_provider.closed)
                 self.assertTrue(spoken_provider.connected)
                 self.assertEqual(len(spoken_provider.injected_text), 1)
@@ -1603,6 +1620,421 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
                 server.close()
                 await server.wait_closed()
 
+    async def test_gemini_receive_loop_handoff_returns_before_old_session_close(self):
+        task_id = "4db5aabc-284a-4a01-8a6d-5cddcc7934f1"
+        delivery = {"delivery_state": "read"}
+        sessions = []
+        connections = []
+
+        class FakeTypes:
+            class Blob:
+                def __init__(self, **kwargs): self.__dict__.update(kwargs)
+            class ActivityStart: pass
+            class ActivityEnd: pass
+            class FunctionResponse:
+                def __init__(self, **kwargs): self.__dict__.update(kwargs)
+
+        class FakeSession:
+            def __init__(self, *, speak_response=False):
+                self.messages = asyncio.Queue()
+                self.closed = asyncio.Event()
+                self.speak_response = speak_response
+                self.tool_responses = []
+                self.client_contents = []
+                self.client_content_event = asyncio.Event()
+
+            async def receive(self):
+                while not self.closed.is_set():
+                    message = await self.messages.get()
+                    if message is None:
+                        return
+                    yield message
+
+            async def send_realtime_input(self, **_kwargs):
+                return None
+
+            async def send_tool_response(self, **kwargs):
+                self.tool_responses.append(kwargs)
+
+            async def send_client_content(self, **kwargs):
+                self.client_contents.append(kwargs)
+                self.client_content_event.set()
+                if self.speak_response:
+                    await self.messages.put(SimpleNamespace(
+                        server_content=SimpleNamespace(
+                            interrupted=False,
+                            input_transcription=None,
+                            model_turn=SimpleNamespace(parts=[SimpleNamespace(
+                                inline_data=SimpleNamespace(
+                                    data=bytes([1, 0]) * 6000,
+                                    mime_type="audio/pcm;rate=24000",
+                                ),
+                            )]),
+                            output_transcription=SimpleNamespace(text="The saved answer is ready.", finished=True),
+                            turn_complete=True,
+                        ),
+                    ))
+
+        class FakeConnection:
+            def __init__(self, session):
+                self.session = session
+                self.exited = False
+
+            async def __aenter__(self):
+                return self.session
+
+            async def __aexit__(self, *_args):
+                self.exited = True
+                self.session.closed.set()
+
+        class FakeClient:
+            def __init__(self, session):
+                self.connection = FakeConnection(session)
+                self.aio = SimpleNamespace(live=SimpleNamespace(
+                    connect=lambda **_kwargs: self.connection,
+                ))
+
+        class Handler:
+            async def __call__(self, _event, _turn_id):
+                return {
+                    "status": "completed",
+                    "task_id": task_id,
+                    "speak": "Option B is the better local value.",
+                    "speak_now": True,
+                }
+
+            async def mark_spoken(self, marked_task_id):
+                self_marked.append(marked_task_id)
+                delivery["delivery_state"] = "spoken"
+                return True
+
+        self_marked = []
+
+        def provider_factory(speak_response=False):
+            session = FakeSession(speak_response=speak_response)
+            client = FakeClient(session)
+            sessions.append(session)
+            connections.append(client.connection)
+            return GeminiLiveProvider(client, "offline-test-model", {}, FakeTypes)
+
+        provider_count = 0
+
+        def tool_provider_factory():
+            nonlocal provider_count
+            provider_count += 1
+            return provider_factory(speak_response=provider_count == 2)
+
+        server, ws = await self._open(
+            tool_provider_factory,
+            slow_path_tool_handler=Handler(),
+            spoken_provider_factory=lambda: provider_factory(speak_response=True),
+        )
+        try:
+            await self._send_turn(ws)
+            await self._controls_until(ws, lambda item, _items: item.get("state") == "thinking")
+            tool_session = sessions[0]
+            await tool_session.messages.put(SimpleNamespace(
+                tool_call=SimpleNamespace(function_calls=[SimpleNamespace(
+                    id="gemini-inbox-check",
+                    name=INBOX_TOOL_NAME,
+                    args={"speak": True},
+                )]),
+                server_content=SimpleNamespace(
+                    interrupted=False,
+                    input_transcription=None,
+                    model_turn=None,
+                    output_transcription=None,
+                    turn_complete=True,
+                ),
+            ))
+
+            controls, audio_bytes = await self._controls_until(
+                ws, lambda item, _items: item.get("type") == "turn_complete"
+            )
+            await asyncio.wait_for(sessions[1].client_content_event.wait(), timeout=1)
+            await asyncio.wait_for(sessions[0].closed.wait(), timeout=1)
+            await asyncio.wait_for(sessions[1].closed.wait(), timeout=1)
+            await self._wait_for_spoken_handoff()
+
+            self.assertEqual(len(tool_session.tool_responses), 1)
+            self.assertEqual(
+                tool_session.tool_responses[0]["function_responses"][0].response["status"],
+                "completed",
+            )
+            self.assertIn(
+                "Option B is the better local value.",
+                sessions[1].client_contents[0]["turns"]["parts"][0]["text"],
+            )
+            self.assertGreater(audio_bytes, 0)
+            self.assertTrue(any(item.get("type") == "caption" for item in controls))
+            self.assertEqual(self_marked, [task_id])
+            self.assertEqual(delivery["delivery_state"], "spoken")
+            self.assertTrue(all(connection.exited for connection in connections))
+        finally:
+            await ws.close()
+            server.close()
+            await server.wait_closed()
+
+    async def test_spoken_handoff_restarts_timeout_after_slow_new_session_connect(self):
+        task_id = "4db5aabc-284a-4a01-8a6d-5cddcc7934f1"
+        marked = []
+        handoff_events = []
+
+        class Handler:
+            async def __call__(self, _event, _turn_id):
+                return {"status": "completed", "task_id": task_id, "speak": "Saved findings.", "speak_now": True}
+
+            async def mark_spoken(self, task_id_value):
+                marked.append(task_id_value)
+                return True
+
+        class DelayedSpokenProvider(FakeProvider):
+            async def connect(self):
+                handoff_events.append("spoken_connect_start")
+                await asyncio.sleep(0.12)
+                await super().connect()
+
+        class DelayedCloseToolProvider(FakeProvider):
+            async def close(self):
+                handoff_events.append("old_close_start")
+                await asyncio.sleep(0.02)
+                await super().close()
+                handoff_events.append("old_close_complete")
+
+        tool_provider = DelayedCloseToolProvider(auto_complete=False)
+        spoken_provider = DelayedSpokenProvider(auto_complete=False)
+        server, ws = await self._open(
+            lambda: tool_provider,
+            slow_path_tool_handler=Handler(),
+            spoken_provider_factory=lambda: spoken_provider,
+            post_tool_ack_timeout_seconds=0.05,
+            post_tool_ack_max_duration_seconds=0.08,
+            spoken_ack_timeout_seconds=0.15,
+            spoken_ack_max_duration_seconds=0.4,
+        )
+        try:
+            await self._send_turn(ws)
+            await self._controls_until(ws, lambda item, _items: item.get("state") == "thinking")
+            await tool_provider.callbacks["tool"](
+                ToolCallEvent("lookup-delayed-speech", INBOX_TOOL_NAME, {"speak": True})
+            )
+            await tool_provider.callbacks["tool_batch_complete"]()
+            await asyncio.wait_for(spoken_provider.injected_event.wait(), timeout=1)
+            await self._wait_for_spoken_handoff()
+            self.assertTrue(spoken_provider.connected)
+            self.assertEqual(len(spoken_provider.injected_text), 1)
+            self.assertLess(
+                handoff_events.index("old_close_complete"),
+                handoff_events.index("spoken_connect_start"),
+            )
+            await asyncio.sleep(0.02)
+            await spoken_provider.emit_response()
+            controls, audio_bytes = await self._controls_until(
+                ws, lambda item, _items: item.get("type") == "turn_complete"
+            )
+            self.assertGreater(audio_bytes, 0)
+            self.assertEqual(marked, [task_id])
+            self.assertFalse(any(item.get("title") == "Saved result available" for item in controls))
+        finally:
+            await ws.close()
+            server.close()
+            await server.wait_closed()
+
+    async def test_stalled_old_session_close_terminates_handoff_without_spoken_ack(self):
+        task_id = "4db5aabc-284a-4a01-8a6d-5cddcc7934f1"
+        close_entered = asyncio.Event()
+        release_close = asyncio.Event()
+        close_finished = asyncio.Event()
+        delivery = {"delivery_state": "read"}
+        spoken_provider = FakeProvider(auto_complete=False)
+
+        class Handler:
+            async def __call__(self, _event, _turn_id):
+                return {"status": "completed", "task_id": task_id, "speak": "Saved findings.", "speak_now": True}
+
+            async def mark_spoken(self, _task_id):
+                delivery["delivery_state"] = "spoken"
+                return True
+
+        tool_provider = FakeProvider(auto_complete=False)
+
+        async def blocked_close():
+            tool_provider.close_calls += 1
+            close_entered.set()
+            try:
+                await release_close.wait()
+            finally:
+                tool_provider.closed = True
+                tool_provider.connected = False
+                close_finished.set()
+
+        tool_provider.close = blocked_close
+        server, ws = await self._open(
+            lambda: tool_provider,
+            slow_path_tool_handler=Handler(),
+            spoken_provider_factory=lambda: spoken_provider,
+            spoken_ack_timeout_seconds=0.05,
+            spoken_ack_max_duration_seconds=0.1,
+        )
+        handoff = None
+        try:
+            await self._send_turn(ws)
+            await self._controls_until(ws, lambda item, _items: item.get("state") == "thinking")
+            await tool_provider.callbacks["tool"](
+                ToolCallEvent("lookup-stalled-close", INBOX_TOOL_NAME, {"speak": True})
+            )
+            handoff = asyncio.create_task(tool_provider.callbacks["tool_batch_complete"]())
+            await asyncio.wait_for(close_entered.wait(), timeout=1)
+            await asyncio.wait_for(handoff, timeout=1)
+            controls, audio_bytes = await self._controls_until(
+                ws, lambda item, _items: item.get("type") == "turn_complete"
+            )
+            await self._controls_until(ws, lambda item, _items: item.get("state") == "idle")
+
+            self.assertTrue(any(item.get("title") == "Saved result available" for item in controls))
+            self.assertEqual(audio_bytes, 0)
+            self.assertEqual(delivery["delivery_state"], "read")
+            self.assertEqual(spoken_provider.connect_calls, 0)
+
+            # A queued callback from the retired epoch cannot leak speech or captions.
+            await tool_provider.callbacks["audio"](AudioFrame(bytes([1, 0]) * 1000, 24000))
+            await tool_provider.callbacks["transcript"](TranscriptEvent("stale old speech", "output", True))
+            with self.assertRaises(asyncio.TimeoutError):
+                await asyncio.wait_for(ws.recv(), timeout=0.03)
+        finally:
+            release_close.set()
+            if handoff is not None and not handoff.done():
+                await asyncio.gather(handoff, return_exceptions=True)
+            if close_entered.is_set():
+                await asyncio.wait_for(close_finished.wait(), timeout=1)
+            await ws.close()
+            server.close()
+            await server.wait_closed()
+
+    async def test_client_disconnect_during_spoken_handoff_fences_late_connect(self):
+        close_entered = asyncio.Event()
+        release_close = asyncio.Event()
+        delivery = {"delivery_state": "read"}
+        spoken_provider = FakeProvider(auto_complete=False)
+
+        class Handler:
+            async def __call__(self, _event, _turn_id):
+                return {
+                    "status": "completed",
+                    "task_id": "4db5aabc-284a-4a01-8a6d-5cddcc7934f1",
+                    "speak": "Saved findings.",
+                    "speak_now": True,
+                }
+
+            async def mark_spoken(self, _task_id):
+                delivery["delivery_state"] = "spoken"
+                return True
+
+        tool_provider = FakeProvider(auto_complete=False)
+
+        async def blocked_close():
+            close_entered.set()
+            await release_close.wait()
+            tool_provider.closed = True
+
+        tool_provider.close = blocked_close
+        server, ws = await self._open(
+            lambda: tool_provider,
+            slow_path_tool_handler=Handler(),
+            spoken_provider_factory=lambda: spoken_provider,
+            spoken_ack_timeout_seconds=0.2,
+            spoken_ack_max_duration_seconds=0.5,
+        )
+        handoff = None
+        try:
+            await self._send_turn(ws)
+            await self._controls_until(ws, lambda item, _items: item.get("state") == "thinking")
+            await tool_provider.callbacks["tool"](
+                ToolCallEvent("lookup-disconnect-handoff", INBOX_TOOL_NAME, {"speak": True})
+            )
+            handoff = asyncio.create_task(tool_provider.callbacks["tool_batch_complete"]())
+            await asyncio.wait_for(close_entered.wait(), timeout=1)
+
+            await ws.close()
+            server.close()
+            await server.wait_closed()
+            release_close.set()
+            await asyncio.wait_for(handoff, timeout=1)
+            await self._wait_for_spoken_handoff()
+
+            self.assertEqual(spoken_provider.connect_calls, 0)
+            self.assertEqual(delivery["delivery_state"], "read")
+        finally:
+            release_close.set()
+            if handoff is not None and not handoff.done():
+                await asyncio.gather(handoff, return_exceptions=True)
+            server.close()
+            await server.wait_closed()
+
+    async def _assert_spoken_handoff_stage_timeout(self, stage):
+        task_id = "4db5aabc-284a-4a01-8a6d-5cddcc7934f1"
+        stage_entered = asyncio.Event()
+        release_stage = asyncio.Event()
+        delivery = {"delivery_state": "read"}
+        spoken_provider = FakeProvider(auto_complete=False)
+
+        class Handler:
+            async def __call__(self, _event, _turn_id):
+                return {"status": "completed", "task_id": task_id, "speak": "Saved findings.", "speak_now": True}
+
+            async def mark_spoken(self, _task_id):
+                delivery["delivery_state"] = "spoken"
+                return True
+
+        if stage == "connect":
+            async def stalled_connect():
+                spoken_provider.connect_calls += 1
+                stage_entered.set()
+                await release_stage.wait()
+            spoken_provider.connect = stalled_connect
+        else:
+            async def stalled_inject(_text):
+                stage_entered.set()
+                await release_stage.wait()
+            spoken_provider.inject_text = stalled_inject
+
+        tool_provider = FakeProvider(auto_complete=False)
+        server, ws = await self._open(
+            lambda: tool_provider,
+            slow_path_tool_handler=Handler(),
+            spoken_provider_factory=lambda: spoken_provider,
+            spoken_ack_timeout_seconds=0.04,
+            spoken_ack_max_duration_seconds=0.15,
+        )
+        try:
+            await self._send_turn(ws)
+            await self._controls_until(ws, lambda item, _items: item.get("state") == "thinking")
+            await tool_provider.callbacks["tool"](
+                ToolCallEvent(f"lookup-{stage}-timeout", INBOX_TOOL_NAME, {"speak": True})
+            )
+            with self.assertLogs("amusant.p2.live_bridge", level="WARNING") as logs:
+                await tool_provider.callbacks["tool_batch_complete"]()
+                controls, audio_bytes = await self._controls_until(
+                    ws, lambda item, _items: item.get("type") == "turn_complete"
+                )
+                await asyncio.wait_for(stage_entered.wait(), timeout=1)
+            self.assertIn(f"phase=spoken_session_{'connect' if stage == 'connect' else 'inject_text'}", "\n".join(logs.output))
+            self.assertTrue(any(item.get("title") == "Saved result available" for item in controls))
+            self.assertEqual(audio_bytes, 0)
+            self.assertEqual(delivery["delivery_state"], "read")
+            self.assertEqual(spoken_provider.injected_text, [])
+        finally:
+            release_stage.set()
+            await ws.close()
+            server.close()
+            await server.wait_closed()
+
+    async def test_spoken_handoff_connect_timeout_keeps_inbox_read(self):
+        await self._assert_spoken_handoff_stage_timeout("connect")
+
+    async def test_spoken_handoff_inject_text_timeout_keeps_inbox_read(self):
+        await self._assert_spoken_handoff_stage_timeout("inject_text")
+
     async def test_interrupted_spoken_result_does_not_mark_spoken(self):
         spoken_calls = []
         class Handler:
@@ -1623,6 +2055,7 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
             await self._controls_until(ws, lambda item, _items: item.get("state") == "thinking")
             await tool_provider.callbacks["tool"](ToolCallEvent("lookup-interrupt", INBOX_TOOL_NAME, {"speak": True}))
             await tool_provider.callbacks["tool_batch_complete"]()
+            await asyncio.wait_for(spoken_provider.injected_event.wait(), timeout=1)
             await spoken_provider.callbacks["audio"](AudioFrame(bytes([1, 0]) * 6000, 24000))
             await spoken_provider.callbacks["interrupted"](None)
             await spoken_provider.callbacks["complete"](TurnCompleteEvent(cancelled=True))
@@ -1665,6 +2098,7 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
             await self._controls_until(ws, lambda item, _items: item.get("state") == "thinking")
             await tool_provider.callbacks["tool"](ToolCallEvent("lookup-flush", INBOX_TOOL_NAME, {"speak": True}))
             await tool_provider.callbacks["tool_batch_complete"]()
+            await asyncio.wait_for(spoken_provider.injected_event.wait(), timeout=1)
             await spoken_provider.callbacks["audio"](AudioFrame(bytes([1, 0]) * 6000, 24000))
             await spoken_provider.callbacks["transcript"](TranscriptEvent("Saved.", "output", True))
             await spoken_provider.callbacks["complete"](TurnCompleteEvent(cancelled=False))
@@ -1698,6 +2132,8 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
                     spoken_provider_factory=lambda: spoken_provider,
                     post_tool_ack_timeout_seconds=0.05,
                     post_tool_ack_max_duration_seconds=0.05,
+                    spoken_ack_timeout_seconds=0.05,
+                    spoken_ack_max_duration_seconds=0.05,
                 )
                 try:
                     await self._send_turn(ws)
@@ -1706,6 +2142,7 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
                         ToolCallEvent("lookup-stall", INBOX_TOOL_NAME, {"speak": True})
                     )
                     await tool_provider.callbacks["tool_batch_complete"]()
+                    await asyncio.wait_for(spoken_provider.injected_event.wait(), timeout=1)
                     if emit_partial_audio:
                         await spoken_provider.callbacks["audio"](
                             AudioFrame(bytes([1, 0]) * 3000, 24000)
@@ -1774,6 +2211,8 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
                     ToolCallEvent("lookup-app", INBOX_TOOL_NAME, {"task_id": task_id, "speak": True})
                 )
                 await tool_provider.callbacks["tool_batch_complete"]()
+                await asyncio.wait_for(spoken_provider.injected_event.wait(), timeout=1)
+                await self._wait_for_spoken_handoff()
                 self.assertIn("tool_declarations", provider_kwargs[0])
                 self.assertNotIn("tool_declarations", provider_kwargs[1])
                 self.assertIs(provider_kwargs[1]["allow_google_search"], False)
@@ -1842,6 +2281,8 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
             spoken_provider_factory=lambda: spoken_provider,
             post_tool_ack_timeout_seconds=0.05,
             post_tool_ack_max_duration_seconds=0.1,
+            spoken_ack_timeout_seconds=0.05,
+            spoken_ack_max_duration_seconds=0.1,
         )
         try:
             await self._send_turn(ws)
@@ -1899,6 +2340,8 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
             spoken_provider_factory=lambda: spoken_provider,
             post_tool_ack_timeout_seconds=0.05,
             post_tool_ack_max_duration_seconds=0.1,
+            spoken_ack_timeout_seconds=0.05,
+            spoken_ack_max_duration_seconds=0.1,
         )
         try:
             await self._send_turn(ws)
@@ -2039,6 +2482,7 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
 
             release_connect.set()
             await asyncio.wait_for(handoff, timeout=1)
+            await self._wait_for_spoken_handoff()
             self.assertFalse(spoken_provider.connected)
             self.assertEqual(spoken_provider.injected_text, [])
             self.assertEqual(normal_provider.injected_text, [])
