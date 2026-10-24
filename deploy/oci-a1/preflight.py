@@ -18,6 +18,7 @@ NETWORK_NAMES = (
     "RELAY_EGRESS_CIDR", "HERMES_EGRESS_CIDR",
 )
 IMAGE_NAMES = ("RELAY_IMAGE", "FACADE_IMAGE", "HERMES_IMAGE", "EGRESS_PROXY_IMAGE")
+RESULT_CONTRACT_VERSION_ENV = "AMUSANT_RESULT_CONTRACT_VERSION"
 IP_NAMES_BY_NETWORK = {
     "RELAY_API_CIDR": ("RELAY_BIND_IP", "FACADE_RELAY_BIND_IP"),
     "HERMES_API_CIDR": ("FACADE_HERMES_BIND_IP", "HERMES_API_BIND_IP"),
@@ -91,6 +92,15 @@ def _contained_host(
 
 
 def validate(values: dict[str, str]) -> None:
+    # The old selector is not part of the v2-only runtime. Reject a stale v1
+    # value in the operator's Compose .env even though current Compose does not
+    # pass this variable to Relay. Blank and 2 are harmless during cleanup.
+    result_contract_version = values.get(RESULT_CONTRACT_VERSION_ENV, "").strip()
+    if result_contract_version not in {"", "2"}:
+        raise PreflightError(
+            f"{RESULT_CONTRACT_VERSION_ENV} is obsolete; remove it or leave it blank/set it to 2"
+        )
+
     for name in REQUIRED:
         if not values.get(name, "").strip():
             raise PreflightError(f"{name} is required")

@@ -6,7 +6,7 @@ The Owner has retired Hermes Option D Result Contract v1. Result Contract v2 is 
 
 | Area | Classification | Result |
 | --- | --- | --- |
-| `relay/application.py`, `relay/slow_path.py` | Replace with v2 | New Hermes admissions no longer read a selection setting; a stale `AMUSANT_RESULT_CONTRACT_VERSION` accepts only blank/`2` and does not select behavior. The default path needs no opt-in. |
+| `relay/application.py`, `relay/slow_path.py`, OCI preflight | Replace with v2 | New Hermes admissions no longer read a selection setting; Relay and OCI preflight reject a stale `AMUSANT_RESULT_CONTRACT_VERSION` other than blank/`2`, and neither value selects behavior. The default path needs no opt-in. |
 | `relay/hermes_result.py`, `relay/hermes_runs_executor.py` | Remove v1 runtime behavior; replace with v2 | The only prompt and parser use the bounded v2 result. The executor always submits header `2`, refuses a pre-cutover Hermes row pinned to v1 before network access, and records a bounded delivery failure when a confirmed completed Run has invalid/missing presentation. |
 | `relay/task_store.py`, `relay/dynamodb_task_store.py` | Preserve historical storage; enforce v2 for Hermes | New Hermes writes pin `2`, including SQLite and DynamoDB. Historical missing version values still read as v1 for audit and fail closed if an old Hermes row is dispatched. SQLite's additive schema migration retains its historical default `1`; fresh schema default is `2`. ACP continues to use its existing independent contract metadata. |
 | `relay/task_store.py` result `details_md` | Preserve | The column and result API remain for unrelated history/ACP. Hermes v2 writes only its bounded `speak` value there. Complete reports never enter Relay or Gemini Live. |
@@ -56,13 +56,57 @@ The repository build example uses the local tag `amusant-relay:oci-arm64`; an OC
 
 ## Rollback
 
-Rollback is a coordinated release-and-data operation. Prefer the last **v2-capable** release and keep all new admissions configured for Result Contract v2. The reviewed source baseline `a416ff3` is v2-capable; if a selected earlier v2-capable binary still has the historical selector, set it to `2` only for that rollback configuration. Do not treat v1 as a normal product mode, and do not choose a v1-only image or plugin.
+Rollback is a coordinated release-and-data operation. Prefer the last **v2-only** release and restore its matching Relay image, Facade image, mounted plugin, Compose file, Hermes configuration, and compatible data snapshot together. Keep ingress closed until all checks below pass.
+
+The reviewed source baseline `a416ff3` can run v2, but it is **not v2-by-default**: its Relay defaults to v1, and its Compose file does not forward `AMUSANT_RESULT_CONTRACT_VERSION` from `.env`. Setting that value in `.env` alone has no effect on the old Relay process. If this baseline is the only retained compatible release, use a release-local Compose override to inject the selector into Relay's actual process environment:
+
+```yaml
+services:
+  relay:
+    environment:
+      AMUSANT_RESULT_CONTRACT_VERSION: "2"
+```
+
+Use that override with the rollback release's exact `.env` and Compose file for every Compose command. Before starting services, require the rendered configuration to contain the Relay value:
+
+```sh
+docker compose --env-file "$ROLLBACK_DIR/.env" \
+  -f "$ROLLBACK_DIR/compose.yaml" \
+  -f "$ROLLBACK_DIR/compose.v2-rollback.yaml" \
+  config --format json \
+  | jq -e '.services.relay.environment.AMUSANT_RESULT_CONTRACT_VERSION == "2"' >/dev/null
+```
+
+Start the coordinated bundle only while operator ingress remains closed. Use the same `--env-file` and `-f` arguments to verify the running Relay's configured environment and loaded process config:
+
+```sh
+relay_id=$(docker compose --env-file "$ROLLBACK_DIR/.env" \
+  -f "$ROLLBACK_DIR/compose.yaml" \
+  -f "$ROLLBACK_DIR/compose.v2-rollback.yaml" ps -q relay)
+test -n "$relay_id"
+docker inspect "$relay_id" --format '{{range .Config.Env}}{{println .}}{{end}}' \
+  | grep -Fx 'AMUSANT_RESULT_CONTRACT_VERSION=2' >/dev/null
+docker exec -i "$relay_id" /app/.venv/bin/python - <<'PY'
+import os
+from pathlib import Path
+from relay.application import load_relay_process_config
+
+token = Path(os.environ["AMUSANT_DEVICE_TOKEN_FILE"]).read_text(encoding="utf-8").rstrip()
+config = load_relay_process_config(os.environ, expected_device_token=token)
+assert config.result_contract_version == 2
+print("Relay process configuration selects Result Contract v2")
+PY
+```
+
+Before reopening ingress, run the native ARM64 Hermes→Facade→Relay/Inbox integration proof in an isolated environment against the selected release's exact image digests with fake providers. Confirm a newly admitted task persists contract version `2` and its first Facade submit carries header `2`. Do not use a live provider for this gate. If the candidate release cannot run that proof, or any gate fails, keep services stopped and ingress closed; do not silently fall back to a v1-default binary.
+
+Do not treat v1 as a normal product mode, and do not choose a v1-only image or plugin. The result-version selector is only a compatibility input for that explicitly reviewed old release override; it is not a supported runtime toggle.
 
 Never roll back while any remote Hermes Run is unresolved, any Relay task is queued/running/uncertain, any Facade request has unknown/nonterminal Hermes status, or new v2 state would be lost, overwritten, or misread by the selected release. Stop new admissions, re-run both status inventories, and wait for terminal confirmation. Preserve the post-cutover databases and artifacts before any restore. Restore a coordinated snapshot only when the chosen v2-capable release understands every v2 row and artifact reference in that snapshot. If that cannot be proven, leave the system stopped and escalate for an explicit data-recovery plan; do not point a v1-only release at v2 state.
 
 ## Regression proof, risks, and limits
 
-Targeted tests cover default v2 admission and prompt, no-Artifact short answers, committed reports, truthful writer failure, v1 schema/header rejection, malformed/oversized/forged results, owner/session/Run/reference binding, report privacy, idempotent POST and GET-only restart, SQLite/DynamoDB durable Run state and single-flight, plus FAST and spoken delivery regressions. Current CI replaces the old Issue #79 v1 acceptance job with the focused v2 test suites; the native integrated E2E and ARM64 gate now use the v2 proof. The historical v1 POC executable sources are removed; its sanitized summary remains separate from current acceptance evidence.
+Targeted tests cover default v2 admission and prompt, no-Artifact short answers, committed reports, truthful writer failure, v1 schema/header rejection, malformed/oversized/forged results, owner/session/Run/reference binding, report privacy, idempotent POST and GET-only restart, SQLite/DynamoDB durable Run state and single-flight, plus FAST and spoken delivery regressions. Current CI replaces the old Issue #79 v1 acceptance job with the focused v2 test suites; the native integrated E2E and ARM64 gate now use the v2 proof. Draft CI skips heavy jobs, so before merge require full CI and the separate native ARM64 Hermes→Facade→Relay/Inbox proof to pass on the same head SHA. The historical v1 POC executable sources are removed; its sanitized summary remains separate from current acceptance evidence.
 
 Material limitations:
 
