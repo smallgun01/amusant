@@ -49,6 +49,8 @@ WEBSOCKET_CLOSE_TIMEOUT_SECONDS = 2.0
 PROVIDER_CLOSE_TIMEOUT_SECONDS = 2.0
 _BACKGROUND_PROVIDER_CLEANUP_TASKS: set[asyncio.Task[Any]] = set()
 _BACKGROUND_PROVIDER_OPERATION_TASKS: set[asyncio.Task[Any]] = set()
+_BACKGROUND_PROVIDER_RETIRE_TASKS: set[asyncio.Task[Any]] = set()
+_BACKGROUND_HANDOFF_TASKS: set[asyncio.Task[Any]] = set()
 ProviderFactory = Callable[[], LiveProvider]
 SlowPathToolHandler = Callable[[ToolCallEvent, int], Awaitable[Mapping[str, JSONValue]]]
 SlowPathToolHandlerFactory = Callable[[str, str], SlowPathToolHandler]
@@ -260,6 +262,32 @@ def make_handler(
 
             task.add_done_callback(cleanup_finished)
 
+        def retain_background_task(
+            task: asyncio.Task[Any],
+            collection: set[asyncio.Task[Any]],
+            *,
+            turn_id: int,
+            phase: str,
+        ) -> None:
+            collection.add(task)
+
+            def background_finished(done: asyncio.Task[Any]) -> None:
+                collection.discard(done)
+                if done.cancelled():
+                    LOG.info(
+                        "Live background task cancelled turn_id=%d phase=%s",
+                        turn_id, phase,
+                    )
+                    return
+                error = done.exception()
+                if error is not None:
+                    LOG.warning(
+                        "Live background task failed turn_id=%d phase=%s error_type=%s",
+                        turn_id, phase, type(error).__name__,
+                    )
+
+            task.add_done_callback(background_finished)
+
         def observe_provider_operation(
             task: asyncio.Task[Any], *, turn_id: int, epoch: int, phase: str
         ) -> None:
@@ -459,7 +487,10 @@ def make_handler(
                 except ConnectionClosed:
                     return False
             if device_send_failed:
-                await retire_provider(epoch)
+                defer_provider_retire(
+                    detach_provider(epoch, turn_id=turn.turn_id),
+                    phase="provider_retire_after_send_failure",
+                )
                 return False
             if (
                 turn.spoken_task_id is not None
@@ -483,8 +514,9 @@ def make_handler(
                 turn.turn_id, device, turn.input_bytes, turn.output_bytes,
             )
             if turn.tool_disabled:
-                await retire_provider(
-                    epoch, phase="spoken_session_teardown", turn_id=turn.turn_id
+                defer_provider_retire(
+                    detach_provider(epoch, turn_id=turn.turn_id),
+                    phase="spoken_session_teardown",
                 )
             return True
 
@@ -520,7 +552,10 @@ def make_handler(
                     except ConnectionClosed:
                         return False
             if device_send_failed:
-                await retire_provider(turn.provider_epoch)
+                defer_provider_retire(
+                    detach_provider(turn.provider_epoch, turn_id=turn.turn_id),
+                    phase="provider_retire_after_local_send_failure",
+                )
                 return False
             return True
 
@@ -551,18 +586,16 @@ def make_handler(
                 return False
             return close_task.exception() is None
 
-        async def retire_provider(
+        def detach_provider(
             expected_epoch: int | None = None,
             *,
-            timeout_seconds: float = PROVIDER_CLOSE_TIMEOUT_SECONDS,
-            phase: str = "provider_retire",
             turn_id: int | None = None,
-        ) -> bool:
+        ) -> tuple[LiveProvider, int, int] | None:
             nonlocal provider, provider_connected, provider_epoch, response_turn
             old = provider
             old_epoch = provider_epoch
             if old is None or (expected_epoch is not None and expected_epoch != old_epoch):
-                return True
+                return None
             close_turn_id = turn_id
             if close_turn_id is None and response_turn is not None and response_turn.provider_epoch == old_epoch:
                 close_turn_id = response_turn.turn_id
@@ -573,6 +606,42 @@ def make_handler(
             provider_epoch += 1  # Fence callbacks before awaiting session teardown.
             if response_turn is not None and response_turn.provider_epoch == old_epoch:
                 response_turn = None
+            return old, old_epoch, close_turn_id
+
+        def defer_provider_retire(
+            detached: tuple[LiveProvider, int, int] | None,
+            *,
+            phase: str,
+            timeout_seconds: float = PROVIDER_CLOSE_TIMEOUT_SECONDS,
+        ) -> None:
+            if detached is None:
+                return
+            old, old_epoch, close_turn_id = detached
+            task = asyncio.create_task(close_provider_bounded(
+                old,
+                turn_id=close_turn_id,
+                epoch=old_epoch,
+                phase=phase,
+                timeout_seconds=timeout_seconds,
+            ))
+            retain_background_task(
+                task,
+                _BACKGROUND_PROVIDER_RETIRE_TASKS,
+                turn_id=close_turn_id,
+                phase=phase,
+            )
+
+        async def retire_provider(
+            expected_epoch: int | None = None,
+            *,
+            timeout_seconds: float = PROVIDER_CLOSE_TIMEOUT_SECONDS,
+            phase: str = "provider_retire",
+            turn_id: int | None = None,
+        ) -> bool:
+            detached = detach_provider(expected_epoch, turn_id=turn_id)
+            if detached is None:
+                return True
+            old, old_epoch, close_turn_id = detached
             return await close_provider_bounded(
                 old,
                 turn_id=close_turn_id,
@@ -647,7 +716,10 @@ def make_handler(
                             turn.output_bytes += len(chunk)
                 except DeviceProtocolError:
                     await fail_turn(turn, "device_audio_encode_failed")
-                    await retire_provider(epoch)
+                    defer_provider_retire(
+                        detach_provider(epoch, turn_id=turn.turn_id),
+                        phase="provider_retire_after_audio_encode_failure",
+                    )
 
             async def on_transcript(event: Any) -> None:
                 turn = response_turn
@@ -676,12 +748,18 @@ def make_handler(
                     return
                 if not isinstance(event.call_id, str) or not event.call_id or len(event.call_id) > 128:
                     await fail_turn(turn, "invalid_tool_call")
-                    await retire_provider(epoch)
+                    defer_provider_retire(
+                        detach_provider(epoch, turn_id=turn.turn_id),
+                        phase="provider_retire_after_invalid_tool_call",
+                    )
                     return
                 if event.call_id in turn.tool_call_ids:
                     # This call_id already has its single correlated response.
                     await fail_turn(turn, "duplicate_tool_call_id")
-                    await retire_provider(epoch)
+                    defer_provider_retire(
+                        detach_provider(epoch, turn_id=turn.turn_id),
+                        phase="provider_retire_after_duplicate_tool_call",
+                    )
                     return
                 turn.tool_call_ids.add(event.call_id)
 
@@ -768,54 +846,26 @@ def make_handler(
                         turn.pending_spoken_text = spoken
                         turn.spoken_task_id = task_id
 
-            async def on_tool_calls_complete() -> None:
-                turn = response_turn
-                if (
-                    turn is None
-                    or not turn.spoken_requested
-                    or not owns_response(turn, epoch)
-                ):
-                    return
-                if (
-                    spoken_provider_factory is None
-                    or turn.pending_spoken_text is None
-                    or turn.spoken_task_id is None
-                ):
-                    turn.pending_spoken_text = None
-                    finished = await finish_locally(
-                        turn,
-                        TurnState.CLOSED,
-                        [
-                            {"type": "card", "title": "Speech unavailable", "lines": [
-                                "The saved result is available.",
-                                "A tool-disabled speech session is not configured.",
-                            ], "icon": "brain"},
-                            {"type": "turn_complete"},
-                            {"type": "state", "state": "idle"},
-                        ],
-                    )
-                    if finished:
-                        await retire_provider(epoch)
-                    return
-
-                spoken_text = turn.pending_spoken_text
-                turn.pending_spoken_text = None
-                turn.tool_disabled = True
-                turn.post_tool_output_seen = False
-                turn.output_bytes = 0
-                cancel_post_tool_timeout(turn)
-                handoff_deadline = asyncio.get_running_loop().time() + spoken_ack_max_duration_seconds
-                turn.post_tool_deadline = handoff_deadline
+            async def perform_spoken_handoff(
+                turn: Turn,
+                spoken_text: str,
+                detached: tuple[LiveProvider, int, int] | None,
+                handoff_deadline: float,
+            ) -> None:
                 close_timeout = min(
                     PROVIDER_CLOSE_TIMEOUT_SECONDS,
                     max(0.0, handoff_deadline - asyncio.get_running_loop().time()),
                 )
-                old_closed = await retire_provider(
-                    epoch,
-                    timeout_seconds=close_timeout,
-                    phase="spoken_handoff_old_session_close",
-                    turn_id=turn.turn_id,
-                )
+                old_closed = True
+                if detached is not None:
+                    old, old_epoch, close_turn_id = detached
+                    old_closed = await close_provider_bounded(
+                        old,
+                        turn_id=close_turn_id,
+                        epoch=old_epoch,
+                        phase="spoken_handoff_old_session_close",
+                        timeout_seconds=close_timeout,
+                    )
                 # PTT may supersede this turn while the old provider is closing.
                 if not owns_active_turn(turn):
                     return
@@ -875,6 +925,59 @@ def make_handler(
                     )
                     await fail_spoken_handoff(turn, phase, type(error).__name__)
 
+            async def on_tool_calls_complete() -> None:
+                turn = response_turn
+                if (
+                    turn is None
+                    or not turn.spoken_requested
+                    or not owns_response(turn, epoch)
+                ):
+                    return
+                if (
+                    spoken_provider_factory is None
+                    or turn.pending_spoken_text is None
+                    or turn.spoken_task_id is None
+                ):
+                    turn.pending_spoken_text = None
+                    detached = detach_provider(epoch, turn_id=turn.turn_id)
+                    await finish_locally(
+                        turn,
+                        TurnState.CLOSED,
+                        [
+                            {"type": "card", "title": "Speech unavailable", "lines": [
+                                "The saved result is available.",
+                                "A tool-disabled speech session is not configured.",
+                            ], "icon": "brain"},
+                            {"type": "turn_complete"},
+                            {"type": "state", "state": "idle"},
+                        ],
+                    )
+                    # This callback runs inline in Gemini's receive task. Start
+                    # teardown only after it has returned to the receive loop.
+                    defer_provider_retire(detached, phase="spoken_speech_unavailable_cleanup")
+                    return
+
+                spoken_text = turn.pending_spoken_text
+                turn.pending_spoken_text = None
+                turn.tool_disabled = True
+                turn.post_tool_output_seen = False
+                turn.output_bytes = 0
+                cancel_post_tool_timeout(turn)
+                handoff_deadline = asyncio.get_running_loop().time() + spoken_ack_max_duration_seconds
+                turn.post_tool_deadline = handoff_deadline
+                detached = detach_provider(epoch, turn_id=turn.turn_id)
+                handoff_task = asyncio.create_task(perform_spoken_handoff(
+                    turn, spoken_text, detached, handoff_deadline
+                ), name=f"inbox-spoken-handoff-{turn.turn_id}")
+                retain_background_task(
+                    handoff_task,
+                    _BACKGROUND_HANDOFF_TASKS,
+                    turn_id=turn.turn_id,
+                    phase="inbox_spoken_handoff",
+                )
+                # Do not await here: Gemini awaits this callback from its receive
+                # loop, while the handoff worker retires this same provider.
+
             async def on_interrupted(_event: Any) -> None:
                 turn = response_turn
                 if turn is None:
@@ -912,7 +1015,10 @@ def make_handler(
                     )
                     await fail_turn(turn, error.code)
                 if error.code in {"duplicate_tool_call_id", "tool_call_id_capacity"}:
-                    await retire_provider(epoch)
+                    defer_provider_retire(
+                        detach_provider(epoch, turn_id=turn.turn_id if turn is not None else None),
+                        phase="provider_retire_after_receive_error",
+                    )
 
             instance.on_audio(on_audio)
             instance.on_transcript(on_transcript)
