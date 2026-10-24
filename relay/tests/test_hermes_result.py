@@ -4,6 +4,7 @@ import json
 import unittest
 
 from relay.hermes_result import (
+    MAX_INPUT_CHARS,
     HERMES_RESULT_INSTRUCTIONS,
     HERMES_RESULT_V2_INSTRUCTIONS,
     CONTENTFUL_SPEECH_INSTRUCTIONS,
@@ -11,6 +12,7 @@ from relay.hermes_result import (
     parse_hermes_run_result,
 )
 from types import SimpleNamespace
+from relay.task_store import MAX_TASK_CHARS
 
 
 def envelope(**overrides):
@@ -102,21 +104,36 @@ class HermesResultTests(unittest.TestCase):
                     result_contract_version=version,
                 )
                 prompt = build_hermes_run_prompt(task)
-                self.assertIn("self-contained spoken answer", prompt)
-                self.assertIn("key trade-off", prompt)
+                self.assertIn("Speak findings, not a completion notice", prompt)
+                self.assertIn("trade-offs and choice criteria", prompt)
                 self.assertIn("Taiwan Traditional Chinese", prompt)
-                self.assertIn("within 240 characters", prompt)
-                self.assertIn("Do not expose full reports", prompt)
+                self.assertIn("keep technical terms", prompt)
+                self.assertIn("Be factual", prompt)
                 self.assertIn(f"schema_version={version}", prompt)
 
     def test_contentful_speech_instruction_preserves_bounded_relay_contract(self):
-        self.assertIn("not just a completion notice", CONTENTFUL_SPEECH_INSTRUCTIONS)
-        self.assertIn("meaningful uncertainty", CONTENTFUL_SPEECH_INSTRUCTIONS)
+        self.assertIn("not a completion notice", CONTENTFUL_SPEECH_INSTRUCTIONS)
+        self.assertIn("Be factual", CONTENTFUL_SPEECH_INSTRUCTIONS)
         self.assertEqual(parse_hermes_run_result(envelope()).details_md, "The report is ready.")
         self.assertRaisesRegex(
             ValueError, "speak_invalid",
             parse_hermes_run_result, envelope(speak="x" * 241),
         )
+
+    def test_maximum_admitted_task_remains_accepted_after_quality_guidance(self):
+        for version in (1, 2):
+            with self.subTest(version=version):
+                task = SimpleNamespace(
+                    task_kind="summarize",
+                    task="x" * MAX_TASK_CHARS,
+                    result_contract_version=version,
+                )
+                prompt = build_hermes_run_prompt(task)
+                self.assertLessEqual(len(prompt), MAX_INPUT_CHARS)
+                self.assertIn(CONTENTFUL_SPEECH_INSTRUCTIONS, prompt)
+                task.task = "x" * (MAX_TASK_CHARS + 1)
+                with self.assertRaisesRegex(ValueError, "hermes_task_invalid"):
+                    build_hermes_run_prompt(task)
 
     def test_v2_accepts_optional_and_committed_artifact_envelopes(self):
         base = {
