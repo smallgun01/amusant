@@ -33,6 +33,12 @@ HERMES_RESULT_V2_INSTRUCTIONS = (
     "A short answer may be returned without an Artifact when no report is written. Do not put the full report in this object. "
     "Do not include status, task_id, owner, permissions, paths, artifact references, details_md, or tool calls."
 )
+# Keep this short: v1/v2 prompts reserve only 1,024 extra characters after the
+# 4,096-character admitted task. The full report remains in Facade.
+CONTENTFUL_SPEECH_INSTRUCTIONS = (
+    "Speak findings, not a completion notice. Compare trade-offs and choice criteria; research gives a key finding. For Chinese tasks use Taiwan Traditional Chinese; keep technical terms. Be factual."
+)
+
 V2_DELIVERY_FAILURE_SPEAK = "The task finished, but result delivery needs recovery."
 V2_DELIVERY_FAILURE_TITLE = "Result needs recovery"
 V2_DELIVERY_FAILURE_LINES = ["The short result could not be safely delivered."]
@@ -89,7 +95,7 @@ def build_hermes_run_prompt(task: ClaimedTask) -> str:
     instructions = HERMES_RESULT_V2_INSTRUCTIONS if version == 2 else HERMES_RESULT_INSTRUCTIONS
     prompt = (
         "Task kind: " + task.task_kind + "\n\nTask request:\n" + task_text
-        + "\n\n" + instructions
+        + "\n\n" + instructions + "\n\n" + CONTENTFUL_SPEECH_INSTRUCTIONS
     )
     if len(prompt) > MAX_INPUT_CHARS:
         raise ValueError("hermes_prompt_too_large")
