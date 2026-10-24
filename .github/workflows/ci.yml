@@ -235,39 +235,45 @@ jobs:
       - name: Exercise private writer channel across Linux UIDs
         run: docker run --rm --network none --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m --tmpfs /var/lib/amusant-results:rw,noexec,nosuid,size=16m,uid=10003,gid=10003,mode=700 amusant-facade-runtime-smoke
 
-  issue-79-option-d-recovery:
+  result-contract-v2:
     needs: changes
-    # Once Option D is part of the M1 runtime, proof must not be limited to
-    # historical issue-73/79 branch names. Run on relevant PRs and main pushes.
-    # Keep the expensive native ARM64 gate separate (manual / integration).
-    name: Pinned Hermes Option D recovery proof
+    name: Result Contract v2 regression proof
     if: needs.changes.outputs.heavy == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - name: Check out source
         uses: actions/checkout@v4
         with:
           persist-credentials: false
 
-      - name: Verify Docker Compose is available
-        run: |
-          docker version --format '{{.Server.Version}}'
-          docker compose version
-
-      - name: Run pinned Hermes Option D proof
-        env:
-          PYTHONUNBUFFERED: "1"
-        run: python3 spikes/003-hermes-option-d-poc/run_poc.py
-
-      - name: Upload sanitized proof evidence
-        if: always()
-        uses: actions/upload-artifact@v4
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
         with:
-          name: issue-79-option-d-recovery-evidence-${{ github.run_id }}
-          path: spikes/003-hermes-option-d-poc/evidence/phase2.json
-          if-no-files-found: warn
-          retention-days: 14
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install Python 3.13
+        run: uv python install 3.13
+
+      - name: Install locked dependencies
+        run: uv sync --locked --python 3.13 --extra hardware-opus --group dev
+
+      - name: Relay Result Contract v2 validation and executor regressions
+        env:
+          PYTHONPATH: .:relay
+        run: |
+          uv run --locked --python 3.13 --extra hardware-opus --group dev python -m unittest discover -s relay/tests -p test_hermes_result.py -v
+          uv run --locked --python 3.13 --extra hardware-opus --group dev python -m unittest discover -s relay/tests -p test_hermes_runs_executor.py -v
+
+      - name: Facade, plugin, and integrated E2E v2 contract regressions
+        env:
+          PYTHONPATH: .:relay
+        run: |
+          uv run --locked --python 3.13 --extra hardware-opus --group dev python -m unittest discover -s deploy/oci-a1/tests -p test_facade_runtime_contract.py -v
+          uv run --locked --python 3.13 --extra hardware-opus --group dev python -m unittest discover -s deploy/oci-a1/tests -p test_result_contract_v2_cutover_precheck.py -v
+          uv run --locked --python 3.13 --extra hardware-opus --group dev python -m unittest discover -s deploy/oci-a1/tests -p test_hermes_runs_inventory.py -v
+          uv run --locked --python 3.13 --extra hardware-opus --group dev python -m unittest discover -s spikes/004-relay-facade-hermes-e2e -p 'test_*.py' -v
   issue-82-arm64-go-no-go:
     name: Native ARM64 Hermes and Relay offline gates
     if: >-
@@ -296,14 +302,14 @@ jobs:
           name: issue-82-arm64-gate-${{ github.run_id }}
           path: |
             deploy/oci-a1/evidence/arm64-gate.json
-            spikes/003-hermes-option-d-poc/evidence/phase2.json
+            spikes/004-relay-facade-hermes-e2e/evidence/phase1b-e1.json
           if-no-files-found: warn
           retention-days: 14
 
   ci-result:
     name: CI result gate
     if: ${{ always() }}
-    needs: [changes, docs-only-check, offline-regression, oci-arm64-images, issue-79-option-d-recovery]
+    needs: [changes, docs-only-check, offline-regression, oci-arm64-images, result-contract-v2]
     runs-on: ubuntu-24.04
     env:
       SCOPE: ${{ needs.changes.result }}
@@ -311,14 +317,14 @@ jobs:
       RUN_HEAVY: ${{ needs.changes.outputs.heavy == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
       REGRESSION: ${{ needs.offline-regression.result }}
       IMAGES: ${{ needs.oci-arm64-images.result }}
-      OPTION_D: ${{ needs.issue-79-option-d-recovery.result }}
+      RESULT_V2: ${{ needs.result-contract-v2.result }}
     steps:
       - name: Verify all selected checks passed
         shell: bash
         run: |
           test "$SCOPE" = success && test "$LIGHT" = success
           case "$RUN_HEAVY" in
-            true) test "$REGRESSION" = success && test "$IMAGES" = success && test "$OPTION_D" = success ;;
-            false) test "$REGRESSION" = skipped && test "$IMAGES" = skipped && test "$OPTION_D" = skipped ;;
+            true) test "$REGRESSION" = success && test "$IMAGES" = success && test "$RESULT_V2" = success ;;
+            false) test "$REGRESSION" = skipped && test "$IMAGES" = skipped && test "$RESULT_V2" = skipped ;;
             *) echo 'Invalid scope result' >&2; exit 1 ;;
           esac

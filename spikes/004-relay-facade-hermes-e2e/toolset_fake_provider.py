@@ -391,10 +391,9 @@ def _response(handler, sequence, *, action=None, args=None, final=None, tool_cal
 
 def _presentation():
     return _json_text({
-        "schema_version": 1,
+        "schema_version": 2,
         "speak": "Offline tool-access probe sequence finished.",
         "card": {"title": "Offline preflight", "lines": ["Synthetic provider only.", "Probe evidence is sanitized."]},
-        "details_md": "The deterministic offline toolset probe sequence completed.",
     })
 
 

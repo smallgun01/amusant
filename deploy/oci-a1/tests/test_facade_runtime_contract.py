@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import contextmanager
 import http.client
 import importlib.util
 import io
@@ -118,17 +119,26 @@ class FacadeRuntimeContractTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=2)
 
-    def _seed_request(self, session_id, task_id, run_id):
+    def _seed_request(self, session_id, task_id, run_id, result_contract_version=2):
         owner_scope = self.facade.owner_scope_from_header(OWNER_SESSION_KEY)
-        with self.facade.connect() as conn:
+        with self._connection() as conn:
             conn.execute(
                 """INSERT INTO requests
                    (owner_scope, task_id, session_id, body_hash, run_id, submit_state,
-                    artifact_status, created_at)
-                   VALUES (?, ?, ?, ?, ?, 'accepted', 'pending', 1)""",
+                    result_contract_version, artifact_status, created_at)
+                   VALUES (?, ?, ?, ?, ?, 'accepted', ?, 'pending', 1)""",
                 (owner_scope, task_id, session_id, hashlib.sha256(task_id.encode()).hexdigest(),
-                 run_id),
+                 run_id, result_contract_version),
             )
+
+    @contextmanager
+    def _connection(self):
+        connection = self.facade.connect()
+        try:
+            yield connection
+            connection.commit()
+        finally:
+            connection.close()
 
     def _request(self, port, method, path, body=None, *, key=None, session=SESSION_ID,
                  owner_key=OWNER_SESSION_KEY, extra_headers=None):
@@ -152,6 +162,8 @@ class FacadeRuntimeContractTests(unittest.TestCase):
             connection.close()
 
     def _relay(self, method, path, body=None, **kwargs):
+        if "extra_headers" not in kwargs:
+            kwargs["extra_headers"] = {"X-Amusant-Result-Contract": "2"}
         return self._request(
             self.relay_server.server_port, method, path, body, key=kwargs.pop("key", "facade"),
             **kwargs,
@@ -170,10 +182,9 @@ class FacadeRuntimeContractTests(unittest.TestCase):
         self.assertEqual(code, 200, committed)
         self.assertEqual(committed, {"committed": True})
         presentation = json.dumps({
-            "schema_version": 1,
+            "schema_version": 2,
             "speak": "The report is ready.",
             "card": {"title": "Report ready", "lines": ["One bounded summary."]},
-            "details_md": "Short legacy detail.",
         }, separators=(",", ":"))
         code, projected, _ = self._writer(
             "POST", "/internal/v1/presentation", {"presentation": presentation}
@@ -190,7 +201,7 @@ class FacadeRuntimeContractTests(unittest.TestCase):
         }, separators=(",", ":"))
 
     def _pin_v2(self, session=SESSION_ID):
-        with self.facade.connect() as conn:
+        with self._connection() as conn:
             conn.execute(
                 "UPDATE requests SET result_contract_version=2 WHERE session_id=?", (session,)
             )
@@ -205,16 +216,16 @@ class FacadeRuntimeContractTests(unittest.TestCase):
         self.assertEqual(Path(self.facade.ARTIFACT_DIR).stat().st_mode & 0o777, 0o700)
 
     def test_initialize_adds_writer_failure_state_to_legacy_request_schema(self):
-        with self.facade.connect() as conn:
+        with self._connection() as conn:
             conn.execute("ALTER TABLE requests DROP COLUMN writer_failure_code")
 
         self.facade.initialize()
 
-        with self.facade.connect() as conn:
+        with self._connection() as conn:
             columns = {row[1] for row in conn.execute("PRAGMA table_info(requests)")}
         self.assertIn("writer_failure_code", columns)
         self.assertEqual(self.facade.request_by_session(SESSION_ID)["artifact_status"], "pending")
-        self.assertEqual(self.facade.request_by_session(SESSION_ID)["result_contract_version"], 1)
+        self.assertEqual(self.facade.request_by_session(SESSION_ID)["result_contract_version"], 2)
 
     def test_raw_runs_and_writer_routes_require_their_separate_credentials(self):
         code, _, _ = self._relay("GET", "/v1/runs/" + RUN_ID, key=None)
@@ -274,7 +285,7 @@ class FacadeRuntimeContractTests(unittest.TestCase):
             self.upstream.return_value = (202, {"run_id": invalid}, None, 0)
             code, payload, _ = self._relay(
                 "POST", "/v1/runs", {"input": "synthetic"},
-                extra_headers={"Idempotency-Key": task_id},
+                extra_headers={"Idempotency-Key": task_id, "X-Amusant-Result-Contract": "2"},
             )
             self.assertEqual(code, 502)
             self.assertEqual(payload["error"]["code"], "submission_uncertain")
@@ -304,7 +315,7 @@ class FacadeRuntimeContractTests(unittest.TestCase):
         def submit():
             submit_result.append(self._relay(
                 "POST", "/v1/runs", {"input": "synthetic"},
-                extra_headers={"Idempotency-Key": task_id},
+                extra_headers={"Idempotency-Key": task_id, "X-Amusant-Result-Contract": "2"},
             ))
 
         original_lookup = self.facade.request_by_session
@@ -359,7 +370,7 @@ class FacadeRuntimeContractTests(unittest.TestCase):
         self.assertEqual(accepted["upstream_post_count"], 1)
         artifact = self.facade.artifact_for(owner_scope, task_id, run_id)
         self.assertIsNotNone(artifact)
-        with self.facade.connect() as conn:
+        with self._connection() as conn:
             count = conn.execute(
                 "SELECT COUNT(*) FROM artifacts WHERE owner_scope=? AND task_id=? AND run_id=?",
                 (owner_scope, task_id, run_id),
@@ -369,7 +380,7 @@ class FacadeRuntimeContractTests(unittest.TestCase):
 
     def test_presentation_writer_waits_for_acceptance_transition(self):
         presentation, expected_output = self._commit_and_project()
-        with self.facade.connect() as conn:
+        with self._connection() as conn:
             conn.execute(
                 "UPDATE requests SET submit_state='submitting' WHERE session_id=?",
                 (SESSION_ID,),
@@ -397,7 +408,7 @@ class FacadeRuntimeContractTests(unittest.TestCase):
         with patch.object(self.facade, "request_by_session", observe_writer_lookup):
             writer_thread.start()
             self.assertTrue(writer_observed_submitting.wait(timeout=1))
-            with self.facade.connect() as conn:
+            with self._connection() as conn:
                 conn.execute(
                     "UPDATE requests SET submit_state='accepted' WHERE session_id=?",
                     (SESSION_ID,),
@@ -416,7 +427,7 @@ class FacadeRuntimeContractTests(unittest.TestCase):
             ("/internal/v1/presentation", {"presentation": presentation}),
         ):
             with self.subTest(path=path):
-                with self.facade.connect() as conn:
+                with self._connection() as conn:
                     conn.execute(
                         "UPDATE requests SET submit_state='submitting' WHERE session_id=?",
                         (SESSION_ID,),
@@ -426,7 +437,7 @@ class FacadeRuntimeContractTests(unittest.TestCase):
                     "POST", path, body, session=SESSION_ID
                 )
                 elapsed = time.monotonic() - started
-                with self.facade.connect() as conn:
+                with self._connection() as conn:
                     conn.execute(
                         "UPDATE requests SET submit_state='accepted' WHERE session_id=?",
                         (SESSION_ID,),
@@ -454,7 +465,7 @@ class FacadeRuntimeContractTests(unittest.TestCase):
         submit_thread = threading.Thread(
             target=lambda: submit_result.append(self._relay(
                 "POST", "/v1/runs", {"input": "synthetic"},
-                extra_headers={"Idempotency-Key": task_id},
+                extra_headers={"Idempotency-Key": task_id, "X-Amusant-Result-Contract": "2"},
             )),
             name="relay-submit-timeout",
         )
@@ -509,14 +520,14 @@ class FacadeRuntimeContractTests(unittest.TestCase):
                 else:
                     path.write_bytes(original + b"tampered")
                 code, failed, _ = self._relay("GET", "/v1/runs/" + RUN_ID)
-                self.assertEqual(code, 502)
-                self.assertNotEqual(failed.get("status"), "completed")
-                self.assertIn(
-                    failed["error"]["code"],
-                    {"artifact_unavailable", "artifact_integrity_invalid"},
-                )
+                self.assertEqual(code, 200)
+                self.assertEqual(failed["status"], "completed")
+                envelope = json.loads(failed["output"])
+                self.assertEqual(envelope["artifact_status"], "failed")
+                self.assertEqual(envelope["presentation_status"], "failed")
+                self.assertEqual(envelope["speak"], self.facade.PRESENTATION_FAILURE)
                 path.write_bytes(original)
-                with self.facade.connect() as conn:
+                with self._connection() as conn:
                     conn.execute(
                         "UPDATE requests SET artifact_status='committed' WHERE owner_scope=? AND task_id=?",
                         (owner_scope, "task-runtime-smoke"),
@@ -544,7 +555,7 @@ class FacadeRuntimeContractTests(unittest.TestCase):
         self.assertEqual(result["status"], "completed")
         self.assertEqual(json.loads(result["output"])["artifact_status"], "none")
         self.assertEqual(self.facade.request_by_session(SESSION_ID)["writer_call_count"], 0)
-        with self.facade.connect() as conn:
+        with self._connection() as conn:
             repair = conn.execute(
                 "SELECT * FROM presentation_repairs WHERE session_hash=?",
                 (hashlib.sha256(SESSION_ID.encode()).hexdigest(),),
@@ -554,23 +565,48 @@ class FacadeRuntimeContractTests(unittest.TestCase):
             "\0".join((self.facade.owner_scope_from_header(OWNER_SESSION_KEY), "task-runtime-smoke", SESSION_ID, RUN_ID)).encode()
         ).hexdigest())
 
-    def test_inflight_v1_run_remains_v1_under_v2_capable_facade(self):
-        row = self.facade.request_by_session(SESSION_ID)
-        self.assertEqual(row["result_contract_version"], 1)
-        _presentation, projected_output = self._commit_and_project()
-        self.assertEqual(json.loads(projected_output)["schema_version"], 1)
-        self.upstream.return_value = (
-            200, {"status": "completed", "output": projected_output}, None,
-            len(projected_output.encode("utf-8")),
+    def test_v1_pinned_run_is_rejected_without_upstream_or_reinterpretation(self):
+        with self._connection() as conn:
+            conn.execute(
+                "UPDATE requests SET result_contract_version=1 WHERE session_id=?",
+                (SESSION_ID,),
+            )
+        code, rejected, _ = self._relay(
+            "GET", "/v1/runs/" + RUN_ID,
+            extra_headers={"X-Amusant-Result-Contract": "2"},
         )
-
-        # A compatible Facade must still accept the old v1 client without a
-        # result-contract header and preserve the in-flight request's pin.
-        code, result, _ = self._relay("GET", "/v1/runs/" + RUN_ID)
-        self.assertEqual(code, 200, result)
-        self.assertEqual(result["status"], "completed")
-        self.assertEqual(json.loads(result["output"])["schema_version"], 1)
+        self.assertEqual(code, 409)
+        self.assertEqual(rejected["error"]["code"], "result_contract_mismatch")
+        self.upstream.assert_not_called()
         self.assertEqual(self.facade.request_by_session(SESSION_ID)["result_contract_version"], 1)
+
+        legacy_presentation = json.dumps({
+            "schema_version": 1,
+            "speak": "Old result",
+            "card": {"title": "Old", "lines": ["Retired"]},
+            "details_md": "old details",
+        }, separators=(",", ":"))
+        code, rejected, _ = self._writer(
+            "POST", "/internal/v1/presentation", {"presentation": legacy_presentation}
+        )
+        self.assertEqual(code, 409)
+        self.assertEqual(rejected["error"]["code"], "result_contract_mismatch")
+
+    def test_v1_presentation_schema_is_rejected_for_a_v2_run(self):
+        self._pin_v2()
+        legacy_presentation = json.dumps({
+            "schema_version": 1,
+            "speak": "Old result",
+            "card": {"title": "Old", "lines": ["Retired"]},
+            "details_md": "old details",
+        }, separators=(",", ":"))
+        code, rejected, _ = self._writer(
+            "POST", "/internal/v1/presentation", {"presentation": legacy_presentation}
+        )
+        self.assertEqual(code, 422)
+        self.assertEqual(rejected["error"]["code"], "presentation_invalid")
+        import hermes_plugin as plugin
+        self.assertFalse(plugin._valid_presentation(json.loads(legacy_presentation)))
 
     def test_v2_report_commit_preserves_ref_and_failed_writer_is_not_none(self):
         self._pin_v2()
@@ -759,7 +795,7 @@ class FacadeRuntimeContractTests(unittest.TestCase):
         failure = json.loads(output)
         self.assertEqual(failure["execution_status"], "completed")
         self.assertEqual(failure["presentation_status"], "failed")
-        with self.facade.connect() as conn:
+        with self._connection() as conn:
             repair = conn.execute(
                 "SELECT source_sha256,output_sha256 FROM presentation_repairs WHERE session_hash=?",
                 (hashlib.sha256(session.encode()).hexdigest(),),
@@ -775,6 +811,13 @@ class FacadeRuntimeContractTests(unittest.TestCase):
             "Idempotency-Key": task_id,
             "X-Amusant-Result-Contract": "2",
         }
+        code, missing_header, _ = self._relay(
+            "POST", "/v1/runs", {"input": "fixture"},
+            extra_headers={"Idempotency-Key": task_id},
+        )
+        self.assertEqual(code, 400)
+        self.assertEqual(missing_header["error"]["code"], "result_contract_unsupported")
+        self.upstream.assert_not_called()
         code, submitted, _ = self._relay("POST", "/v1/runs", {"input": "fixture"}, extra_headers=headers)
         self.assertEqual(code, 202, submitted)
         row = self.facade.request_by_owner_task(
@@ -788,8 +831,8 @@ class FacadeRuntimeContractTests(unittest.TestCase):
         self.assertEqual(retry["run_id"], run_id)
         mismatch = {**headers, "X-Amusant-Result-Contract": "1"}
         code, rejected, _ = self._relay("POST", "/v1/runs", {"input": "fixture"}, extra_headers=mismatch)
-        self.assertEqual(code, 409)
-        self.assertEqual(rejected["error"]["code"], "idempotency_conflict")
+        self.assertEqual(code, 400)
+        self.assertEqual(rejected["error"]["code"], "result_contract_unsupported")
         self.upstream.assert_called_once()
 
 

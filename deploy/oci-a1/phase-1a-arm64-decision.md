@@ -1,5 +1,7 @@
 # Issue #82 Phase 1A ARM64 decision memo
 
+> Historical decision record. This memo refers to the earlier isolated Result Contract v1 proof. The current ARM64 gate now uses the integrated Result Contract v2-only B2 harness; the historical run and its evidence are not v2 acceptance.
+
 Date: 2026-10-18  
 Scope: offline CI only; parent architecture review #62 Phase 0; Option D accepted in PR #75.
 
@@ -25,7 +27,7 @@ The CI command is `python3 deploy/oci-a1/arm64_gate.py` on `ubuntu-24.04-arm`. I
 1. **Hermes digest:** exact registry digest and source commit above; ARM64 manifest or pulled config; `/opt/hermes/.venv/bin/python`; imports `aiohttp`, `cryptography`, PyNaCl, `pydantic_core`, `websockets`, and PyYAML; AArch64 ELF for the cryptography, Sodium, and Pydantic native extensions; `hermes --help` and `hermes --version`.
 2. **Option D compatibility:** separately run the merged PR #75 fake-provider POC harness on the same digest and `linux/arm64`, exercising the private facade/plugin, fake-provider Runs submit/status/stop/restart, recovery, and result-envelope boundary. No paid model or real provider is configured. This is not the integrated Relay-to-facade-to-Hermes-to-Ledger/Inbox path; Phase 1B must test that flow with `hermes_runs`.
 3. **Relay image:** build `deploy/oci-a1/Dockerfile.relay` natively for ARM64 from the locked root `uv.lock` with Python 3.13 and `hardware-opus`, then verify that PyAV exposes its `libopus` decoder/encoder. Import PyAV/NumPy, create the Opus codec and TLS-PSK context, run the existing Opus and TLS-PSK tests, then start the real StickS3 Relay entrypoint on an internal Docker bridge with synthetic file-backed secrets. The listener must remain healthy, not log synthetic secret values, and stop cleanly.
-4. **Evidence:** `arm64-gate.json` records image/source pins, platform, Python version and interpreter, native modules and ELF checks, Relay build/config IDs, selected executable checks, and an overall verdict. The separate Option D runner writes `spikes/003-hermes-option-d-poc/evidence/phase2.json`.
+4. **Evidence:** `arm64-gate.json` recorded image/source pins, platform, Python version and interpreter, native modules and ELF checks, Relay build/config IDs, selected executable checks, and an overall verdict. The former separate Option D runner wrote a sanitized `phase2.json` in a temporary workflow artifact; that v1 runner is removed. Current ARM64 evidence uses the integrated v2 B2 harness.
 
 Decision rule:
 

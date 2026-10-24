@@ -57,6 +57,21 @@ def require(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
+def require_v2_admission(store, task_id: str, description: str) -> None:
+    row = store.get_by_task_id(task_id)
+    require(
+        row is not None and row.get("result_contract_version") == 2,
+        description + " was not durably admitted with Result Contract v2",
+    )
+
+
+def require_v2_submission(audit, task_id: str, description: str) -> None:
+    require(
+        audit.result_contract_version_for(task_id) == "2",
+        description + " Facade submit did not carry Result Contract v2",
+    )
+
+
 def diagnostic_token(value: object) -> str:
     if (
         isinstance(value, str)
@@ -187,6 +202,10 @@ class HttpAudit:
         self.restart_run_id: str | None = None
         self.drop_complete_once = False
         self.drop_event = threading.Event()
+
+    def result_contract_version_for(self, task_id: str) -> str | None:
+        with self.lock:
+            return self.result_contract_versions.get(task_id)
 
     def request(self, executor, method, path, body, headers):
         method = method.upper()
@@ -599,6 +618,7 @@ async def run():
         )
         require(accepted.get("status") == "accepted", "SLOW task was not durably admitted")
         restart_task_id = accepted["task_id"]
+        require_v2_admission(store, restart_task_id, "new Hermes task")
         await slow_ws.close()
         CHECKS["slow_relay_dispatcher_sqlite_admission"] = "PASS"
 
@@ -622,6 +642,7 @@ async def run():
             lambda value: bool(value.get("backend_run_id")) and value.get("poll_attempts", 0) >= 1,
             timeout=10.0, description="persisted Run ID after dropped envelope",
         )
+        require_v2_submission(audit, restart_task_id, "restart task")
         require(row.get("status") == "running", "task did not remain recoverable after the dropped envelope")
         CHECKS["dropped_completed_envelope"] = "PASS"
 
@@ -682,10 +703,12 @@ async def run():
         )
         require(report_accept.get("status") == "accepted", "30K report task was not accepted")
         report_task_id = report_accept["task_id"]
+        require_v2_admission(store2, report_task_id, "30K report task")
         await finish_synthetic_turn(report_ws, report_provider)
         await report_ws.close()
         await wait_row(store2, report_task_id, lambda value: value.get("status") == "completed",
                        timeout=60.0, description="30K report bounded result")
+        require_v2_submission(audit, report_task_id, "30K report task")
         report_result_bytes = result_is_bounded(store2, report_task_id)
         CHECKS["thirty_k_report_bounded_relay_result"] = "PASS"
 
@@ -697,9 +720,11 @@ async def run():
         )
         require(stop_accept.get("status") == "accepted", "stop scenario was not admitted")
         stop_task_id = stop_accept["task_id"]
+        require_v2_admission(store2, stop_task_id, "Stop scenario")
         await wait_row(store2, stop_task_id,
                        lambda value: bool(value.get("backend_run_id")) and value.get("status") == "running",
                        timeout=20.0, description="Run ID before stop request")
+        require_v2_submission(audit, stop_task_id, "Stop scenario")
         await stop_ws.close()
         stop_request_ws, stop_request_provider = await open_turn(server2, providers.instances)
         await eventually(
@@ -849,6 +874,7 @@ async def run():
         )
         require(ambiguous_accept.get("status") == "accepted", "ambiguous scenario was not admitted")
         ambiguous_task_id = ambiguous_accept["task_id"]
+        require_v2_admission(store2, ambiguous_task_id, "ambiguous submission")
         await finish_synthetic_turn(ambiguous_ws, ambiguous_provider)
         await ambiguous_ws.close()
         uncertain = await wait_row(
@@ -856,6 +882,7 @@ async def run():
             lambda value: value.get("status") == "uncertain",
             timeout=20.0, description="uncertain ambiguous submission",
         )
+        require_v2_submission(audit, ambiguous_task_id, "ambiguous submission")
         require(uncertain.get("backend_run_id") is None, "ambiguous submission invented a Run ID")
         require(audit.ambiguous_task_id == ambiguous_task_id, "response loss did not target the ambiguous task")
         attempts_before_restart = audit.relay_submit_calls.get(ambiguous_task_id, 0)
@@ -875,12 +902,11 @@ async def run():
                 "Relay replayed an uncertain submission after restart")
         CHECKS["ambiguous_run_stays_uncertain_without_replay"] = "PASS"
 
-        PHASE = "v2-runtime"
-        # The v1 ambiguous-submit fixture intentionally remains busy. Use a
-        # separate synthetic owner for fresh v2 admissions in the same ledger.
+        PHASE = "continued-v2-runtime"
+        # The uncertain submission still owns the first test identity. Use a
+        # separate synthetic owner to continue testing fresh v2 admissions.
         v2_client_id = "b2-v2-offline-owner"
         environ["AMUSANT_CLIENT_ID"] = v2_client_id
-        environ["AMUSANT_RESULT_CONTRACT_VERSION"] = "2"
         handler3, dispatcher3, store3 = start_runtime(environ, providers, conversation_counter)
         await dispatcher3.start()
         server3 = await serve(
@@ -900,13 +926,14 @@ async def run():
             )
             require(accepted.get("status") == "accepted", case + " task was not admitted")
             task_id = accepted["task_id"]
+            require_v2_admission(store3, task_id, case + " task")
             await finish_synthetic_turn(ws, provider)
             await ws.close()
             row = await wait_row(
                 store3, task_id, lambda value: value.get("status") == "completed",
                 timeout=60.0, description=case + " completed Relay task",
             )
-            require(audit.result_contract_versions.get(task_id) == "2", case + " was not pinned to result contract v2")
+            require_v2_submission(audit, task_id, case + " task")
             result = store3.get_result(task_id)
             require(isinstance(result, dict), case + " bounded result is missing")
             return task_id, row, result

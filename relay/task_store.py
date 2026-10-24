@@ -65,7 +65,17 @@ class TaskAdmissionRequest:
     created_at: datetime
     expires_at: datetime
     executor_kind: str = "openab_acp"
-    result_contract_version: int = 1
+    result_contract_version: int | None = None
+
+    def __post_init__(self) -> None:
+        # This field is historical metadata for ACP tasks and a fixed contract
+        # pin for Hermes. Never default a new Hermes admission to contract v1.
+        if self.result_contract_version is None:
+            object.__setattr__(
+                self,
+                "result_contract_version",
+                2 if self.executor_kind == "hermes_runs" else 1,
+            )
 
     def fingerprint(self) -> str:
         payload_fields: dict[str, object] = {
@@ -352,7 +362,7 @@ class SQLiteTaskStore:
                 manual_reconciliation_ref TEXT,
                 manual_reconciled_state TEXT,
                 manual_reconciled_run_id TEXT,
-                result_contract_version INTEGER NOT NULL DEFAULT 1,
+                result_contract_version INTEGER NOT NULL DEFAULT 2,
                 status TEXT NOT NULL CHECK(status IN {_V2_TASK_STATUSES}),
                 created_at TEXT NOT NULL,
                 expires_at TEXT NOT NULL,
@@ -581,6 +591,9 @@ class SQLiteTaskStore:
         if request.executor_kind not in EXECUTOR_KINDS:
             raise AdmissionUnavailable("invalid_executor_kind")
         if type(request.result_contract_version) is not int or request.result_contract_version not in {1, 2}:
+            raise AdmissionUnavailable("invalid_result_contract_version")
+        expected_contract = 2 if request.executor_kind == "hermes_runs" else 1
+        if request.result_contract_version != expected_contract:
             raise AdmissionUnavailable("invalid_result_contract_version")
         if (request.created_at.tzinfo is None or request.created_at.utcoffset() is None
                 or request.expires_at.tzinfo is None or request.expires_at.utcoffset() is None):
@@ -1376,7 +1389,7 @@ class SQLiteTaskStore:
                 "SELECT t.task_id,t.status,o.state,o.attempts,o.dispatch_started_at,o.last_error, "
                 "t.executor_kind,t.backend_run_id,t.run_started_at,t.run_deadline_at,"
                 "t.next_poll_at,t.poll_attempts,t.stop_requested_at,t.stop_reason,"
-                "t.stop_attempts,t.stop_accepted_at "
+                "t.stop_attempts,t.stop_accepted_at,t.result_contract_version "
                 "FROM slow_tasks AS t JOIN dispatch_outbox AS o USING(task_id) WHERE t.task_id=?",
                 (task_id,),
             ).fetchone()
@@ -1400,6 +1413,7 @@ class SQLiteTaskStore:
                 "stop_reason": row[13],
                 "stop_attempts": int(row[14] or 0),
                 "stop_accepted_at": row[15],
+                "result_contract_version": int(row[16] or 1),
             }
         except sqlite3.Error:
             raise AdmissionUnavailable("task_store_unavailable") from None
