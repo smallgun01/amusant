@@ -103,3 +103,6 @@ The [#58/#61 implementation](https://github.com/smallgun01/amusant/issues/58) pr
 ## Scope of this proposal
 
 This file preserves the H1.2 feature proposal and unimplemented acceptance cases. It documents verified #87/#90 offline evidence without turning unapproved v2 storage/section-read rules into shipped capability. Editing this proposal does not itself change code, runtime defaults, infrastructure or authorization. #56 still owns remaining product/scope choices; #46 and #62 own separately approved live validation.
+# Historical proposal notice
+
+This proposal documents the retired Hermes Result Contract v1 design and is retained as design history. The Owner has selected Result Contract v2 as the sole supported contract for new Hermes Slow Tasks. See [Result Contract v2 cutover and rollback](result-contract-v2-cutover.md) for the active runtime contract and OCI retirement procedure.

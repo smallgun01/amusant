@@ -30,6 +30,7 @@ def _request(
     call_id: str = "call-1",
     task: str = "Compare current options",
     turn_id: int = 1,
+    executor_kind: str = "openab_acp",
 ) -> TaskAdmissionRequest:
     return TaskAdmissionRequest(
         task_id=task_id,
@@ -42,6 +43,7 @@ def _request(
         backend="openab",
         created_at=created_at,
         expires_at=created_at + timedelta(seconds=600),
+        executor_kind=executor_kind,
     )
 
 
@@ -182,7 +184,8 @@ class DynamoDbTaskStoreTests(unittest.TestCase):
     def test_result_contract_pin_and_delivery_metadata_survive_dynamodb_adapter(self):
         ledger, store = _store()
         task_id = str(uuid4())
-        request = replace(_request(task_id), result_contract_version=2)
+        request = _request(task_id, executor_kind="hermes_runs")
+        self.assertEqual(request.result_contract_version, 2)
         store.admit(request)
         restarted_store = DynamoDbTaskStore(ledger, client_id=CLIENT, max_pending_tasks=8)
         claimed = restarted_store.claim_due(now=NOW, lease_seconds=30, limit=1)

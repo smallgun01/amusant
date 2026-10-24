@@ -17,7 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 OCI_DIR = ROOT / "deploy" / "oci-a1"
 EVIDENCE_FILE = OCI_DIR / "evidence" / "arm64-gate.json"
-OPTION_D_RUNNER = ROOT / "spikes" / "003-hermes-option-d-poc" / "run_poc.py"
+OPTION_D_RUNNER = ROOT / "spikes" / "004-relay-facade-hermes-e2e" / "run_e2e.py"
 
 HERMES_IMAGE = (
     "docker.io/nousresearch/hermes-agent:v2026.9.24"
@@ -265,7 +265,7 @@ def hermes_checks(evidence: dict, manifest_has_arm64: bool) -> bool:
     if not manifest_has_arm64:
         set_unknown_if_missing(
             evidence,
-            ["hermes_exact_digest_pull", "hermes_image_architecture", "hermes_python_native_modules", "hermes_cli", "option_d_fake_provider"],
+            ["hermes_exact_digest_pull", "hermes_image_architecture", "hermes_python_native_modules", "hermes_cli", "option_d_v2_integrated_fake_provider"],
             "not_run_because_exact_digest_has_no_arm64_manifest",
         )
         return False
@@ -278,7 +278,7 @@ def hermes_checks(evidence: dict, manifest_has_arm64: bool) -> bool:
         )
         set_unknown_if_missing(
             evidence,
-            ["hermes_image_architecture", "hermes_python_native_modules", "hermes_cli", "option_d_fake_provider"],
+            ["hermes_image_architecture", "hermes_python_native_modules", "hermes_cli", "option_d_v2_integrated_fake_provider"],
             "exact_digest_pull_not_available",
         )
         return False
@@ -291,7 +291,7 @@ def hermes_checks(evidence: dict, manifest_has_arm64: bool) -> bool:
         record(evidence, "hermes_exact_digest_pull", "UNKNOWN", reason="image_inspection_failed")
         set_unknown_if_missing(
             evidence,
-            ["hermes_image_architecture", "hermes_python_native_modules", "hermes_cli", "option_d_fake_provider"],
+            ["hermes_image_architecture", "hermes_python_native_modules", "hermes_cli", "option_d_v2_integrated_fake_provider"],
             "pulled_image_metadata_unavailable",
         )
         return False
@@ -308,7 +308,7 @@ def hermes_checks(evidence: dict, manifest_has_arm64: bool) -> bool:
         record(evidence, "hermes_image_architecture", "FAIL", image_platform=os_arch)
         set_unknown_if_missing(
             evidence,
-            ["hermes_python_native_modules", "hermes_cli", "option_d_fake_provider"],
+            ["hermes_python_native_modules", "hermes_cli", "option_d_v2_integrated_fake_provider"],
             "pulled_image_architecture_mismatch",
         )
         return False
@@ -330,7 +330,7 @@ def hermes_checks(evidence: dict, manifest_has_arm64: bool) -> bool:
             reason="interpreter_import_or_elf_probe_failed", return_code=probe.returncode,
         )
         set_unknown_if_missing(
-            evidence, ["hermes_cli", "option_d_fake_provider"],
+            evidence, ["hermes_cli", "option_d_v2_integrated_fake_provider"],
             "native_module_probe_not_passed",
         )
         return False
@@ -358,7 +358,7 @@ def hermes_checks(evidence: dict, manifest_has_arm64: bool) -> bool:
         elf_machine="EM_AARCH64" if modules_pass else "unexpected_or_missing",
     )
     if not modules_pass:
-        set_unknown_if_missing(evidence, ["hermes_cli", "option_d_fake_provider"], "native_module_probe_failed")
+        set_unknown_if_missing(evidence, ["hermes_cli", "option_d_v2_integrated_fake_provider"], "native_module_probe_failed")
         return False
 
     outputs = {}
@@ -657,33 +657,33 @@ def option_d_check(evidence: dict) -> bool:
     env["DOCKER_DEFAULT_PLATFORM"] = PLATFORM
     env["PYTHONUNBUFFERED"] = "1"
     result = run([sys.executable, str(OPTION_D_RUNNER)], timeout=1800, env=env)
-    phase2_path = ROOT / "spikes" / "003-hermes-option-d-poc" / "evidence" / "phase2.json"
-    phase2 = None
+    e2e_path = ROOT / "spikes" / "004-relay-facade-hermes-e2e" / "evidence" / "phase1b-e1.json"
+    e2e = None
     try:
-        phase2 = json.loads(phase2_path.read_text(encoding="utf-8"))
+        e2e = json.loads(e2e_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         pass
-    verdict = phase2.get("verdict") if isinstance(phase2, dict) else None
+    verdict = e2e.get("status") if isinstance(e2e, dict) else None
     if result.returncode == 0 and verdict == "PASS":
         record(
-            evidence, "option_d_fake_provider",
-            "PASS", platform=PLATFORM, proof_verdict=verdict,
-            evidence_file="spikes/003-hermes-option-d-poc/evidence/phase2.json",
+            evidence, "option_d_v2_integrated_fake_provider",
+            "PASS", platform=PLATFORM, proof_status=verdict,
+            evidence_file="spikes/004-relay-facade-hermes-e2e/evidence/phase1b-e1.json",
         )
         return True
     if verdict == "FAIL":
         status = "FAIL"
-    elif verdict == "INCONCLUSIVE" or result.returncode != 0:
+    elif verdict == "UNKNOWN" or result.returncode != 0:
         status = "UNKNOWN"
     else:
         status = "UNKNOWN"
-    failure = phase2.get("failure") if isinstance(phase2, dict) else None
     record(
-        evidence, "option_d_fake_provider", status,
-        reason="option_d_runner_did_not_pass",
+        evidence, "option_d_v2_integrated_fake_provider", status,
+        reason="integrated_v2_runner_did_not_pass",
         runner_return_code=result.returncode,
-        proof_verdict=verdict,
-        failure=failure if isinstance(failure, dict) else None,
+        proof_status=verdict,
+        failure_stage=e2e.get("failure_stage") if isinstance(e2e, dict) else None,
+        failure_type=e2e.get("failure_type") if isinstance(e2e, dict) else None,
     )
     return False
 
@@ -733,7 +733,7 @@ def main() -> int:
                 "hermes_image_architecture", "hermes_python_native_modules",
                 "hermes_cli", "relay_native_build", "relay_runtime_imports",
                 "relay_opus_tests", "relay_tls_psk_tests",
-                "relay_persistent_entrypoint", "option_d_fake_provider",
+                "relay_persistent_entrypoint", "option_d_v2_integrated_fake_provider",
             ],
             "no_native_arm64_execution",
         )
@@ -759,14 +759,14 @@ def main() -> int:
             try:
                 optiond_ok = option_d_check(evidence)
             except GateError as exc:
-                record(evidence, "option_d_fake_provider", exc.status, reason=exc.code)
+                record(evidence, "option_d_v2_integrated_fake_provider", exc.status, reason=exc.code)
                 optiond_ok = False
             except Exception as exc:
-                record(evidence, "option_d_fake_provider", "UNKNOWN", reason="probe_" + type(exc).__name__)
+                record(evidence, "option_d_v2_integrated_fake_provider", "UNKNOWN", reason="probe_" + type(exc).__name__)
                 optiond_ok = False
         else:
             record(
-                evidence, "option_d_fake_provider", "UNKNOWN",
+                evidence, "option_d_v2_integrated_fake_provider", "UNKNOWN",
                 reason="hermes_or_relay_prerequisite_not_passed",
             )
             optiond_ok = False
@@ -780,9 +780,9 @@ def main() -> int:
         evidence["verdict"] = "UNKNOWN"
 
     evidence["next_gate"] = (
-        "Proceed to Phase 1B design review only after GO; Phase 1B must add a private Option D facade sidecar and remove Relay access to raw Hermes Runs/SSE API."
+        "A GO records native ARM64 v2 integrated fake-provider evidence only; OCI deployment, live-provider use, and operational cutover require separate review."
         if evidence["verdict"] == "GO"
-        else "Resolve failed checks or obtain complete native ARM64 evidence before Phase 1B."
+        else "Resolve failed checks or obtain complete native ARM64 evidence before using this offline gate as evidence."
     )
     EVIDENCE_FILE.parent.mkdir(parents=True, exist_ok=True)
     EVIDENCE_FILE.write_text(json.dumps(evidence, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

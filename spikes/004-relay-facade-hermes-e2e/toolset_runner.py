@@ -26,6 +26,7 @@ def request(method, path, body=None):
     headers = {
         "Authorization": "Bearer " + FACADE_KEY,
         "X-Hermes-Session-Key": SESSION_KEY,
+        "X-Amusant-Result-Contract": "2",
         "Accept": "application/json",
     }
     payload = None
@@ -100,7 +101,7 @@ def main():
                         output.get("presentation_status") == "ready"
                         and output.get("execution_status") == "completed"
                         and type(output.get("schema_version")) is int
-                        and output.get("schema_version") == 1
+                        and output.get("schema_version") == 2
                         and isinstance(output.get("speak"), str)
                         and 1 <= len(output["speak"]) <= 240
                         and isinstance(output.get("card"), dict)

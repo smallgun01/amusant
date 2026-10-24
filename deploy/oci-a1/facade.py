@@ -77,9 +77,8 @@ MAX_WRITER_BODY_BYTES = MAX_REPORT_BYTES * 6 + 4096
 MAX_UPSTREAM_BYTES = 1024 * 1024
 MAX_ENVELOPE_BYTES = 3000
 MAX_RELAY_BODY_BYTES = 4096
-PRESENTATION_FAILURE = "The report is saved; its short presentation needs recovery."
-V2_PRESENTATION_FAILURE = "The task finished, but result delivery needs recovery."
-V2_FAILURE_CARD = {"title": "Result needs recovery", "lines": ["The short result could not be safely delivered."]}
+PRESENTATION_FAILURE = "The task finished, but result delivery needs recovery."
+FAILURE_CARD = {"title": "Result needs recovery", "lines": ["The short result could not be safely delivered."]}
 RUN_ID_VALUE_RE = re.compile(r"run_[A-Za-z0-9_-]{1,250}")
 RUN_RE = re.compile(r"^/v1/runs/(run_[A-Za-z0-9_-]{1,250})$")
 STOP_RE = re.compile(r"^/v1/runs/(run_[A-Za-z0-9_-]{1,250})/stop$")
@@ -130,7 +129,7 @@ def initialize():
             body_hash TEXT NOT NULL,
             run_id TEXT,
             submit_state TEXT NOT NULL,
-            result_contract_version INTEGER NOT NULL DEFAULT 1,
+            result_contract_version INTEGER NOT NULL DEFAULT 2,
             artifact_status TEXT NOT NULL DEFAULT 'pending',
             artifact_ref TEXT,
             presentation_error TEXT,
@@ -273,23 +272,11 @@ def bounded_failure(run_id: str, code: str, artifact_status="unavailable"):
     }
 
 
-def presentation_failure_envelope(artifact_ref: str):
-    return {
-        "schema_version": 1,
-        "speak": PRESENTATION_FAILURE,
-        "card": {"title": "Report saved", "lines": ["Short presentation needs recovery."]},
-        "execution_status": "completed",
-        "artifact_status": "committed",
-        "presentation_status": "failed",
-        "artifact_ref": artifact_ref,
-    }
-
-
 def v2_presentation_failure_envelope(artifact_status: str, artifact_ref: str | None = None):
     return {
         "schema_version": 2,
-        "speak": V2_PRESENTATION_FAILURE,
-        "card": V2_FAILURE_CARD,
+        "speak": PRESENTATION_FAILURE,
+        "card": FAILURE_CARD,
         "execution_status": "completed",
         "artifact_status": artifact_status,
         "presentation_status": "failed",
@@ -348,73 +335,12 @@ def validate_v2_envelope(output: str, artifact_status: str, artifact_ref: str | 
     if presentation_status not in {"ready", "failed"}:
         return False, "presentation_status_invalid"
     if presentation_status == "failed" and (
-        speak != V2_PRESENTATION_FAILURE or card != V2_FAILURE_CARD
+        speak != PRESENTATION_FAILURE or card != FAILURE_CARD
     ):
         return False, "presentation_failure_invalid"
     if artifact_status == "failed" and presentation_status != "failed":
         return False, "artifact_failure_presentation_invalid"
     return True, presentation_status
-
-
-def validate_envelope(output: str, artifact: dict) -> tuple[bool, str]:
-    try:
-        if not isinstance(output, str):
-            return False, "output_missing"
-        encoded = output.encode("utf-8")
-        if len(encoded) > MAX_ENVELOPE_BYTES:
-            return False, "output_over_cap"
-        value = json.loads(output)
-    except UnicodeError:
-        return False, "output_invalid_unicode"
-    except json.JSONDecodeError:
-        return False, "output_malformed_json"
-    if not isinstance(value, dict):
-        return False, "output_invalid_shape"
-    expected = {
-        "schema_version", "speak", "card",
-        "execution_status", "artifact_status", "presentation_status", "artifact_ref",
-    }
-    if set(value) != expected:
-        return False, "output_field_set"
-    if type(value.get("schema_version")) is not int or value["schema_version"] != 1:
-        return False, "output_version"
-    speak = value.get("speak")
-    card = value.get("card")
-    if not isinstance(speak, str) or not 1 <= len(speak) <= 240:
-        return False, "speak_invalid"
-    if not isinstance(card, dict) or set(card) != {"title", "lines"}:
-        return False, "card_invalid"
-    if not isinstance(card["title"], str) or not 1 <= len(card["title"]) <= 80:
-        return False, "card_title_invalid"
-    lines = card["lines"]
-    if not isinstance(lines, list) or not 1 <= len(lines) <= 4:
-        return False, "card_lines_invalid"
-    if any(not isinstance(line, str) or not 1 <= len(line) <= 120 for line in lines):
-        return False, "card_line_invalid"
-    if value.get("execution_status") != "completed":
-        return False, "execution_status_invalid"
-    if value.get("artifact_status") != "committed":
-        return False, "artifact_status_invalid"
-    if value.get("presentation_status") != "ready":
-        return False, "presentation_status_invalid"
-    if value.get("artifact_ref") != artifact["artifact_ref"]:
-        return False, "artifact_ref_mismatch"
-    if (
-        not artifact.get("owner_scope")
-        or not artifact.get("run_id")
-        or not artifact.get("task_id")
-    ):
-        return False, "artifact_binding_invalid"
-    return True, "ready"
-
-
-def valid_artifact_for_request(owner_scope: str, row: dict):
-    artifact = artifact_for(owner_scope, row["task_id"], row["run_id"])
-    if not artifact or artifact["session_id"] != row["session_id"]:
-        return None
-    if artifact["artifact_ref"] != row.get("artifact_ref"):
-        return None
-    return artifact
 
 
 def _valid_writer_session(value):
@@ -634,21 +560,12 @@ def project_for_session(session_id, presentation):
     row, context_error = _accepted_writer_request(session_id)
     if not row:
         return _writer_context_failure(context_error)
-    version = int(row.get("result_contract_version") or 1)
-    if version == 1:
-        artifact, artifact_status = _load_committed_artifact(row)
-        if not artifact:
-            code = artifact_status if artifact_status in {
-                "artifact_missing", "artifact_integrity_invalid", "artifact_binding_invalid",
-            } else "artifact_unavailable"
-            return 409, {"error": {"code": code}}
-        state, reference, force_failure = "committed", artifact["artifact_ref"], False
-    else:
-        state, reference, artifact_error = v2_artifact_state(row)
-        artifact, _ = _load_committed_artifact(row) if state == "committed" else (None, None)
-        force_failure = bool(artifact_error)
+    if int(row.get("result_contract_version") or 1) != 2:
+        return 409, {"error": {"code": "result_contract_mismatch"}}
+    state, reference, artifact_error = v2_artifact_state(row)
+    force_failure = bool(artifact_error)
     output, projection_status = project_presentation(
-        presentation, reference, version, state, force_failure=force_failure
+        presentation, reference, state, force_failure=force_failure
     )
     if not output:
         return 422, {"error": {"code": "presentation_invalid"}}
@@ -730,10 +647,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         pinned_version = int(row.get("result_contract_version") or 1)
         requested_version = self.headers.get("X-Amusant-Result-Contract")
-        if (
-            (requested_version is not None and requested_version != str(pinned_version))
-            or (pinned_version == 2 and requested_version is None)
-        ):
+        if pinned_version != 2 or requested_version != "2":
             self.send_json(409, {"error": {"code": "result_contract_mismatch"}})
             return
         status, payload, upstream_error, _raw_bytes = upstream_request(
@@ -809,14 +723,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(200, {"run_id": run_id, "status": run_status})
             return
         if run_status != "completed":
-            artifact = valid_artifact_for_request(owner_scope, row)
-            if artifact:
-                safe = presentation_failure_envelope(artifact["artifact_ref"])
-                safe["execution_status"] = run_status
-                safe["presentation_status"] = "failed"
-                self.send_json(200, {"run_id": run_id, "status": run_status, "output": compact_json(safe).decode("utf-8")})
-            else:
-                self.send_json(200, bounded_failure(run_id, "run_" + run_status, row["artifact_status"]))
+            self.send_json(200, bounded_failure(run_id, "run_" + run_status, row["artifact_status"]))
             return
 
         output = payload.get("output")
@@ -826,98 +733,7 @@ class Handler(BaseHTTPRequestHandler):
                 "UPDATE requests SET raw_output_bytes=?, terminal_seen_at=? WHERE owner_scope=? AND task_id=?",
                 (output_bytes, time.time(), owner_scope, row["task_id"]),
             )
-        if pinned_version == 2:
-            self._serve_v2_completed(owner_scope, row, run_id, output)
-            return
-        artifact, artifact_error = _load_committed_artifact(row)
-        if not artifact:
-            if row.get("artifact_status") == "committed":
-                artifact_status = "failed"
-                error_code = artifact_error if artifact_error in {
-                    "artifact_missing", "artifact_integrity_invalid",
-                    "artifact_binding_invalid", "artifact_unavailable",
-                } else "artifact_unavailable"
-            elif row.get("artifact_status") == "failed":
-                artifact_status = "failed"
-                writer_code = row.get("writer_result_code")
-                error_code = writer_code if writer_code in {
-                    "artifact_write_failed", "artifact_conflict",
-                    "artifact_commit_failed", "artifact_integrity_invalid",
-                } else "artifact_write_failed"
-            else:
-                artifact_status = "pending"
-                error_code = "artifact_not_written"
-            with connect() as conn:
-                conn.execute(
-                    "UPDATE requests SET artifact_status=?, presentation_error=? WHERE owner_scope=? AND task_id=?",
-                    (artifact_status, error_code, owner_scope, row["task_id"]),
-                )
-            self.send_json(502, bounded_failure(run_id, error_code, artifact_status))
-            return
-        repair_state, repair_error = check_existing_reprojection(output, row["session_id"])
-        if repair_state in {"conflict", "unavailable"}:
-            reason = repair_error or "reprojection_conflict"
-            with connect() as conn:
-                conn.execute(
-                    "UPDATE requests SET presentation_error=? WHERE owner_scope=? AND task_id=?",
-                    (reason, owner_scope, row["task_id"]),
-                )
-            fallback = presentation_failure_envelope(artifact["artifact_ref"])
-            encoded = compact_json(fallback).decode("utf-8")
-            if len(encoded.encode("utf-8")) > MAX_ENVELOPE_BYTES:
-                self.send_json(502, bounded_failure(run_id, "safe_projection_invalid", "committed"))
-                return
-            self.send_json(200, {"run_id": run_id, "status": "completed", "output": encoded})
-            return
-
-        good, reason = validate_envelope(output, artifact)
-        if not good:
-            # If the pinned output hook left no event, reproject only the bounded
-            # short presentation against the committed, integrity-checked artifact.
-            repaired_output, _repair_status = reproject_missing_hook(output, row["session_id"])
-            if repaired_output:
-                repaired_good, _repair_reason = validate_envelope(repaired_output, artifact)
-                if repaired_good:
-                    with connect() as conn:
-                        conn.execute(
-                            "UPDATE requests SET presentation_error=NULL WHERE owner_scope=? AND task_id=?",
-                            (owner_scope, row["task_id"]),
-                        )
-                    self.send_json(200, {"run_id": run_id, "status": "completed", "output": repaired_output})
-                    return
-            with connect() as conn:
-                conn.execute(
-                    "UPDATE requests SET presentation_error=? WHERE owner_scope=? AND task_id=?",
-                    (reason, owner_scope, row["task_id"]),
-                )
-            fallback = presentation_failure_envelope(artifact["artifact_ref"])
-            encoded = compact_json(fallback).decode("utf-8")
-            if len(encoded.encode("utf-8")) > MAX_ENVELOPE_BYTES:
-                self.send_json(502, bounded_failure(run_id, "safe_projection_invalid", "committed"))
-                return
-            self.send_json(200, {"run_id": run_id, "status": "completed", "output": encoded})
-            return
-        if repair_state == "none":
-            pin_status = record_existing_projection(output, row["session_id"])
-            if pin_status not in {"recorded", "replayed"}:
-                with connect() as conn:
-                    conn.execute(
-                        "UPDATE requests SET presentation_error=? WHERE owner_scope=? AND task_id=?",
-                        ("presentation_binding_unavailable", owner_scope, row["task_id"]),
-                    )
-                fallback = presentation_failure_envelope(artifact["artifact_ref"])
-                fallback["presentation_status"] = "failed"
-                self.send_json(200, {
-                    "run_id": run_id, "status": "completed",
-                    "output": compact_json(fallback).decode("utf-8"),
-                })
-                return
-        with connect() as conn:
-            conn.execute(
-                "UPDATE requests SET presentation_error=NULL WHERE owner_scope=? AND task_id=?",
-                (owner_scope, row["task_id"]),
-            )
-        self.send_json(200, {"run_id": run_id, "status": "completed", "output": output})
+        self._serve_v2_completed(owner_scope, row, run_id, output)
 
     def _serve_v2_completed(self, owner_scope: str, row: dict, run_id: str, output):
         source_output = output
@@ -1029,11 +845,11 @@ class Handler(BaseHTTPRequestHandler):
         if len(input_bytes) > MAX_REQUEST_BYTES:
             self.send_json(413, {"error": {"code": "input_over_cap"}})
             return
-        contract_header = self.headers.get("X-Amusant-Result-Contract", "1")
-        if contract_header not in {"1", "2"}:
-            self.send_json(400, {"error": {"code": "result_contract_invalid"}})
+        contract_header = self.headers.get("X-Amusant-Result-Contract")
+        if contract_header != "2":
+            self.send_json(400, {"error": {"code": "result_contract_unsupported"}})
             return
-        result_contract_version = int(contract_header)
+        result_contract_version = 2
         legacy_body_hash = hashlib.sha256(input_bytes).hexdigest()
         versioned_body_hash = hashlib.sha256(compact_json({
             "input": input_value,

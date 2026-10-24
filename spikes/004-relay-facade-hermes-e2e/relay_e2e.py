@@ -599,6 +599,10 @@ async def run():
         )
         require(accepted.get("status") == "accepted", "SLOW task was not durably admitted")
         restart_task_id = accepted["task_id"]
+        require(
+            audit.result_contract_versions.get(restart_task_id) == "2",
+            "new Hermes task did not default to Result Contract v2",
+        )
         await slow_ws.close()
         CHECKS["slow_relay_dispatcher_sqlite_admission"] = "PASS"
 
@@ -682,6 +686,10 @@ async def run():
         )
         require(report_accept.get("status") == "accepted", "30K report task was not accepted")
         report_task_id = report_accept["task_id"]
+        require(
+            audit.result_contract_versions.get(report_task_id) == "2",
+            "30K report task was not admitted with Result Contract v2",
+        )
         await finish_synthetic_turn(report_ws, report_provider)
         await report_ws.close()
         await wait_row(store2, report_task_id, lambda value: value.get("status") == "completed",
@@ -697,6 +705,10 @@ async def run():
         )
         require(stop_accept.get("status") == "accepted", "stop scenario was not admitted")
         stop_task_id = stop_accept["task_id"]
+        require(
+            audit.result_contract_versions.get(stop_task_id) == "2",
+            "Stop scenario was not admitted with Result Contract v2",
+        )
         await wait_row(store2, stop_task_id,
                        lambda value: bool(value.get("backend_run_id")) and value.get("status") == "running",
                        timeout=20.0, description="Run ID before stop request")
@@ -849,6 +861,10 @@ async def run():
         )
         require(ambiguous_accept.get("status") == "accepted", "ambiguous scenario was not admitted")
         ambiguous_task_id = ambiguous_accept["task_id"]
+        require(
+            audit.result_contract_versions.get(ambiguous_task_id) == "2",
+            "ambiguous submission was not admitted with Result Contract v2",
+        )
         await finish_synthetic_turn(ambiguous_ws, ambiguous_provider)
         await ambiguous_ws.close()
         uncertain = await wait_row(
@@ -875,12 +891,11 @@ async def run():
                 "Relay replayed an uncertain submission after restart")
         CHECKS["ambiguous_run_stays_uncertain_without_replay"] = "PASS"
 
-        PHASE = "v2-runtime"
-        # The v1 ambiguous-submit fixture intentionally remains busy. Use a
-        # separate synthetic owner for fresh v2 admissions in the same ledger.
+        PHASE = "continued-v2-runtime"
+        # The uncertain submission still owns the first test identity. Use a
+        # separate synthetic owner to continue testing fresh v2 admissions.
         v2_client_id = "b2-v2-offline-owner"
         environ["AMUSANT_CLIENT_ID"] = v2_client_id
-        environ["AMUSANT_RESULT_CONTRACT_VERSION"] = "2"
         handler3, dispatcher3, store3 = start_runtime(environ, providers, conversation_counter)
         await dispatcher3.start()
         server3 = await serve(
@@ -900,6 +915,10 @@ async def run():
             )
             require(accepted.get("status") == "accepted", case + " task was not admitted")
             task_id = accepted["task_id"]
+            require(
+                audit.result_contract_versions.get(task_id) == "2",
+                case + " was not admitted with Result Contract v2 by default",
+            )
             await finish_synthetic_turn(ws, provider)
             await ws.close()
             row = await wait_row(
