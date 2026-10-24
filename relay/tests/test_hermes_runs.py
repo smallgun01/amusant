@@ -7,6 +7,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 import sqlite3
 import tempfile
 import threading
@@ -30,6 +31,22 @@ from relay.task_store import (
 NOW = datetime(2026, 10, 16, 12, 0, tzinfo=timezone.utc)
 CLIENT = "phase2b-test-owner"
 CONVERSATION = "phase2b-test-conversation"
+
+
+@contextmanager
+def workspace_sqlite_path():
+    fd, raw_path = tempfile.mkstemp(
+        prefix=".hermes-runs-",
+        suffix=".sqlite3",
+        dir=Path(__file__).resolve().parents[2],
+    )
+    os.close(fd)
+    path = Path(raw_path)
+    try:
+        yield path
+    finally:
+        for candidate in (path, Path(f"{path}-wal"), Path(f"{path}-shm")):
+            candidate.unlink(missing_ok=True)
 
 
 def facade_output(speak: str) -> str:
@@ -176,6 +193,10 @@ class _ScriptedHermesHandler(BaseHTTPRequestHandler):
                 self.headers.get("X-Hermes-Session-Key"),
             ))
             response = self.server.get_responses.pop(0) if self.server.get_responses else (200, {"status": "running"})
+            status, payload = response
+            if status == 200 and isinstance(payload, dict) and "run_id" not in payload:
+                payload = {**payload, "run_id": self.path.rsplit("/", 1)[-1]}
+                response = (status, payload)
             self.server.script_responses.append(("GET", self.path, response[0], response[1]))
         self._respond(*response)
 
@@ -254,15 +275,20 @@ def dispatch_stop_cycle(database_path: Path, url: str, clock: list[datetime], **
     return store, handled
 
 
-def dispatch_invalid_completed_result(store, task_id: str) -> tuple[int, list[tuple[str, str]]]:
+def dispatch_completed_result(
+    store, task_id: str, *, output: str | None = '{"schema_version":2,"speak":"unfinished'
+) -> tuple[int, list[tuple[str, str]]]:
     calls: list[tuple[str, str]] = []
-    malformed_output = '{"schema_version":2,"speak":"unfinished'
+    run_id = "run-completed-result-" + task_id[:8]
 
     def request_json(method, path, body, headers):
         calls.append((method, path))
         if method == "POST":
-            return 202, {"run_id": "run-invalid-result-" + task_id[:8]}
-        return 200, {"status": "completed", "output": malformed_output}
+            return 202, {"run_id": run_id}
+        payload = {"run_id": path.rsplit("/", 1)[-1], "status": "completed"}
+        if output is not None:
+            payload["output"] = output
+        return 200, payload
 
     executor = HermesRunsExecutor(
         url="http://127.0.0.1:8642",
@@ -327,7 +353,7 @@ def exercise_multiple_known_run_restarts(store_factory, task_id: str) -> None:
         calls.append((method, path))
         if method != "GET" or not path.endswith("/" + run_id):
             raise AssertionError("known Run must resume by GET of the persisted ID")
-        return 200, replies.pop(0)
+        return 200, {**replies.pop(0), "run_id": run_id}
 
     for cycle in range(8):
         # Each iteration opens a fresh TaskStore/Dispatcher/Executor, mirroring
@@ -385,9 +411,9 @@ def exercise_multiple_known_run_restarts(store_factory, task_id: str) -> None:
 
 class SQLiteHermesMappingTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.db = Path(self.temp.name) / "relay.sqlite3"
+        self.database_context = workspace_sqlite_path()
+        self.db = self.database_context.__enter__()
+        self.addCleanup(self.database_context.__exit__, None, None, None)
 
     def store(self):
         return SQLiteTaskStore(database_path=self.db, max_pending_tasks=8)
@@ -401,8 +427,7 @@ class SQLiteHermesMappingTests(unittest.TestCase):
             (202, None),
         )
         for stop_response in acknowledgements:
-            with self.subTest(status=stop_response[0], body=stop_response[1]), tempfile.TemporaryDirectory() as temp:
-                database_path = Path(temp) / "stop.sqlite3"
+            with self.subTest(status=stop_response[0], body=stop_response[1]), workspace_sqlite_path() as database_path:
                 task_id = str(uuid4())
                 run_id = "run-stop-http"
                 clock = [NOW]
@@ -455,9 +480,144 @@ class SQLiteHermesMappingTests(unittest.TestCase):
                     )
                     self.assertFalse(final.admit(next_request).duplicate)
 
+    def test_stop_accepted_then_remote_completed_closes_with_v2_result(self):
+        with workspace_sqlite_path() as database_path:
+            task_id = str(uuid4())
+            run_id = "run-stop-completed"
+            clock = [NOW]
+            seed_stopping_sqlite_task(
+                SQLiteTaskStore(database_path=database_path, max_pending_tasks=8),
+                task_id,
+                run_id,
+                NOW,
+            )
+            with scripted_hermes_http_server(
+                [(202, {"run_id": run_id, "status": "stopping"})],
+                [(200, {"status": "completed", "output": facade_output("Remote completed after STOP was accepted.")})],
+            ) as (server, url):
+                store, handled = dispatch_stop_cycle(database_path, url, clock)
+                self.assertEqual(handled, 1)
+                row = store.get_by_task_id(task_id)
+                self.assertEqual((row["status"], row["dispatch_state"]), ("completed", "sent"))
+                self.assertEqual(row["stop_accepted_at"], NOW.isoformat())
+                self.assertEqual(store.get_result(task_id)["speak"], "Remote completed after STOP was accepted.")
+                self.assertEqual([method for method, *_ in server.script_requests], ["POST", "GET"])
+
+    def test_uncertain_known_run_recovers_by_get_and_releases_only_on_terminal_evidence(self):
+        store = self.store()
+        task_id = str(uuid4())
+        run_id = "run-uncertain-recovery"
+        store.admit(request(task_id))
+        store.claim_due(now=NOW, lease_seconds=30)
+        store.mark_dispatch_started(task_id, now=NOW)
+        store.save_backend_run_id(
+            task_id,
+            run_id,
+            run_started_at=NOW,
+            run_deadline_at=NOW + timedelta(minutes=10),
+            next_poll_at=NOW,
+        )
+        store.mark_uncertain(task_id, code="hermes_stop_unconfirmed")
+        calls = []
+
+        def request_json(method, path, body, headers):
+            calls.append((method, path))
+            return 200, {
+                "run_id": run_id,
+                "status": "completed",
+                "output": facade_output("Trusted terminal recovery completed."),
+            }
+
+        executor = HermesRunsExecutor(
+            url="http://127.0.0.1:8642",
+            api_key="local-test-api-key-123",
+            save_backend_run_id=store.save_backend_run_id,
+            update_poll_state=store.update_hermes_poll_state,
+            update_stop_state=store.update_hermes_stop_state,
+            run_deadline_seconds=600,
+            poll_cycle_seconds=1,
+            http_timeout_seconds=1,
+            poll_interval_seconds=1,
+            stop_grace_seconds=30,
+            stop_max_attempts=3,
+            stop_retry_base_seconds=1,
+            stop_retry_max_seconds=5,
+            allow_plaintext=True,
+            clock=lambda: NOW,
+            request_json=request_json,
+        )
+        handled = asyncio.run(AsyncDispatcher(store, executor, now=lambda: NOW).dispatch_available())
+        self.assertEqual(handled, 1)
+        self.assertEqual(calls, [("GET", f"/v1/runs/{run_id}")])
+        self.assertEqual(store.get_by_task_id(task_id)["status"], "completed")
+        self.assertEqual(store.get_result(task_id)["speak"], "Trusted terminal recovery completed.")
+        self.assertFalse(store.admit(replace(
+            request(str(uuid4())), conversation_id="after-terminal-recovery", turn_id=2,
+            call_id="after-terminal-recovery-call",
+        )).duplicate)
+
+    def test_unknown_remote_state_keeps_single_flight_and_schedules_get_only_recovery(self):
+        store = self.store()
+        task_id = str(uuid4())
+        run_id = "run-unknown-state"
+        store.admit(request(task_id))
+        store.claim_due(now=NOW, lease_seconds=30)
+        store.mark_dispatch_started(task_id, now=NOW)
+        store.save_backend_run_id(
+            task_id,
+            run_id,
+            run_started_at=NOW,
+            run_deadline_at=NOW + timedelta(minutes=10),
+            next_poll_at=NOW,
+        )
+        store.defer_hermes_run(
+            task_id,
+            backend_run_id=run_id,
+            run_started_at=NOW,
+            run_deadline_at=NOW + timedelta(minutes=10),
+            next_poll_at=NOW,
+            poll_attempts=0,
+        )
+        calls = []
+
+        def request_json(method, path, body, headers):
+            calls.append((method, path))
+            return 200, {"run_id": run_id, "status": "future_remote_state"}
+
+        executor = HermesRunsExecutor(
+            url="http://127.0.0.1:8642",
+            api_key="local-test-api-key-123",
+            save_backend_run_id=store.save_backend_run_id,
+            update_poll_state=store.update_hermes_poll_state,
+            update_stop_state=store.update_hermes_stop_state,
+            run_deadline_seconds=600,
+            poll_cycle_seconds=1,
+            http_timeout_seconds=1,
+            poll_interval_seconds=1,
+            stop_grace_seconds=30,
+            stop_max_attempts=3,
+            stop_retry_base_seconds=1,
+            stop_retry_max_seconds=5,
+            allow_plaintext=True,
+            clock=lambda: NOW,
+            request_json=request_json,
+        )
+        handled = asyncio.run(AsyncDispatcher(store, executor, now=lambda: NOW).dispatch_available())
+        row = store.get_by_task_id(task_id)
+        self.assertEqual(handled, 1)
+        self.assertEqual(calls, [("GET", f"/v1/runs/{run_id}")])
+        self.assertEqual((row["status"], row["dispatch_state"]), ("uncertain", "uncertain"))
+        self.assertEqual(row["last_error"], "hermes_remote_state_unconfirmed")
+        self.assertEqual(row["poll_attempts"], 1)
+        self.assertGreater(datetime.fromisoformat(row["next_poll_at"]), NOW)
+        with self.assertRaises(AdmissionBusy):
+            store.admit(replace(
+                request(str(uuid4())), conversation_id="unknown-state-block", turn_id=2,
+                call_id="unknown-state-block-call",
+            ))
+
     def test_stop_http_retry_respects_backoff_and_stops_after_get_terminal(self):
-        with tempfile.TemporaryDirectory() as temp:
-            database_path = Path(temp) / "stop-retry.sqlite3"
+        with workspace_sqlite_path() as database_path:
             task_id = str(uuid4())
             clock = [NOW]
             seed_stopping_sqlite_task(
@@ -518,8 +678,7 @@ class SQLiteHermesMappingTests(unittest.TestCase):
                 self.assertEqual([method for method, *_ in server.script_requests], ["POST", "POST", "GET", "GET"])
 
     def test_stop_http_grace_expiry_remains_uncertain_and_keeps_owner_busy(self):
-        with tempfile.TemporaryDirectory() as temp:
-            database_path = Path(temp) / "stop-grace.sqlite3"
+        with workspace_sqlite_path() as database_path:
             task_id = str(uuid4())
             clock = [NOW]
             seed_stopping_sqlite_task(
@@ -698,20 +857,20 @@ class SQLiteHermesMappingTests(unittest.TestCase):
         self.assertEqual(audit, ("operator-1", "INC-61-no-run-check", "no_remote_run"))
         self.assertFalse(store.admit(next_request).duplicate)
 
-    def test_sqlite_confirmed_completed_invalid_v2_result_is_completed_with_delivery_error(self):
+    def test_sqlite_confirmed_completed_invalid_v2_result_fails_without_result(self):
         store = self.store()
         task_id = str(uuid4())
         store.admit(request(task_id))
-        handled, calls = dispatch_invalid_completed_result(store, task_id)
+        handled, calls = dispatch_completed_result(store, task_id)
 
         self.assertEqual(handled, 1)
         self.assertEqual([method for method, _ in calls], ["POST", "GET"])
         row = store.get_by_task_id(task_id)
-        self.assertEqual((row["status"], row["last_error"]), ("completed", None))
-        self.assertEqual(store.get_result(task_id)["delivery_error"], "presentation_invalid")
+        self.assertEqual((row["status"], row["last_error"]), ("failed", "hermes_result_invalid"))
+        self.assertIsNone(store.get_result(task_id))
         inbox = store.lookup_inbox(client_id=CLIENT, task_id=task_id, now=NOW)
-        self.assertEqual(inbox["status"], "completed")
-        self.assertEqual(inbox["delivery_error"], "presentation_invalid")
+        self.assertEqual((inbox["status"], inbox["code"]), ("failed", "hermes_result_invalid"))
+        self.assertNotIn("speak", inbox)
         self.assertNotIn("unfinished", json.dumps(inbox))
 
         next_request = replace(
@@ -721,6 +880,21 @@ class SQLiteHermesMappingTests(unittest.TestCase):
             call_id="after-invalid-terminal-result-call",
         )
         self.assertFalse(store.admit(next_request).duplicate)
+
+    def test_sqlite_confirmed_completed_missing_v2_deliverable_fails_no_result(self):
+        store = self.store()
+        task_id = str(uuid4())
+        store.admit(request(task_id))
+        handled, calls = dispatch_completed_result(store, task_id, output=None)
+
+        self.assertEqual(handled, 1)
+        self.assertEqual([method for method, _ in calls], ["POST", "GET"])
+        row = store.get_by_task_id(task_id)
+        self.assertEqual((row["status"], row["last_error"]), ("failed", "hermes_result_missing"))
+        self.assertIsNone(store.get_result(task_id))
+        inbox = store.lookup_inbox(client_id=CLIENT, task_id=task_id, now=NOW)
+        self.assertEqual((inbox["status"], inbox["code"]), ("failed", "hermes_result_missing"))
+        self.assertNotIn("speak", inbox)
 
     def test_sqlite_expired_hermes_queue_before_first_claim_stays_expired(self):
         store = self.store()
@@ -802,7 +976,7 @@ class SQLiteHermesMappingTests(unittest.TestCase):
             stop_retry_max_seconds=0.1,
             allow_plaintext=True,
             clock=lambda: after_queue_deadline,
-            request_json=lambda *args: (200, {"status": "expired"}),
+            request_json=lambda *args: (200, {"run_id": "run-expired-remote", "status": "expired"}),
         )
         handled = asyncio.run(
             AsyncDispatcher(store, executor, now=lambda: after_queue_deadline).dispatch_available()
@@ -946,6 +1120,73 @@ class SQLiteHermesMappingTests(unittest.TestCase):
 
 
 class DynamoHermesMappingTests(unittest.TestCase):
+    def test_uncertain_known_run_recovers_by_scheduled_get_only_until_terminal(self):
+        ledger = InMemoryDynamoLedger()
+        store = DynamoDbTaskStore(ledger, client_id=CLIENT, max_pending_tasks=8)
+        task_id = str(uuid4())
+        run_id = "run-ddb-uncertain-recovery"
+        deadline = NOW + timedelta(minutes=10)
+        store.admit(request(task_id))
+        store.claim_due(now=NOW, lease_seconds=30)
+        store.mark_dispatch_started(task_id, now=NOW)
+        store.save_backend_run_id(
+            task_id,
+            run_id,
+            run_started_at=NOW,
+            run_deadline_at=deadline,
+            next_poll_at=NOW,
+        )
+        store.defer_hermes_run(
+            task_id,
+            backend_run_id=run_id,
+            run_started_at=NOW,
+            run_deadline_at=deadline,
+            next_poll_at=NOW,
+            poll_attempts=0,
+        )
+        now = [NOW]
+        replies = [
+            {"run_id": run_id, "status": "future_remote_state"},
+            {"run_id": run_id, "status": "completed", "output": facade_output("Dynamo recovery terminal result.")},
+        ]
+        calls = []
+
+        def request_json(method, path, body, headers):
+            calls.append((method, path))
+            return 200, replies.pop(0)
+
+        executor = HermesRunsExecutor(
+            url="http://127.0.0.1:8642",
+            api_key="local-test-api-key-123",
+            save_backend_run_id=store.save_backend_run_id,
+            update_poll_state=store.update_hermes_poll_state,
+            update_stop_state=store.update_hermes_stop_state,
+            run_deadline_seconds=600,
+            poll_cycle_seconds=1,
+            http_timeout_seconds=1,
+            poll_interval_seconds=1,
+            stop_grace_seconds=30,
+            stop_max_attempts=3,
+            stop_retry_base_seconds=1,
+            stop_retry_max_seconds=5,
+            allow_plaintext=True,
+            clock=lambda: now[0],
+            request_json=request_json,
+        )
+        dispatcher = AsyncDispatcher(store, executor, now=lambda: now[0])
+        self.assertEqual(asyncio.run(dispatcher.dispatch_available()), 1)
+        row = store.get_by_task_id(task_id)
+        self.assertEqual((row["status"], row["dispatch_state"]), ("uncertain", "uncertain"))
+        self.assertEqual(row["poll_attempts"], 1)
+        next_poll = datetime.fromisoformat(row["next_poll_at"])
+        self.assertEqual(store.claim_due(now=NOW, lease_seconds=30), [])
+
+        now[0] = next_poll
+        self.assertEqual(asyncio.run(dispatcher.dispatch_available()), 1)
+        self.assertEqual(calls, [("GET", f"/v1/runs/{run_id}")] * 2)
+        self.assertEqual(store.get_by_task_id(task_id)["status"], "completed")
+        self.assertEqual(store.get_result(task_id)["speak"], "Dynamo recovery terminal result.")
+
     def test_legacy_known_run_is_polled_before_queued_task_is_submitted(self):
         ledger = InMemoryDynamoLedger()
         store = DynamoDbTaskStore(ledger, client_id=CLIENT, max_pending_tasks=8)
@@ -1044,7 +1285,7 @@ class DynamoHermesMappingTests(unittest.TestCase):
         self.assertEqual(audit["manual_reconciled_run_id"], run_id)
         self.assertFalse(store.admit(next_request).duplicate)
 
-    def test_moto_confirmed_completed_invalid_v2_result_is_completed_with_delivery_error(self):
+    def test_moto_confirmed_completed_invalid_v2_result_fails_without_result(self):
         try:
             import boto3
             from moto import mock_aws
@@ -1071,16 +1312,16 @@ class DynamoHermesMappingTests(unittest.TestCase):
             )
             task_id = str(uuid4())
             store.admit(request(task_id))
-            handled, calls = dispatch_invalid_completed_result(store, task_id)
+            handled, calls = dispatch_completed_result(store, task_id)
 
             self.assertEqual(handled, 1)
             self.assertEqual([method for method, _ in calls], ["POST", "GET"])
             row = store.get_by_task_id(task_id)
-            self.assertEqual((row["status"], row["last_error"]), ("completed", None))
-            self.assertEqual(store.get_result(task_id)["delivery_error"], "presentation_invalid")
+            self.assertEqual((row["status"], row["last_error"]), ("failed", "hermes_result_invalid"))
+            self.assertIsNone(store.get_result(task_id))
             inbox = store.lookup_inbox(client_id=CLIENT, task_id=task_id, now=NOW)
-            self.assertEqual(inbox["status"], "completed")
-            self.assertEqual(inbox["delivery_error"], "presentation_invalid")
+            self.assertEqual((inbox["status"], inbox["code"]), ("failed", "hermes_result_invalid"))
+            self.assertNotIn("speak", inbox)
             slot = client.get_item(
                 TableName="issue61-task-ledger",
                 Key={"pk": {"S": CLIENT}, "sk": {"S": "SLOT#SLOW"}},
@@ -1126,21 +1367,21 @@ class DynamoHermesMappingTests(unittest.TestCase):
         self.assertEqual(store.get_by_task_id(task_id)["status"], "uncertain")
         self.assertNotIn("speak", result)
 
-    def test_dynamo_confirmed_completed_invalid_v2_result_is_completed_with_delivery_error(self):
+    def test_dynamo_confirmed_completed_invalid_v2_result_fails_without_result(self):
         ledger = InMemoryDynamoLedger()
         store = DynamoDbTaskStore(ledger, client_id=CLIENT, max_pending_tasks=8)
         task_id = str(uuid4())
         store.admit(request(task_id))
-        handled, calls = dispatch_invalid_completed_result(store, task_id)
+        handled, calls = dispatch_completed_result(store, task_id)
 
         self.assertEqual(handled, 1)
         self.assertEqual([method for method, _ in calls], ["POST", "GET"])
         row = store.get_by_task_id(task_id)
-        self.assertEqual((row["status"], row["last_error"]), ("completed", None))
-        self.assertEqual(store.get_result(task_id)["delivery_error"], "presentation_invalid")
+        self.assertEqual((row["status"], row["last_error"]), ("failed", "hermes_result_invalid"))
+        self.assertIsNone(store.get_result(task_id))
         inbox = store.lookup_inbox(client_id=CLIENT, task_id=task_id, now=NOW)
-        self.assertEqual(inbox["status"], "completed")
-        self.assertEqual(inbox["delivery_error"], "presentation_invalid")
+        self.assertEqual((inbox["status"], inbox["code"]), ("failed", "hermes_result_invalid"))
+        self.assertNotIn("speak", inbox)
         self.assertNotIn("speak_now", inbox)
         self.assertIsNone(ledger.get_item(CLIENT, "SLOT#SLOW"))
 
