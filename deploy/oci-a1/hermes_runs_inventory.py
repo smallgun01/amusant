@@ -176,27 +176,62 @@ def inspect_inventory(*, hermes_db: Path, relay_db: Path, facade_db: Path, now: 
     records, hermes_summary = _read_hermes(hermes_db, now=checked_at)
     relay_keys, relay_by_task = _read_relay(relay_db)
     facade_keys, facade_by_task = _read_facade(facade_db)
-    relay_run_ids = {run_id for values in relay_by_task.values() for run_id in values}
-    facade_run_ids = {run_id for values in facade_by_task.values() for run_id in values}
+    relay_run_owners: dict[str, set[str]] = {}
+    facade_run_owners: dict[str, set[str]] = {}
+    for task_id, run_ids in relay_by_task.items():
+        for run_id in run_ids:
+            relay_run_owners.setdefault(run_id, set()).add(task_id)
+    for task_id, run_ids in facade_by_task.items():
+        for run_id in run_ids:
+            facade_run_owners.setdefault(run_id, set()).add(task_id)
 
     relay_key_matches = relay_run_matches = facade_key_matches = facade_run_matches = 0
-    unmatched = binding_conflicts = 0
+    relay_pair_matches = facade_pair_matches = 0
+    fully_bound_both = pair_matched_one_ledger = 0
+    partial_bindings = mismatched_bindings = unmatched = 0
+    task_run_conflicts = run_id_owner_conflicts = 0
     for task_key, run_id, _status_value in records:
         relay_key_match = task_key is not None and task_key in relay_keys
-        relay_run_match = run_id is not None and run_id in relay_run_ids
+        relay_run_match = run_id is not None and run_id in relay_run_owners
         facade_key_match = task_key is not None and task_key in facade_keys
-        facade_run_match = run_id is not None and run_id in facade_run_ids
+        facade_run_match = run_id is not None and run_id in facade_run_owners
+        relay_pair_match = (
+            task_key is not None and run_id is not None and run_id in relay_by_task.get(task_key, set())
+        )
+        facade_pair_match = (
+            task_key is not None and run_id is not None and run_id in facade_by_task.get(task_key, set())
+        )
         relay_key_matches += relay_key_match
         relay_run_matches += relay_run_match
         facade_key_matches += facade_key_match
         facade_run_matches += facade_run_match
-        if not (relay_key_match or relay_run_match or facade_key_match or facade_run_match):
-            unmatched += 1
-        conflicts = (
-            (relay_key_match and bool(relay_by_task[task_key]) and run_id not in relay_by_task[task_key])
-            or (facade_key_match and bool(facade_by_task[task_key]) and run_id not in facade_by_task[task_key])
+        relay_pair_matches += relay_pair_match
+        facade_pair_matches += facade_pair_match
+
+        task_run_conflict = (
+            (relay_key_match and run_id is not None and bool(relay_by_task[task_key])
+             and run_id not in relay_by_task[task_key])
+            or (facade_key_match and run_id is not None and bool(facade_by_task[task_key])
+                and run_id not in facade_by_task[task_key])
         )
-        binding_conflicts += conflicts
+        run_id_owner_conflict = (
+            run_id is not None and any(owner != task_key for owner in relay_run_owners.get(run_id, set()))
+        ) or (
+            run_id is not None and any(owner != task_key for owner in facade_run_owners.get(run_id, set()))
+        )
+        task_run_conflicts += task_run_conflict
+        run_id_owner_conflicts += run_id_owner_conflict
+        evidence = relay_key_match or relay_run_match or facade_key_match or facade_run_match
+        if task_run_conflict or run_id_owner_conflict:
+            mismatched_bindings += 1
+        elif relay_pair_match and facade_pair_match:
+            fully_bound_both += 1
+        elif relay_pair_match or facade_pair_match:
+            pair_matched_one_ledger += 1
+        elif evidence:
+            partial_bindings += 1
+        else:
+            unmatched += 1
 
     return {
         "mode": "read_only_dry_run",
@@ -207,13 +242,20 @@ def inspect_inventory(*, hermes_db: Path, relay_db: Path, facade_db: Path, now: 
             "registry_rows_matching_relay_run_id_count": relay_run_matches,
             "registry_rows_matching_facade_task_key_count": facade_key_matches,
             "registry_rows_matching_facade_run_id_count": facade_run_matches,
+            "registry_rows_pair_matched_in_relay_count": relay_pair_matches,
+            "registry_rows_pair_matched_in_facade_count": facade_pair_matches,
+            "registry_rows_fully_bound_to_both_ledgers_count": fully_bound_both,
+            "registry_rows_pair_matched_in_one_ledger_only_count": pair_matched_one_ledger,
+            "registry_rows_partial_binding_count": partial_bindings,
+            "registry_rows_mismatched_binding_count": mismatched_bindings,
             "registry_rows_unmatched_to_all_ledgers_count": unmatched,
-            "task_key_with_run_id_binding_conflict_count": binding_conflicts,
+            "registry_rows_task_key_run_id_conflict_count": task_run_conflicts,
+            "registry_rows_run_id_bound_to_different_task_count": run_id_owner_conflicts,
         },
         "limitations": [
             "only keyed Runs still retained in the durable registry are inventoried",
             "this report cannot prove absence of arbitrary non-idempotent or in-memory Runs",
-            "counts are not a cutover approval; reconcile active, unknown, unmatched, and conflicting rows",
+            "counts are not a cutover approval; inspect partial, mismatched, unmatched, and unresolved rows",
         ],
     }
 

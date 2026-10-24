@@ -82,17 +82,24 @@ class HermesRunsInventoryTests(unittest.TestCase):
              json.dumps({"status": "failed"}), 0, None, now, now),
             ("scope-secret", "unmatched-task-secret", "fingerprint", "run-unmatched-secret",
              json.dumps({"status": "new_status", "prompt": "PRIVATE_PROMPT_SECRET"}), 0, None, now, now),
+            # Deliberately borrows a valid Run ID under an unknown task key.
+            ("scope-secret", "unknown-task-borrower", "fingerprint", "run-complete",
+             json.dumps({"status": "completed"}), 0, None, now, now),
+            ("scope-secret", "task-partial", "fingerprint", "run-pending",
+             json.dumps({"status": "completed"}), 0, None, now, now),
         ])
         create_relay_db(self.relay_db, [
             ("task-complete", "run-complete", "hermes_runs"),
             ("task-active", "run-active", "hermes_runs"),
             ("task-conflict", "run-relay-side", "hermes_runs"),
+            ("task-partial", None, "hermes_runs"),
             ("acp-task", "run-not-hermes", "openab_acp"),
         ])
         create_facade_db(self.facade_db, [
             ("owner-secret", "task-complete", "run-complete"),
             ("owner-secret", "task-active", "run-active"),
             ("owner-secret", "task-conflict", "run-facade-side"),
+            ("owner-secret", "task-partial", None),
         ])
 
     def tearDown(self):
@@ -107,9 +114,9 @@ class HermesRunsInventoryTests(unittest.TestCase):
             now=1_800_000_000.0,
         )
         self.assertEqual(report["decision"], "operator_review_required")
-        self.assertEqual(report["hermes_registry"]["registry_row_count"], 4)
+        self.assertEqual(report["hermes_registry"]["registry_row_count"], 6)
         self.assertEqual(report["hermes_registry"]["rows_by_status"], {
-            "completed": 1,
+            "completed": 3,
             "failed": 1,
             "running": 1,
             "unknown": 1,
@@ -117,18 +124,25 @@ class HermesRunsInventoryTests(unittest.TestCase):
         self.assertEqual(report["hermes_registry"]["unresolved_or_unknown_row_count"], 2)
         self.assertEqual(report["hermes_registry"]["terminal_rows_eligible_for_lazy_prune_count"], 1)
         self.assertEqual(report["ledger_matches"], {
-            "registry_rows_matching_relay_task_key_count": 3,
-            "registry_rows_matching_relay_run_id_count": 2,
-            "registry_rows_matching_facade_task_key_count": 3,
-            "registry_rows_matching_facade_run_id_count": 2,
+            "registry_rows_matching_relay_task_key_count": 4,
+            "registry_rows_matching_relay_run_id_count": 3,
+            "registry_rows_matching_facade_task_key_count": 4,
+            "registry_rows_matching_facade_run_id_count": 3,
+            "registry_rows_pair_matched_in_relay_count": 2,
+            "registry_rows_pair_matched_in_facade_count": 2,
+            "registry_rows_fully_bound_to_both_ledgers_count": 2,
+            "registry_rows_pair_matched_in_one_ledger_only_count": 0,
+            "registry_rows_partial_binding_count": 1,
+            "registry_rows_mismatched_binding_count": 2,
             "registry_rows_unmatched_to_all_ledgers_count": 1,
-            "task_key_with_run_id_binding_conflict_count": 1,
+            "registry_rows_task_key_run_id_conflict_count": 1,
+            "registry_rows_run_id_bound_to_different_task_count": 1,
         })
         serialized = json.dumps(report)
         for private_value in (
             "task-complete", "task-active", "run-complete", "run-unmatched-secret",
-            "unmatched-task-secret", "scope-secret", "owner-secret", "PRIVATE_PROMPT_SECRET",
-            "status_json", "fingerprint",
+            "unmatched-task-secret", "unknown-task-borrower", "task-partial", "run-pending",
+            "scope-secret", "owner-secret", "PRIVATE_PROMPT_SECRET", "status_json", "fingerprint",
         ):
             self.assertNotIn(private_value, serialized)
 
