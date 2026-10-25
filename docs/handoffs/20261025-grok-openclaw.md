@@ -2,18 +2,20 @@
 
 日期：2026-10-25（Asia/Taipei）
 對象：OpenClaw（Ubuntu／既有受限環境存取）
-搭配文件：docs/project-management/grok-bot-validation-v0.2.md
-狀態：可轉交工作單；v0.2 已把 Remote HTTPS MCP/OAuth 設為 primary live feasibility path；本文件未啟動部署、原生設定或真實呼叫。
+搭配文件：docs/project-management/grok-bot-validation-v0.3.md（未變更契約沿用 v0.2）
+狀態：Owner 已接受 Grok-O0 與 Owner-reported G1 4/4 PASS。G3 live deployment 尚未啟動；仍須獨立環境／權限 review 與明確 live envelope。
 
-## 1. 現在先做 Grok-O0
+## 1. Grok-O0 accepted record
 
-收到本單後先完成唯讀證據與具體實驗環境計畫。延續既有授權的存取邊界；本單沒有新授權 SSH、sudo、Docker socket、secret 讀取、網路規則、主機寫入或模型呼叫。
+Owner has accepted Grok-O0. This handoff preserves its read-only scope and environment-planning criteria for reference; it does not request a second O0 pass. O0 acceptance does not start G3 live work or authorize SSH, sudo, Docker socket, secret reads, network changes, host writes, or model calls.
 
 不要把新 Grok 設計混進目前 OCI E2E。也不要因 main 已合併 v2／polling 修正就判定 OCI 已部署或實體 PASS。
 
 主要目標：讓 Owner 知道下一階段究竟要在哪裡跑什麼、使用哪個帳號與既有能力、怎麼接收結果、花多少、失敗時怎麼停止與保存證據。完成這些具體工作後才需要實測啟動決定。
 
-## 2. O0-A：更新現有基線證據
+## 2. O0-A：accepted O0 baseline scope (reference)
+
+The following checklist records the O0 evidence scope. Do not infer missing deployment details from the acceptance or from G1; any later G3 plan must use the concrete evidence available in the accepted O0 record.
 
 本次 proposal source snapshot 為 main 73397323412e9c27c6caacc5adbbd1a2b5dd9962：
 
@@ -35,11 +37,13 @@
 
 若現有權限無法查看 digest、health 或資料目錄，列出被阻擋的具體欄位；不以另個帳號、sudo 或 Docker socket 繞過。不得輸出 .env、auth.json、完整 config／inspect env、原始 Run、完整報告或 secret hash。
 
-G0 要求正在收斂的實體閉環有證據；不是要求先關閉 #62 全部營運子項。沒有 G0 PASS 時仍可完成下列計畫，不能開始新功能／live setup。
+v0.3 gate：G0 實體閉環 PASS 不再是 G1/G2/G3 隔離驗證的必要前置。G0 的原有證據仍是 G4 Relay／StickS3 接入 gate。任何 G3 live setup 都須先完成獨立環境與權限審查、G2 reviewed commit、精確案例／額度／rollback 與 Owner 啟動授權。
 
-## 3. O0-B：把 Grok 實驗環境規劃到可執行
+## 3. O0-B：reviewed environment plan scope (reference)
 
-提出一個最小方案，明列：
+The environment-plan checklist below records the scope of accepted O0 work. It is reference material, not a new G3 plan or deployment instruction.
+
+O0 原始計畫檢核項目：
 
 1. 指定的 Owner Bot 與帳號來源；記錄名稱／用途即可，登入由 Owner 在原生安全流程處理。
 2. 原生 App 是否可用；Routine webhook、custom MCP 設定是否在該帳號可見。尚未親自觀察的項目標 DOC VERIFIED／NOT TESTED。
@@ -56,7 +60,9 @@ Remote MCP 由平台 connector 伺服器連出，Bot 電腦可以 curl 不足以
 
 不需要建立 OCI 第五個常駐服務、不需替每個業務工具開權限、不做新的 Agent 管理 UI。
 
-### Grok-O0 完成格式
+### Grok-O0 report format (reference)
+
+Grok-O0 is already accepted; this is the prior report structure, not a request for another report.
 
 ~~~text
 READY FOR OWNER REVIEW / BLOCKED
@@ -64,25 +70,28 @@ G0：已有基線證據與缺口
 Source/deployed/plugin/config/device 矩陣
 實驗 host、port、HTTPS route、auth、資料位置
 逐項 change / reason / authority / verification / rollback
-G1 原生案例與 G3 live envelope
+G1 Owner-reported acceptance：G1-01…G1-04 PASS；overall ACCEPTED；observation: 無異常
+G3 live envelope（尚未授權／啟動）
 現有權限內可完成事項與精確 blocker
 ~~~
 
 不要回 READY TO DEPLOY。這份計畫要具體到後續啟動只需核可已列出的範圍，不再重新討論整個架構。
 
-### O0-C：mandatory external reference 差異表
+### O0-C：reviewed external reference comparison
 
-O0 報告必須各自回答：
+The following comparison criteria were part of the accepted O0 review; no additional O0 report is requested.
+
+原 O0 報告的 reference questions：
 
 - **Zongzhu**：哪些 callback/idempotency/late-result pattern 可直接借；若 fallback 使用 HTTPS callback，哪些 security/retention 調整是 Amusant 必須補的。
 - **Grok Gadgets**：它的 Remote MCP/OAuth、owner-run tunnel、tool/device-port separation 哪些可直接映射到 OCI/Cloudflare；哪些只是 gadget-specific。
 - **Groki**：async completion、stale/replay filtering、speech-stop ≠ task-cancel 哪些是產品語意參考；列出 internal credential/API route 為 **DO NOT USE**。
 
-## 4. Grok-O1／G1：原生產品適配
+## 4. Grok-O1／G1：原生產品適配與驗收紀錄
 
-僅在 G0 完成且 Owner 啟動原生試驗後進行。Owner 負責登入、帳號連接與審批；OpenClaw 在已授權範圍內協助操作或整理證據，不擅自假定 signed-in session 可使用。
+Owner 已報告下列原生產品驗證皆 PASS，並接受 G1：G1-01 Issue 查詢、G1-02 重複委派、G1-03 完整旅行文件、G1-04 同成果修改；Owner observation 為無異常。此 handoff 記錄 Owner-reported 結果，不補寫未提供的步驟或 raw evidence。若後續需要新原生操作，須有新的明確啟動指示。
 
-先最多 4 個測試 turn：
+原 G1 案例定義（Owner 已報告 4/4 PASS；不要求重做）：
 
 1. 指定 repo open issue 數量與重點。
 2. 第二次同類查詢，觀察是否需要重設工具或改 prompt。
@@ -93,11 +102,11 @@ Issue 必須排除 PR、記錄條件與時點；旅行只規劃，不訂房、�
 
 記錄完整成果是否真的可開啟、修改是否對到同一工作。把一次性 setup、驗收觀察、正常必要批准與救援分開計數。既有帳號連接較方便是產品整合收益，不推論模型能力全面優於 Hermes。
 
-G1 若沒有明顯產品價值，先交結論，不要求 Codex 為了證明接線而繼續建 adapter。
+Owner 已接受 G1；如未來提出新的原生操作，仍須有新的明確啟動指示。這些原始案例定義不要求重跑。
 
-## 5. Grok-O2／G3：真實雙向試驗
+## 5. Grok-O2／G3：真實雙向試驗（尚未啟動）
 
-前置：Codex G2 固定 reviewed commit／離線證據已取得，實驗 host／入口／credential scope／案例與用量已啟動。可使用經審閱的隔離 spike commit；不得將未合併 prototype 部署到 production 或替換現有後端。
+G1/G2/G3 隔離驗證不依賴 Hermes G0 PASS。G3 live 前置：Codex G2 固定 reviewed commit／離線證據已取得；實驗 host／HTTPS 入口／OAuth scope／Owner 操作與撤銷方式、案例與用量通過獨立環境／權限 review；Owner 明確啟動 live envelope。Owner 已明示目前不啟動 G3 live deployment。可使用經審閱的隔離 spike commit；不得將未合併 prototype 部署到 production 或替換現有後端。
 
 使用一次核可的 envelope 執行，不每次 POST 重問。未涵蓋的新權限、付費或 host/network 變更，先完成具體差異計畫再回報。
 
@@ -124,7 +133,7 @@ Agent 可能在回報前就被批准流程暫停。沒有 result report（MCP �
 
 ## 6. Grok-O3／G4：裝置驗收是條件式下一步
 
-G3 成功後，Codex 先提出真正的 Grok backend identity、通道完成、取消、Single-flight 與必要 migration／rollback。Owner 接受精確產品語意後，再依 reviewed bundle 執行。
+G4 仍要求既有 G0 實體基線 PASS 與相關 G3 成果證據。通過後，Codex 先提出真正的 Grok backend identity、通道完成、取消、Single-flight 與必要 migration／rollback。Owner 接受精確產品語意後，再依 reviewed bundle 執行。
 
 不能把 Grok callback 包成 Hermes 已確認 completed，也不能用本地停止等待宣稱遠端取消。現有生產語意未被本單放寬。
 
