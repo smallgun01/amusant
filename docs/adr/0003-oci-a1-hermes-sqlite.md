@@ -1,51 +1,50 @@
-# ADR-0003 — OCI A1 / Hermes / SQLite and Option D result boundary
+# ADR-0003 — OCI A1 / Hermes / SQLite and the Amusant result boundary
 
-> **2026-10-25 documentation alignment (source/acceptance boundaries):** [#106](https://github.com/smallgun01/amusant/pull/106) records OCI GO 2 backend and GO 3 physical FAST functional evidence, not full E3/E4 acceptance. [#107](https://github.com/smallgun01/amusant/pull/107) merged optional-Artifact Result Contract v2 source, but v1 remains the deployment default until separately enabled and verified. [#109](https://github.com/smallgun01/amusant/pull/109) proves G1 ingress **offline only**. [#112](https://github.com/smallgun01/amusant/pull/112), [#113](https://github.com/smallgun01/amusant/pull/113), and [#114](https://github.com/smallgun01/amusant/pull/114) merged fixes for Gemini Live result injection, spoken-session handoff and substantive `speak` guidance, but **post-fix physical new-PTT audio / Inbox `spoken` acceptance is not yet evidenced**. Keep [#46](https://github.com/smallgun01/amusant/issues/46), [#58](https://github.com/smallgun01/amusant/issues/58), [#62](https://github.com/smallgun01/amusant/issues/62) and [#27](https://github.com/smallgun01/amusant/issues/27) open at their actual gates. Source merged ≠ deployed ≠ physical/cloud accepted; no live authorization follows from this note.
+**Status:** Hosting and isolation decision accepted by Owner on 2026-10-18; documentation reconciled on 2026-10-25. [ADR-0004](0004-owner-managed-hermes.md) clarifies Agent ownership and channel scope without replacing this deployment. Architecture acceptance is not production acceptance or permission to apply changes.
 
-- **Status:** Accepted **implementation target** (Owner 2026-10-18); refreshed 2026-10-20 after [#87](https://github.com/smallgun01/amusant/pull/87) and [#90](https://github.com/smallgun01/amusant/pull/90) merged. The architecture and offline E1 integration are implemented; later owner-reported GO 2 backend / GO 3 tunneled FAST functional tests are documented below, but no formal E3/E4 security/latency/cost certification or ongoing deployment authorization follows.
-- **Scope:** one owner and active Relay, OCI Ampere A1. The **original performance candidate** was 1 OCPU / 6 GiB; this is **not** a mandated or measured production shape. The owner-reported SSH-ready VM on 2026-10-21 returned `nproc=2`, about 11 GiB OS-visible RAM and no swap; verify its actual OCI OCPU shape/billing in Console rather than assuming Linux `nproc` proves a billed shape. Real FAST/Slow contention, quotas/cost and 24/7 behavior remain unverified.
-- **Prior decisions:** [ADR-0001](0001-openab-acp-slow-path.md) OpenAB ACP / two ECS services and [ADR-0002](0002-external-task-store.md) AWS-motivated DynamoDB remain **historical** for the **new target only**. AWS T4b readback is valid bounded proof, not OCI. No automatic AWS data/resource cleanup.
-- **Implementation evidence:** #70 offline OCI packaging, #83 12-case native ARM64 image gate, #75/#80 isolated Option D proof and #87 Facade runtime wiring merged; [#90](https://github.com/smallgun01/amusant/pull/90) integrates the actual Relay→Facade→pinned Hermes→Ledger/Inbox fake-provider flow on a native ARM64 runner ([CI PASS](https://github.com/smallgun01/amusant/actions/runs/39240814687)). [#85](https://github.com/smallgun01/amusant/issues/85) is closed as **offline E1 GO only**. All E3/E4 gates remain open.
-
-**H2 operational evidence (2026-10-21, owner-reported):** N100 OpenClaw successfully executed a read-only, noninteractive SSH command on an existing Ubuntu ARM64 A1 VM using a dedicated unprivileged host account. The host/SSH foundation exists; **this is a dated H2-only observation, superseded by later GO 2 backend and GO 3 tunneled FAST evidence; off-host restore and E3/E4 operational acceptance remain open**. See [OCI host-readiness handoff](../../deploy/oci-a1/HOST-READINESS.md). This observation changes neither the selected design nor deployment permissions.
+[Original decision and dated updates](https://github.com/smallgun01/amusant/blob/685db3bf5a48017b0a535354ec4efc64e89dc972/docs/adr/0003-oci-a1-hermes-sqlite.md) remain immutable history. [ADR-0001](0001-openab-acp-slow-path.md) and [ADR-0002](0002-external-task-store.md) preserve AWS/OpenAB/DynamoDB provenance, not a second active target.
 
 ## Decision and trust boundaries
 
+Use one OCI Ampere A1 host with four isolated services: Relay, Facade, Hermes and Egress Proxy. The original 1 OCPU / 6 GiB candidate was a hypothesis, not a mandated or measured production size. Later Owner-reported host observations exist; verify actual shape/resource caps and contention instead of inferring capacity from `nproc` or this ADR.
+
 ```text
-StickS3 --[G1 ingress to approve under #27]--> Relay / Gemini Live FAST
-                                              |-- local persistent SQLite Ledger/Inbox
-                                              +-- private authenticated Option D Facade
-                                                     |-- bounded Runs API -> Hermes Native Runs
-                                                     |                      |-- Hermes Home, restricted tools
-                                                     +<-- trusted writer --- Hermes plugin
-                                                     |-- durable owner/task-bound artifact store
-Relay and Hermes -> controlled egress proxy -> permitted public provider HTTPS
+StickS3 <--> Relay / Gemini FAST
+              |-- persistent SQLite Ledger / Inbox
+              +-- private Facade <--> private Hermes Runs / Gateway
+                     |                    |-- persistent Hermes Home
+                     +<-- trusted writer--+-- Amusant channel plugin
+                     +-- private artifacts
+Owner -- Hermes-native Telegram / CLI / UI --^
+Relay / Hermes -> controlled Egress Proxy -> public HTTPS
 ```
 
-Relay owns owner/device auth, PTT, Gemini Live, admission, exactly **one** SLOW in-flight slot, Dispatcher, idempotency, bounded Inbox, status, cancel and recovery. Hermes owns tools, reasoning, summarization and full reports. The **Facade** is the narrowly authenticated mediation/persistence boundary: Relay cannot connect directly to Hermes Runs, Hermes cannot mint/choose trusted artifact refs, and Relay cannot mount/modify Facade artifacts. The Facade forwards bounded authenticated run requests, validates trusted owner/task identity, commits reports durably via a separate Hermes plugin writer channel, and returns a **sanitized bounded projection** only. The egress proxy is an isolation component, not a third Agent Worker or queue. They may be separate containers on **one** host; container separation does not protect against a hostile host administrator.
+The native path is required by ADR-0004 and has separate acceptance evidence. It does not grant Relay direct raw Runs access or publish Hermes/Facade API ports.
 
-The merged `deploy/oci-a1/compose.yaml` now separates Relay↔Facade and Facade↔Hermes networks; Relay has **no direct route** to Hermes Runs/SSE, and only Facade mounts its private artifact state. The pinned native ARM64 B2 harness verifies route denial, authenticated owner/task scope, report isolation, bounded Inbox and in-process restart/GET-only recovery. **This is an offline E1 proof, not an OCI canary:** image/config/secrets on the real host, actual ingress #27, encrypted off-host restore and constrained FAST performance are still unproven.
+- Relay owns device authentication, PTT, FAST transport, admission, Dispatcher, bounded Inbox and recovery for **Amusant-originated Runs**. One outstanding such Run per Owner; no global Hermes lock or queue.
+- Facade mediates authenticated Amusant submissions and bounded results. It derives owner/task/session/Run identity, commits optional text reports through its separate writer and alone mints trusted artifact refs. It does not manage Hermes tools or judge every tool's business success.
+- Hermes is independently Owner-managed. Its native tools, Skills, MCP, credentials, approvals, memory and Cron are not configured through Relay. Native replies do not acquire the Amusant output schema.
+- Keep Relay<->Facade and Facade<->Hermes network separation; only Facade mounts artifact state. Relay has no direct raw Hermes route, no artifact write privileges and no external Agent credentials.
+- Preserve non-root containers, distinct file secrets and controlled egress. The proxy permits approved public HTTPS connectivity under its network policy, not per-tool business authorization. No Docker socket, privileged container, metadata/private-target bypass or new public API.
 
-- **Backend:** `hermes_runs` is the selected default executor (#45/#60/#65 merged). `openab_acp` is explicit legacy fallback, not an automatic retry or second active product agent. A known persisted Run ID resumes by **GET only** after Relay restart. An ambiguous POST without a confirmed ID remains `uncertain`; never blindly re-POST or claim that local stop proves remote work/billing stopped.
-- **Device edge:** StickS3 uses TLS-PSK; normal HTTPS/WSS proxies do not automatically terminate it. [#27](https://github.com/smallgun01/amusant/issues/27) must separately approve TCP/PSK pass-through or a reviewed certificate/Noise client. No public Hermes/Facade port, metadata/internal-target egress, Docker socket, privileged container or unreviewed tool-to-host access.
-- **Capacity:** 1 OCPU / 6 GiB is a hypothesis. Test real FAST p50/p95, first audible sound, throttling, RSS/OOM and completion when Hermes is concurrently working. Service resource limits are ceilings, not reservations.
+Container isolation is not protection from a hostile host administrator. Both channels share host/provider/network failure domains; independent native usability is not a high-availability promise.
 
-## Durable state and report boundary
+## Backend, persistence and lifecycle
 
-- OCI Relay sets `AMUSANT_TASK_STORE=sqlite` with WAL and `synchronous=FULL` on **persistent block storage**. Use the existing TaskStore and no new task database/worker. The separate Hermes Home and Facade durable artifact state must be backed up and restored **together with** Relay Ledger where required for referencing artifacts.
-- Relay stores minimal task receipts, owner scope, durable Run ID, deadline/status, bounded `speak`/`card`, delivery states and only a **verified opaque artifact_ref**. Do not put full reports, transcripts, secrets, raw tool output or model scratchpad in Relay, Gemini or logs. The old `details_md` to Gemini path must be blocked by the #85/#56 contract gate.
-- Hermes-side report generation commits to Facade with trusted server-side owner/task binding; only the Facade issues refs on successful durable commit. The model never supplies a trusted path, URL, owner, task binding or artifact key. A second publish of the same generation is idempotent. Artifact failure and speech/presentation failure are separate, truthful statuses. On every retrieval, reauthenticate owner/task binding.
-- The remaining v2 result proposal ([#71](https://github.com/smallgun01/amusant/pull/71), [#56](https://github.com/smallgun01/amusant/issues/56)) remains a **design for remaining features** (section-read/long-term artifact lifecycle, schema/retention policy). #87/#90 implemented and tested the bounded Facade-to-Relay presentation and denial of full-report/`details_md` leakage **offline**, but did not prove real-provider speech, full v2 feature parity or OCI hosting. Tool-disabled speech should read only Hermes-prepared `speak`.
-- M1 permits **one** outstanding SLOW task, immediate `slow_busy`, not an eight-item queue. Terminal Relay Inbox target retention is 30 days with reviewed cleanup; protect queued/running/uncertain, stop/reconciliation and recent delivery activity. `expires_at` is admission expiry, not a safe terminal purge predicate.
-- DynamoDB `QUERY_ITEM_BOUND=100` was application query design, **not** a DynamoDB platform limit. [#65](https://github.com/smallgun01/amusant/pull/65) improved new-task admission against >100 retained histories. Prefer SQLite here because one persistent low-volume host avoids cross-cloud dependencies/credentials, **not** because DynamoDB is inherently unable to scale.
-- Block volumes are **not** independent backups. Require consistent SQLite online backup (never copy live WAL arbitrarily), encrypted off-host copies, integrity/foreign-key verification and restore drills of Relay, Facade and Hermes Home. No automatic DynamoDB-to-SQLite migration; start with a new empty canary Ledger, preserve AWS history/assets for explicit rollback/audited handling.
+`hermes_runs` remains the selected default; `openab_acp` remains an explicit legacy alternative, never automatic failover. Main after #116 uses v2-only new Hermes results. API `/v1/runs` naming does not mean Result Contract v1.
 
-## Acceptance and rollback
+Use existing SQLite TaskStore/Inbox with WAL and `synchronous=FULL` on persistent storage. Preserve related Hermes Home and Facade data in coherent backup/restore procedures. Do not add a database or Worker. A block volume is not an off-host backup.
 
-1. **E1 offline — GO, 2026-10-19:** #70/#83 packaging and native image checks and #87/#90 production-path Facade B1/B2 E2E are merged; pinned synthetic ARM64 proof covers full-report isolation, auth/owner/task negatives, STOP/ambiguous Run handling, Inbox/restart and routing. B2 explicitly observed `failed / interrupt` and `stop_cancel_confirmed=false`: **STOP handling passed but successful active Run cancellation/provider-cost stop was NOT proven**. In-process restart is not host-loss restore.
-2. **E3 OCI canary (separate approval)**: select image digests/provider/sandbox/secret-file paths, host VCN/NSG and #27 ingress, rollback controls, capacity & measured costs; prove state survives restart and restores from encrypted off-host backup. A listen/health-check response is not Agent task success.
-3. **E3 software/physical**: separately approve real Gemini/Hermes calls; validate [#46 S1](https://github.com/smallgun01/amusant/issues/46) tool-disabled spoken result and then authenticated device G2/G3a; collect slow-timeout/stop provider-cost evidence and concurrent FAST measurements.
-4. **E4 unattended**: retention, monitoring/log scrubbing, secret lifecycle, real restore drill, watchdog and host-loss recovery accepted. A single A1 outage can affect both paths; Always Free/cost and availability are not guaranteed.
-5. **Rollback**: block new admissions, reconcile known Run IDs, preserve Ledger/Facade/Hermes volumes and off-host backups; return only to an **independently proven** target. One-off AWS RunTask evidence is not an instant production failover.
+Known Runs recover through authenticated GET without resubmission; ambiguous POST stays uncertain. GET recovery must retain first deadline/Owner STOP intent. STOP acknowledgement is not terminal confirmation, billing settlement or reversal of side effects. Relay cannot cancel unrelated native TG/Cron work.
 
-**Unchanged:** one owner and Relay, grab-to-talk FAST, authorized SLOW, deterministic Ledger/Inbox, GET-only recovery, no unsolicited speech, WS1–WS4 ownership and separate Owner authorization for live changes.
+Store minimal request/receipt/status/deadline metadata, bounded `speak/card` and verified opaque references in Relay. Never transfer full reports, raw logs, transcripts or secrets through Relay/Gemini. Artifact and presentation failures remain distinct from native execution outcome. Preserve verified recoverable references when presentation fails; invalid refs remain rejected.
+
+Terminal Inbox retention target is 30 days under reviewed predicates, not a blind TTL. Protect active/uncertain/reconciliation state. Preserve historical v1/ACP records without reinterpretation. No automatic AWS cleanup or DynamoDB-to-SQLite migration.
+
+## Deployment and acceptance
+
+[#87/#90](https://github.com/smallgun01/amusant/pull/90) establish integrated offline E1 evidence. Dated Owner GO 2 backend and GO 3 tunneled FAST evidence is retained in [the live record](../oci-go2-go3-live-evidence-20261022.md); current deployed digests/config and complete physical Slow spoken acceptance are not inferred from it. See [STATUS](../../STATUS.md).
+
+Keep separate gates for permanent G1 ingress, real model/device traffic, native Owner access, shared-load FAST responsiveness, encrypted off-host restore, actual STOP behavior/cost and sustained E4 operation. Test ceilings are not measured capacity, and documentation does not authorize tests that call real providers.
+
+Rollback uses the [coordinated v2-compatible bundle/state procedure](../result-contract-v2-cutover.md). Reconcile unresolved Runs before changing readers; preserve Ledger/Facade/Hermes state and Owner configuration. Never silently restore a reader that misinterprets new state, discard unresolved work, or claim old one-off AWS evidence is an instant production failover.
