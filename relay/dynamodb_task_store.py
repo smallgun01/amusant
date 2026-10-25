@@ -144,6 +144,38 @@ def _condition_holds(current: dict[str, object] | None, condition: str) -> bool:
             and bool(current.get("dispatch_started_at"))
             and bool(current.get("backend_run_id"))
         )
+    if condition == "claimed_started_run_recovery_no_stop":
+        return (
+            current.get("outbox_state") == "claimed"
+            and current.get("status") in {"running", "uncertain"}
+            and current.get("executor_kind") == "hermes_runs"
+            and current.get("result_contract_version") == 2
+            and bool(current.get("dispatch_started_at"))
+            and bool(current.get("backend_run_id"))
+            and not current.get("stop_requested_at")
+        )
+    if condition == "claimed_started_run_recovery_stop_unaccepted":
+        return (
+            current.get("outbox_state") == "claimed"
+            and current.get("status") in {"running", "uncertain"}
+            and current.get("executor_kind") == "hermes_runs"
+            and current.get("result_contract_version") == 2
+            and bool(current.get("dispatch_started_at"))
+            and bool(current.get("backend_run_id"))
+            and bool(current.get("stop_requested_at"))
+            and not current.get("stop_accepted_at")
+        )
+    if condition == "claimed_started_run_recovery_stop_accepted":
+        return (
+            current.get("outbox_state") == "claimed"
+            and current.get("status") in {"running", "uncertain"}
+            and current.get("executor_kind") == "hermes_runs"
+            and current.get("result_contract_version") == 2
+            and bool(current.get("dispatch_started_at"))
+            and bool(current.get("backend_run_id"))
+            and bool(current.get("stop_requested_at"))
+            and bool(current.get("stop_accepted_at"))
+        )
     if condition == "cancel_pending_unsubmitted":
         return (
             current.get("outbox_state") == "pending"
@@ -1085,44 +1117,120 @@ class DynamoDbTaskStore:
             raise AdmissionUnavailable("invalid_poll_attempts")
         next_poll_iso = _utc_iso(next_poll_at)
         error = _sanitize_error(code)
-        patch: dict[str, object] = {
-            "outbox_state": "uncertain",
-            "status": "uncertain",
-            "claimed_until": None,
-            "last_error": error,
-            "next_poll_at": next_poll_iso,
-            "poll_attempts": poll_attempts,
-            "delivery_state": "pending",
-            "inbox_updated_at": next_poll_iso,
-        }
         with self._lock:
             key = _task_sk(task_id)
-            try:
-                updated = self._ledger.update_item(
-                    self._client_id,
-                    key,
-                    patch,
-                    condition="claimed_started_run_recovery",
-                )
-                self._align_dedup_ttl(updated)
-            except LedgerConditionFailed as exc:
-                raise AdmissionUnavailable("hermes_recovery_state_unavailable") from exc
-            except LedgerAmbiguous as exc:
+            for _ in range(3):
                 try:
-                    fresh = self._ledger.get_item(self._client_id, key, consistent=True)
+                    current = self._ledger.get_item(self._client_id, key, consistent=True)
                 except (AdmissionUnavailable, LedgerAmbiguous):
-                    raise AdmissionUnknown("hermes_recovery_state_unconfirmed") from exc
+                    raise AdmissionUnavailable("hermes_recovery_state_unavailable") from None
                 if (
-                    fresh is not None
-                    and fresh.get("outbox_state") == "uncertain"
-                    and fresh.get("status") == "uncertain"
-                    and fresh.get("backend_run_id") == backend_run_id
-                    and fresh.get("next_poll_at") == next_poll_iso
-                    and int(fresh.get("poll_attempts") or 0) == poll_attempts
-                    and fresh.get("last_error") == error
+                    current is None
+                    or current.get("executor_kind") != "hermes_runs"
+                    or current.get("result_contract_version") != 2
+                    or current.get("backend_run_id") != backend_run_id
+                    or not current.get("dispatch_started_at")
+                    or current.get("outbox_state") != "claimed"
+                    or current.get("status") not in {"running", "uncertain"}
                 ):
+                    raise AdmissionUnavailable("hermes_recovery_state_unavailable")
+
+                stop_requested_at = current.get("stop_requested_at")
+                stop_accepted_at = current.get("stop_accepted_at")
+                first_stop_due = (
+                    bool(stop_requested_at)
+                    and not stop_accepted_at
+                    and int(current.get("stop_attempts") or 0) == 0
+                )
+                effective_poll_iso = next_poll_iso
+                if first_stop_due:
+                    effective_poll_iso = min(
+                        next_poll_iso,
+                        _utc_iso(datetime.fromisoformat(str(stop_requested_at))),
+                    )
+                task_status = "running" if first_stop_due else "uncertain"
+                outbox_state = "pending" if first_stop_due else "uncertain"
+                last_error = None if first_stop_due else error
+                patch: dict[str, object] = {
+                    "outbox_state": outbox_state,
+                    "status": task_status,
+                    "claimed_until": None,
+                    "last_error": last_error,
+                    "next_poll_at": effective_poll_iso,
+                    "poll_attempts": poll_attempts,
+                    "delivery_state": "pending",
+                    "inbox_updated_at": next_poll_iso,
+                }
+                condition = (
+                    "claimed_started_run_recovery_no_stop" if not stop_requested_at
+                    else "claimed_started_run_recovery_stop_accepted" if stop_accepted_at
+                    else "claimed_started_run_recovery_stop_unaccepted"
+                )
+                try:
+                    updated = self._ledger.update_item(
+                        self._client_id,
+                        key,
+                        patch,
+                        condition=condition,
+                    )
+                    self._align_dedup_ttl(updated)
                     return
-                raise AdmissionUnknown("hermes_recovery_state_unconfirmed") from exc
+                except LedgerConditionFailed as exc:
+                    try:
+                        fresh = self._ledger.get_item(self._client_id, key, consistent=True)
+                    except (AdmissionUnavailable, LedgerAmbiguous):
+                        raise AdmissionUnavailable("hermes_recovery_state_unavailable") from exc
+                    # A concurrent cancellation may have won after our read and
+                    # already moved the durable Run back to the due queue.
+                    if (
+                        fresh is not None
+                        and fresh.get("backend_run_id") == backend_run_id
+                        and fresh.get("stop_requested_at")
+                        and fresh.get("outbox_state") == "pending"
+                        and fresh.get("status") == "running"
+                        and not fresh.get("claimed_until")
+                    ):
+                        return
+                    if (
+                        fresh is not None
+                        and fresh.get("outbox_state") == "claimed"
+                        and fresh.get("backend_run_id") == backend_run_id
+                    ):
+                        continue
+                    raise AdmissionUnavailable("hermes_recovery_state_unavailable") from exc
+                except LedgerAmbiguous as exc:
+                    try:
+                        fresh = self._ledger.get_item(self._client_id, key, consistent=True)
+                    except (AdmissionUnavailable, LedgerAmbiguous):
+                        raise AdmissionUnknown("hermes_recovery_state_unconfirmed") from exc
+                    if (
+                        fresh is not None
+                        and fresh.get("outbox_state") == outbox_state
+                        and fresh.get("status") == task_status
+                        and fresh.get("backend_run_id") == backend_run_id
+                        and fresh.get("next_poll_at") == effective_poll_iso
+                        and int(fresh.get("poll_attempts") or 0) == poll_attempts
+                        and fresh.get("last_error") == last_error
+                    ):
+                        return
+                    if (
+                        fresh is not None
+                        and fresh.get("backend_run_id") == backend_run_id
+                        and fresh.get("stop_requested_at")
+                        and fresh.get("outbox_state") == "pending"
+                        and fresh.get("status") == "running"
+                        and not fresh.get("claimed_until")
+                    ):
+                        return
+                    if (
+                        fresh is not None
+                        and fresh.get("outbox_state") == "claimed"
+                        and fresh.get("backend_run_id") == backend_run_id
+                        and fresh.get("stop_requested_at") != stop_requested_at
+                    ):
+                        continue
+                    raise AdmissionUnknown("hermes_recovery_state_unconfirmed") from exc
+            raise AdmissionUnavailable("hermes_recovery_state_unavailable")
 
     def request_cancel(self, *, client_id: str, task_id: str, now: datetime) -> CancelReceipt:
         if client_id != self._client_id or not _ID_RE.fullmatch(client_id):

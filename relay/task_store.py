@@ -1011,16 +1011,39 @@ class SQLiteTaskStore:
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
+            current = connection.execute(
+                "SELECT t.stop_requested_at,t.stop_accepted_at,t.stop_attempts,o.state,o.dispatch_started_at "
+                "FROM slow_tasks AS t JOIN dispatch_outbox AS o USING(task_id) "
+                "WHERE t.task_id=? AND t.executor_kind='hermes_runs' AND t.backend_run_id=? "
+                "AND t.result_contract_version=2 AND t.status IN ('running','uncertain')",
+                (task_id, backend_run_id),
+            ).fetchone()
+            if current is None or current[3] != "claimed" or current[4] is None:
+                connection.execute("ROLLBACK")
+                raise AdmissionUnavailable("hermes_recovery_state_unavailable")
+            stop_requested_at, stop_accepted_at = current[0], current[1]
+            pending_stop = (
+                stop_requested_at is not None
+                and stop_accepted_at is None
+                and int(current[2] or 0) == 0
+            )
+            effective_poll_iso = next_poll_iso
+            if pending_stop:
+                requested_iso = _utc_iso(datetime.fromisoformat(stop_requested_at))
+                effective_poll_iso = min(next_poll_iso, requested_iso)
+            task_status = "running" if pending_stop else "uncertain"
+            outbox_state = "pending" if pending_stop else "uncertain"
+            last_error = None if pending_stop else error
             updated = connection.execute(
-                "UPDATE slow_tasks SET status='uncertain',next_poll_at=?,poll_attempts=? "
+                "UPDATE slow_tasks SET status=?,next_poll_at=?,poll_attempts=? "
                 "WHERE task_id=? AND executor_kind='hermes_runs' AND backend_run_id=? "
                 "AND result_contract_version=2 AND status IN ('running','uncertain')",
-                (next_poll_iso, poll_attempts, task_id, backend_run_id),
+                (task_status, effective_poll_iso, poll_attempts, task_id, backend_run_id),
             ).rowcount
             released = connection.execute(
-                "UPDATE dispatch_outbox SET state='uncertain',claimed_until=NULL,last_error=? "
+                "UPDATE dispatch_outbox SET state=?,claimed_until=NULL,last_error=? "
                 "WHERE task_id=? AND state='claimed' AND dispatch_started_at IS NOT NULL",
-                (error, task_id),
+                (outbox_state, last_error, task_id),
             ).rowcount
             if not updated or not released:
                 connection.execute("ROLLBACK")

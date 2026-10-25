@@ -178,8 +178,10 @@ class HermesRunsExecutorTests(unittest.TestCase):
             [],
         )
         outcome = asyncio.run(executor.execute(self.make_task(result_contract_version=2)))
-        self.assertEqual((outcome.status, outcome.code), ("failed", "hermes_result_invalid"))
-        self.assertIsNone(outcome.result)
+        self.assertEqual((outcome.status, outcome.code), ("completed", "ok"))
+        self.assertEqual(outcome.result.presentation_status, "failed")
+        self.assertEqual(outcome.result.delivery_error, "presentation_invalid")
+        self.assertEqual(outcome.result.speak, "The task finished, but result delivery needs recovery.")
 
     def test_v1_pinned_task_is_not_submitted_or_polled(self):
         calls = []
@@ -351,8 +353,9 @@ class HermesRunsExecutorTests(unittest.TestCase):
 
         no_result = self.make_executor(lambda *args: (200, {"status": "completed"}), [])
         outcome = asyncio.run(no_result.execute(self.make_task(run_id="run-3")))
-        self.assertEqual((outcome.status, outcome.code), ("failed", "hermes_result_missing"))
-        self.assertIsNone(outcome.result)
+        self.assertEqual((outcome.status, outcome.code), ("completed", "ok"))
+        self.assertEqual(outcome.result.presentation_status, "failed")
+        self.assertEqual(outcome.result.delivery_error, "presentation_missing")
 
         denied_status = self.make_executor(lambda *args: (403, {"error": "forbidden"}), [])
         denied = asyncio.run(denied_status.execute(self.make_task(run_id="run-4")))
@@ -394,16 +397,18 @@ class HermesRunsExecutorTests(unittest.TestCase):
         self.assertEqual(posts[0]["Idempotency-Key"], "task-a")
         self.assertEqual(posts[1]["Idempotency-Key"], "task-b")
 
-    def test_completed_truncated_json_is_failed_without_speech(self):
+    def test_completed_truncated_json_is_delivery_failure_without_untrusted_content(self):
         output = '{"schema_version":2,"speak":"unfinished'
         executor = self.make_executor(
             lambda *args: (200, {"status": "completed", "output": output}), []
         )
         outcome = asyncio.run(executor.execute(self.make_task(run_id="run-truncated-json")))
-        self.assertEqual((outcome.status, outcome.code), ("failed", "hermes_result_invalid"))
-        self.assertIsNone(outcome.result)
+        self.assertEqual((outcome.status, outcome.code), ("completed", "ok"))
+        self.assertEqual(outcome.result.presentation_status, "failed")
+        self.assertEqual(outcome.result.delivery_error, "presentation_invalid")
+        self.assertNotIn("unfinished", outcome.result.speak)
 
-    def test_completed_v2_artifact_failure_closes_failed_without_result(self):
+    def test_completed_v2_artifact_failure_keeps_execution_and_delivery_state(self):
         failed_envelope = json.dumps({
             "schema_version": 2,
             "speak": "The task finished, but result delivery needs recovery.",
@@ -420,8 +425,52 @@ class HermesRunsExecutorTests(unittest.TestCase):
             lambda *args: (200, {"status": "completed", "output": failed_envelope}), []
         )
         outcome = asyncio.run(executor.execute(self.make_task(run_id="run-artifact-failed")))
-        self.assertEqual((outcome.status, outcome.code), ("failed", "hermes_delivery_failed"))
-        self.assertIsNone(outcome.result)
+        self.assertEqual((outcome.status, outcome.code), ("completed", "ok"))
+        self.assertEqual(outcome.result.artifact_status, "failed")
+        self.assertEqual(outcome.result.presentation_status, "failed")
+        self.assertEqual(outcome.result.delivery_error, "artifact_write_failed")
+
+    def test_completed_presentation_failure_preserves_verified_artifact_reference(self):
+        reference = "art_" + "a" * 24
+        failed_envelope = json.dumps({
+            "schema_version": 2,
+            "speak": "The task finished, but result delivery needs recovery.",
+            "card": {
+                "title": "Result needs recovery",
+                "lines": ["The short result could not be safely delivered."],
+            },
+            "execution_status": "completed",
+            "artifact_status": "committed",
+            "presentation_status": "failed",
+            "artifact_ref": reference,
+        })
+        executor = self.make_executor(
+            lambda *args: (200, {"status": "completed", "output": failed_envelope}), []
+        )
+        outcome = asyncio.run(executor.execute(self.make_task(run_id="run-artifact-preserved")))
+        self.assertEqual((outcome.status, outcome.code), ("completed", "ok"))
+        self.assertEqual(outcome.result.artifact_status, "committed")
+        self.assertEqual(outcome.result.artifact_ref, reference)
+        self.assertEqual(outcome.result.presentation_status, "failed")
+
+    def test_malformed_output_never_recovers_an_artifact_reference(self):
+        output = json.dumps({
+            "schema_version": 2,
+            "speak": "untrusted speech",
+            "card": {"title": "Untrusted", "lines": ["Untrusted content"]},
+            "execution_status": "completed",
+            "artifact_status": "committed",
+            "presentation_status": "unknown",
+            "artifact_ref": "art_" + "b" * 24,
+        })
+        executor = self.make_executor(
+            lambda *args: (200, {"status": "completed", "output": output}), []
+        )
+        outcome = asyncio.run(executor.execute(self.make_task(run_id="run-untrusted-artifact")))
+        self.assertEqual(outcome.status, "completed")
+        self.assertIsNone(outcome.result.artifact_ref)
+        self.assertIsNone(outcome.result.artifact_status)
+        self.assertNotIn("untrusted speech", outcome.result.speak)
 
     def test_completed_partial_payload_is_failed_without_speech(self):
         result = json.dumps({
@@ -462,8 +511,9 @@ class HermesRunsExecutorTests(unittest.TestCase):
         })
         executor = self.make_executor(lambda *args: (200, {"status": "completed", "output": output}), [])
         outcome = asyncio.run(executor.execute(self.make_task(task_id="task-owner-a", run_id="run-owner-a")))
-        self.assertEqual((outcome.status, outcome.code), ("failed", "hermes_result_invalid"))
-        self.assertIsNone(outcome.result)
+        self.assertEqual((outcome.status, outcome.code), ("completed", "ok"))
+        self.assertEqual(outcome.result.delivery_error, "presentation_invalid")
+        self.assertIsNone(outcome.result.artifact_ref)
 
     def test_public_dns_result_is_rejected_before_connect(self):
         executor = HermesRunsExecutor(

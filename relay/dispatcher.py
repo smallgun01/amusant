@@ -309,9 +309,10 @@ class AsyncDispatcher:
                         )
                         return
                     except Exception:
-                        # Keep the existing fail-closed uncertainty if durable
-                        # recovery scheduling itself cannot be confirmed.
-                        pass
+                        # Do not overwrite a concurrent STOP intent, or an
+                        # ambiguous successful recovery write. The claim lease
+                        # remains the recovery boundary if persistence failed.
+                        return
                 await self._store_call(
                     self._store.mark_uncertain,
                     task.task_id,

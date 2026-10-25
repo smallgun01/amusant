@@ -15,7 +15,7 @@ from typing import Any, Callable
 from urllib.parse import quote, urlparse
 
 from .dispatcher import ExecutionOutcome
-from .hermes_result import build_hermes_run_prompt, parse_hermes_run_result
+from .hermes_result import build_hermes_run_prompt, delivery_failure, parse_hermes_run_result
 from .task_store import ClaimedTask
 
 MAX_RESPONSE_BYTES = 1024 * 1024
@@ -353,13 +353,19 @@ class HermesRunsExecutor:
                     return ExecutionOutcome(status="failed", code="hermes_result_incomplete")
                 output = _extract_output(payload)
                 if output is None:
-                    return ExecutionOutcome(status="failed", code="hermes_result_missing")
+                    return ExecutionOutcome(
+                        status="completed", result=delivery_failure("presentation_missing")
+                    )
                 try:
                     result = parse_hermes_run_result(output)
                 except ValueError:
-                    return ExecutionOutcome(status="failed", code="hermes_result_invalid")
-                if result.artifact_status == "failed" or result.presentation_status == "failed":
-                    return ExecutionOutcome(status="failed", code="hermes_delivery_failed")
+                    # The authenticated Facade has confirmed native execution
+                    # completion. Invalid presentation is a delivery failure;
+                    # do not turn it into a native Hermes failure or expose
+                    # fields from malformed output as trusted metadata.
+                    return ExecutionOutcome(
+                        status="completed", result=delivery_failure("presentation_invalid")
+                    )
                 return ExecutionOutcome(status="completed", result=result)
             if state in _TERMINAL_FAILURE:
                 return ExecutionOutcome(status="failed", code=f"hermes_{state}")
@@ -393,9 +399,13 @@ class HermesRunsExecutor:
                 if terminal_result is not None:
                     return terminal_result
                 if state == "expired":
+                    if recovery and stop_requested_at is None and self._clock() >= run_deadline_at:
+                        return outcome("uncertain", "hermes_run_deadline_exceeded")
                     return outcome("uncertain", "hermes_expired")
                 if state in _NONTERMINAL:
                     if recovery:
+                        if stop_requested_at is None and self._clock() >= run_deadline_at:
+                            return outcome("uncertain", "hermes_run_deadline_exceeded")
                         return outcome("uncertain", "hermes_recovery_nonterminal")
                     if stop_grace_deadline is not None:
                         if self._clock() >= stop_grace_deadline:
@@ -406,6 +416,8 @@ class HermesRunsExecutor:
                     return outcome("deferred", "hermes_poll_cycle_complete")
                 return outcome("uncertain", "hermes_remote_state_unconfirmed")
             if recovery:
+                if stop_requested_at is None and self._clock() >= run_deadline_at:
+                    return outcome("uncertain", "hermes_run_deadline_exceeded")
                 return outcome("uncertain", error)
             if stop_grace_deadline is not None:
                 if self._clock() >= stop_grace_deadline:
@@ -415,9 +427,11 @@ class HermesRunsExecutor:
                 return ExecutionOutcome(status="uncertain", code="hermes_run_deadline_exceeded")
             return outcome("deferred", error)
 
-        # Uncertain known Runs are recoverable only by GET. This path can never
-        # submit again or issue a second stop request.
-        if task.status == "uncertain":
+        # Uncertain known Runs resume by GET, but the durable deadline remains
+        # authoritative: it may trigger the first STOP for this bound Run. A
+        # recorded Owner/deadline STOP also takes priority over uncertainty so
+        # recovery cannot strand an intent raised while a GET was in flight.
+        if task.status == "uncertain" and stop_requested_at is None:
             return await process_get(recovery=True)
 
         if stop_requested_at is not None:

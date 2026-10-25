@@ -45,6 +45,24 @@ _CONDITIONS = {
         "AND executor_kind = :hermes_runs AND result_contract_version = :v2 "
         "AND attribute_exists(dispatch_started_at) AND attribute_exists(backend_run_id)"
     ),
+    "claimed_started_run_recovery_no_stop": (
+        "outbox_state = :claimed AND #status IN (:running,:uncertain) "
+        "AND executor_kind = :hermes_runs AND result_contract_version = :v2 "
+        "AND attribute_exists(dispatch_started_at) AND attribute_exists(backend_run_id) "
+        "AND attribute_not_exists(stop_requested_at)"
+    ),
+    "claimed_started_run_recovery_stop_unaccepted": (
+        "outbox_state = :claimed AND #status IN (:running,:uncertain) "
+        "AND executor_kind = :hermes_runs AND result_contract_version = :v2 "
+        "AND attribute_exists(dispatch_started_at) AND attribute_exists(backend_run_id) "
+        "AND attribute_exists(stop_requested_at) AND attribute_not_exists(stop_accepted_at)"
+    ),
+    "claimed_started_run_recovery_stop_accepted": (
+        "outbox_state = :claimed AND #status IN (:running,:uncertain) "
+        "AND executor_kind = :hermes_runs AND result_contract_version = :v2 "
+        "AND attribute_exists(dispatch_started_at) AND attribute_exists(backend_run_id) "
+        "AND attribute_exists(stop_requested_at) AND attribute_exists(stop_accepted_at)"
+    ),
     "pending_queued": "outbox_state = :pending AND #status = :queued",
     "pending_running_known_run": "outbox_state = :pending AND #status = :running AND attribute_exists(backend_run_id)",
     "cancel_pending_unsubmitted": "outbox_state = :pending AND #status = :queued AND attribute_not_exists(dispatch_started_at) AND attribute_not_exists(backend_run_id)",

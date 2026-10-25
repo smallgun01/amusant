@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from botocore.exceptions import ClientError
 
+from relay.boto3_dynamodb_ledger import _CONDITIONS
 from relay.dynamodb_task_store import QUERY_ITEM_BOUND, DynamoDbTaskStore
 from relay.task_store import (
     AdmissionBusy,
@@ -149,6 +150,24 @@ class _ExpiryUpdateBarrierClient:
 
 
 class Boto3DynamoLedgerTests(unittest.TestCase):
+    def test_recovery_conditions_guard_concurrent_stop_intent(self):
+        base = (
+            "outbox_state = :claimed",
+            "attribute_exists(dispatch_started_at)",
+            "attribute_exists(backend_run_id)",
+        )
+        no_stop = _CONDITIONS["claimed_started_run_recovery_no_stop"]
+        stop_unaccepted = _CONDITIONS["claimed_started_run_recovery_stop_unaccepted"]
+        stop_accepted = _CONDITIONS["claimed_started_run_recovery_stop_accepted"]
+        for condition in (no_stop, stop_unaccepted, stop_accepted):
+            for fragment in base:
+                self.assertIn(fragment, condition)
+        self.assertIn("attribute_not_exists(stop_requested_at)", no_stop)
+        self.assertIn("attribute_exists(stop_requested_at)", stop_unaccepted)
+        self.assertIn("attribute_not_exists(stop_accepted_at)", stop_unaccepted)
+        self.assertIn("attribute_exists(stop_requested_at)", stop_accepted)
+        self.assertIn("attribute_exists(stop_accepted_at)", stop_accepted)
+
     def test_has_client_tasks_uses_strong_partition_query(self):
         try:
             import boto3
