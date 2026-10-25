@@ -13,8 +13,11 @@ from typing import Protocol
 from uuid import UUID
 
 MAX_TASK_CHARS = 4096
-TASK_KINDS = frozenset({"research", "compare", "summarize"})
-SCHEMA_VERSION = 8
+GENERIC_TASK_KIND = "agent"
+LEGACY_TASK_KINDS = frozenset({"research", "compare", "summarize"})
+TASK_KINDS = LEGACY_TASK_KINDS | {GENERIC_TASK_KIND}
+_TASK_KIND_CHECK = "('research','compare','summarize','agent')"
+SCHEMA_VERSION = 9
 EXECUTOR_KINDS = frozenset({"openab_acp", "hermes_runs"})
 DELIVERY_STATES = frozenset({"pending", "notified", "read", "spoken"})
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
@@ -78,8 +81,27 @@ class TaskAdmissionRequest:
             )
 
     def fingerprint(self) -> str:
+        return self._fingerprint_for_kind(self.task_kind)
+
+    def matches_fingerprint(self, stored_fingerprint: object) -> bool:
+        """Match this request without rewriting any historical digest.
+
+        A new generic request can be a retry of a pre-C2 call whose server-side
+        category default was one of the legacy hints. Keep the original digest
+        on the row and accept only those kind variants for the same request.
+        """
+        if stored_fingerprint == self.fingerprint():
+            return True
+        if self.task_kind != GENERIC_TASK_KIND:
+            return False
+        return any(
+            stored_fingerprint == self._fingerprint_for_kind(legacy_kind)
+            for legacy_kind in LEGACY_TASK_KINDS
+        )
+
+    def _fingerprint_for_kind(self, task_kind: str) -> str:
         payload_fields: dict[str, object] = {
-            "task": self.task, "task_kind": self.task_kind, "backend": self.backend,
+            "task": self.task, "task_kind": task_kind, "backend": self.backend,
         }
         # Preserve the historical v1 digest so old admission retries remain
         # deduplicated across this additive schema migration.
@@ -340,6 +362,9 @@ class SQLiteTaskStore:
                     version = 7
                 if version < 8:
                     self._migrate_v7_to_v8(connection)
+                    version = 8
+                if version < 9:
+                    self._migrate_v8_to_v9(connection)
             os.chmod(self._path, 0o600)
         except (sqlite3.Error, OSError, AdmissionUnavailable):
             raise AdmissionUnavailable("task_store_unavailable") from None
@@ -357,7 +382,7 @@ class SQLiteTaskStore:
                 call_id TEXT NOT NULL,
                 payload_sha256 TEXT NOT NULL,
                 task_text TEXT NOT NULL,
-                task_kind TEXT NOT NULL CHECK(task_kind IN ('research','compare','summarize')),
+                task_kind TEXT NOT NULL CHECK(task_kind IN {_TASK_KIND_CHECK}),
                 backend TEXT NOT NULL,
                 executor_kind TEXT NOT NULL DEFAULT 'openab_acp',
                 backend_run_id TEXT,
@@ -523,6 +548,71 @@ class SQLiteTaskStore:
                 connection.execute(f"ALTER TABLE task_results ADD COLUMN {name} {declaration}")
         connection.execute("PRAGMA user_version=8")
 
+    def _migrate_v8_to_v9(self, connection: sqlite3.Connection) -> None:
+        """Allow generic Agent tasks without rewriting historical task rows."""
+        columns = (
+            "task_id,client_id,conversation_id,turn_id,call_id,payload_sha256,task_text,task_kind,backend,"
+            "executor_kind,backend_run_id,run_started_at,run_deadline_at,next_poll_at,poll_attempts,"
+            "stop_requested_at,stop_reason,stop_attempts,stop_accepted_at,manual_reconciled_at,"
+            "manual_reconciled_by,manual_reconciliation_ref,manual_reconciled_state,manual_reconciled_run_id,"
+            "result_contract_version,status,created_at,expires_at"
+        )
+        connection.execute("PRAGMA foreign_keys=OFF")
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                f"""
+                CREATE TABLE slow_tasks_v9 (
+                    task_id TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    conversation_id TEXT NOT NULL,
+                    turn_id INTEGER NOT NULL,
+                    call_id TEXT NOT NULL,
+                    payload_sha256 TEXT NOT NULL,
+                    task_text TEXT NOT NULL,
+                    task_kind TEXT NOT NULL CHECK(task_kind IN {_TASK_KIND_CHECK}),
+                    backend TEXT NOT NULL,
+                    executor_kind TEXT NOT NULL DEFAULT 'openab_acp',
+                    backend_run_id TEXT,
+                    run_started_at TEXT,
+                    run_deadline_at TEXT,
+                    next_poll_at TEXT,
+                    poll_attempts INTEGER NOT NULL DEFAULT 0,
+                    stop_requested_at TEXT,
+                    stop_reason TEXT,
+                    stop_attempts INTEGER NOT NULL DEFAULT 0,
+                    stop_accepted_at TEXT,
+                    manual_reconciled_at TEXT,
+                    manual_reconciled_by TEXT,
+                    manual_reconciliation_ref TEXT,
+                    manual_reconciled_state TEXT,
+                    manual_reconciled_run_id TEXT,
+                    result_contract_version INTEGER NOT NULL DEFAULT 2,
+                    status TEXT NOT NULL CHECK(status IN {_V2_TASK_STATUSES}),
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    UNIQUE(client_id, conversation_id, turn_id, call_id)
+                )
+                """
+            )
+            connection.execute(
+                f"INSERT INTO slow_tasks_v9({columns}) SELECT {columns} FROM slow_tasks"
+            )
+            # Child tables continue to reference the stable name `slow_tasks`.
+            # Foreign keys are disabled only during this atomic parent rebuild.
+            connection.execute("DROP TABLE slow_tasks")
+            connection.execute("ALTER TABLE slow_tasks_v9 RENAME TO slow_tasks")
+            connection.execute("PRAGMA user_version=9")
+            connection.execute("COMMIT")
+        except sqlite3.Error:
+            try:
+                connection.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise
+        finally:
+            connection.execute("PRAGMA foreign_keys=ON")
+
     def _migrate_v1_to_v2(self, connection: sqlite3.Connection) -> None:
         connection.execute("PRAGMA foreign_keys=OFF")
         try:
@@ -630,7 +720,7 @@ class SQLiteTaskStore:
                 (request.client_id, request.conversation_id, request.turn_id, request.call_id),
             ).fetchone()
             if row is not None:
-                if row[1] != fingerprint:
+                if not request.matches_fingerprint(row[1]):
                     raise AdmissionConflict("call_id_conflict")
                 connection.execute("COMMIT")
                 transaction_open = False

@@ -58,7 +58,7 @@ def _smoke_task(environ) -> tuple[str, str]:
     if not isinstance(task, str) or not task.strip() or len(task) > MAX_TASK_CHARS:
         raise ValueError("AMUSANT_SMOKE_TASK must be bounded non-empty text")
     if not isinstance(kind, str) or kind not in TASK_KINDS:
-        raise ValueError("AMUSANT_DEFAULT_TASK_KIND must be research, compare, or summarize")
+        raise ValueError("AMUSANT_DEFAULT_TASK_KIND must be agent or a legacy task-kind hint")
     return task.strip(), kind
 
 

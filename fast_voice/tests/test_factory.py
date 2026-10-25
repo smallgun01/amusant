@@ -248,7 +248,7 @@ class FactoryTests(unittest.TestCase):
         )
         schema = provider._config.tools[0].function_declarations[0].parameters
         self.assertEqual(schema.required, ["task"])
-        self.assertEqual(schema.properties["task_kind"].enum, ["research", "compare", "summarize"])
+        self.assertEqual(set(schema.properties), {"task"})
 
     def test_sdk_setup_exception_is_redacted(self):
         def broken_client(**_):

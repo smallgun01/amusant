@@ -48,7 +48,8 @@ DISPATCHER_POLL_INTERVAL_ENV = "AMUSANT_DISPATCHER_POLL_INTERVAL_SECONDS"
 SLOW_EXECUTOR_ENV = "AMUSANT_SLOW_EXECUTOR"
 # Product default: Hermes Native Runs. OpenAB ACP is an explicit legacy/rollback choice.
 DEFAULT_SLOW_EXECUTOR = "hermes_runs"
-DEFAULT_TASK_KIND = "research"
+# Retained for legacy ACP task-only calls; Hermes task-only calls force `agent` in the router.
+DEFAULT_TASK_KIND = "agent"
 DEFAULT_MAX_TASK_TTL_SECONDS = 600
 DEFAULT_MAX_PENDING_TASKS = 8
 DEFAULT_ACCEPTANCE_TIMEOUT_SECONDS = 2.0
@@ -119,10 +120,10 @@ def load_relay_process_config(
         raise ValueError("AMUSANT_BACKEND_ID must be at most 64 characters")
     default_task_kind = environ.get(DEFAULT_TASK_KIND_ENV, DEFAULT_TASK_KIND)
     if not isinstance(default_task_kind, str) or not default_task_kind.strip():
-        raise ValueError("AMUSANT_DEFAULT_TASK_KIND must be research, compare, or summarize")
+        raise ValueError("AMUSANT_DEFAULT_TASK_KIND must be agent or a legacy task-kind hint (ACP compatibility)")
     default_task_kind = default_task_kind.strip()
     if default_task_kind not in TASK_KINDS:
-        raise ValueError("AMUSANT_DEFAULT_TASK_KIND must be research, compare, or summarize")
+        raise ValueError("AMUSANT_DEFAULT_TASK_KIND must be agent or a legacy task-kind hint (ACP compatibility)")
     slow_executor_kind = (environ.get(SLOW_EXECUTOR_ENV) or DEFAULT_SLOW_EXECUTOR).strip().lower() or DEFAULT_SLOW_EXECUTOR
     if slow_executor_kind not in {"openab_acp", "hermes_runs"}:
         raise ValueError(f"{SLOW_EXECUTOR_ENV} must be openab_acp or hermes_runs")

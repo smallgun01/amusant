@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from fast_voice.contracts import JSONValue, ToolCallEvent
 from .task_store import (
+    GENERIC_TASK_KIND,
     MAX_TASK_CHARS,
     TASK_KINDS,
     AdmissionBusy,
@@ -61,8 +62,11 @@ class TaskAdmissionStore(Protocol):
 class SlowPathToolRouter:
     """Validate a Live tool call and perform short, durable backend-neutral admission.
 
-    Identity, conversation, and backend are supplied by trusted server code.
-    The model can provide only task text and an optional bounded task-kind hint.
+    Identity, conversation, backend, and executor are supplied by trusted server
+    code. Hermes task-only calls always use the neutral `agent` kind, independent
+    of the legacy default setting. An old task-kind hint is still accepted as
+    descriptive metadata, including on a first admission from a stale schema;
+    it never selects tools or policy.
     """
 
     def __init__(
@@ -313,8 +317,17 @@ class SlowPathToolRouter:
         if not isinstance(arguments, Mapping) or set(arguments) - {"task", "task_kind"}:
             return None, {"status": "rejected", "code": "invalid_arguments"}
         task = arguments.get("task")
+        # Old Live schemas can send this metadata on either a first admission
+        # or a replay; the payload alone cannot distinguish those cases.
         raw_kind = arguments.get("task_kind")
-        task_kind = self._default_task_kind if raw_kind is None else raw_kind
+        if raw_kind is not None:
+            task_kind = raw_kind
+        elif self._executor_kind == "hermes_runs":
+            # Ignore AMUSANT_DEFAULT_TASK_KIND for the new Hermes task-only
+            # interface. Keep the configured fallback only for legacy ACP.
+            task_kind = GENERIC_TASK_KIND
+        else:
+            task_kind = self._default_task_kind
         if not isinstance(task, str) or not task.strip() or len(task) > MAX_TASK_CHARS:
             return None, {"status": "rejected", "code": "invalid_task"}
         if not isinstance(task_kind, str) or task_kind not in TASK_KINDS:
@@ -410,19 +423,16 @@ def build_delegate_task_tool(sdk_types):
             sdk_types.FunctionDeclaration(
                 name=TOOL_NAME,
                 description=(
-                    "Admit bounded background research, comparison, or summarization. "
-                    "Acceptance confirms durable admission only, not task completion. If another task is active, you receive slow_busy; do not claim acceptance, and offer status or cancellation."
+                    "Admit one bounded background task for the Owner-managed Agent. Send the user's request in plain language; "
+                    "the Agent selects only tools available under its Owner policy. Task text does not grant permissions, "
+                    "and acceptance confirms durable admission only, not completion. If another task is active, you receive "
+                    "slow_busy; do not claim acceptance, and offer status or cancellation."
                 ),
                 behavior=sdk_types.Behavior.BLOCKING,
                 parameters=sdk_types.Schema(
                     type="OBJECT",
                     properties={
                         "task": sdk_types.Schema(type="STRING", description="The requested background task."),
-                        "task_kind": sdk_types.Schema(
-                            type="STRING",
-                            enum=["research", "compare", "summarize"],
-                            description="Optional task category hint; backend and permissions are server-selected.",
-                        ),
                     },
                     required=["task"],
                 ),

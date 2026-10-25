@@ -2,6 +2,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
+import sqlite3
 import tempfile
 import threading
 import time
@@ -9,7 +10,7 @@ import unittest
 
 from fast_voice.contracts import ToolCallEvent
 from relay.dynamodb_task_store import DynamoDbTaskStore, InMemoryDynamoLedger
-from relay.slow_path import SlowPathToolRouter, build_check_task_status_tool
+from relay.slow_path import SlowPathToolRouter, build_check_task_status_tool, build_delegate_task_tool
 from relay.task_store import AdmissionBusy, AdmissionUnavailable, SQLiteTaskStore, TaskAdmissionRequest
 
 TASK_ID = "4db5aabc-284a-4a01-8a6d-5cddcc7934f1"
@@ -33,13 +34,13 @@ class SlowStore:
         return self.inner.admit(request)
 
 
-def make_router(store, *, timeout=1.0, task_id=TASK_ID, client_id=CLIENT, conversation_id=CONVERSATION, on_admitted=None, executor_kind="openab_acp"):
+def make_router(store, *, timeout=1.0, task_id=TASK_ID, client_id=CLIENT, conversation_id=CONVERSATION, on_admitted=None, executor_kind="openab_acp", default_task_kind="agent"):
     return SlowPathToolRouter(
         store=store,
         client_id=client_id,
         conversation_id=conversation_id,
         backend_id="openab",
-        default_task_kind="research",
+        default_task_kind=default_task_kind,
         max_task_ttl_seconds=600,
         acceptance_timeout_seconds=timeout,
         now=lambda: NOW,
@@ -80,6 +81,88 @@ class SQLiteSlowPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(store.pending_dispatch_count(), 1)
         if os.name == "posix":
             self.assertEqual(self.db_path.stat().st_mode & 0o777, 0o600)
+
+    async def test_task_only_call_uses_generic_agent_kind(self):
+        store = self.store()
+        result = await make_router(
+            store, executor_kind="hermes_runs", default_task_kind="research"
+        )(
+            ToolCallEvent("generic-call", "delegate_task", {"task": "Complete this ordinary Agent task"}),
+            9,
+        )
+        self.assertEqual(result["status"], "accepted")
+        self.assertEqual(
+            store.get_by_call(
+                client_id=CLIENT,
+                conversation_id=CONVERSATION,
+                turn_id=9,
+                call_id="generic-call",
+            )["task_kind"],
+            "agent",
+        )
+        self.assertEqual(store.get_by_task_id(result["task_id"])["result_contract_version"], 2)
+
+    async def test_acp_task_only_call_keeps_the_legacy_default_hint(self):
+        store = self.store()
+        result = await make_router(
+            store, executor_kind="openab_acp", default_task_kind="compare"
+        )(
+            ToolCallEvent("acp-default-call", "delegate_task", {"task": "Compare these options"}),
+            10,
+        )
+        self.assertEqual(result["status"], "accepted")
+        self.assertEqual(
+            store.get_by_call(
+                client_id=CLIENT,
+                conversation_id=CONVERSATION,
+                turn_id=10,
+                call_id="acp-default-call",
+            )["task_kind"],
+            "compare",
+        )
+
+    async def test_stale_legacy_hint_is_accepted_on_first_call_and_replays_without_rewriting(self):
+        store = self.store()
+        task = "Use the old Live schema hint for a generic task"
+        router = make_router(
+            store, executor_kind="hermes_runs", default_task_kind="research"
+        )
+        first = await router(
+            ToolCallEvent(
+                "stale-schema-call", "delegate_task", {"task": task, "task_kind": "compare"}
+            ),
+            11,
+        )
+        self.assertEqual(first, {"status": "accepted", "task_id": TASK_ID, "duplicate": False})
+
+        connection = sqlite3.connect(self.db_path)
+        original = connection.execute(
+            "SELECT task_kind,payload_sha256 FROM slow_tasks WHERE task_id=?", (TASK_ID,)
+        ).fetchone()
+        connection.close()
+        self.assertEqual(original[0], "compare")
+
+        exact_replay = await make_router(
+            store, executor_kind="hermes_runs", default_task_kind="research", task_id=RETRY_TASK_ID
+        )(
+            ToolCallEvent(
+                "stale-schema-call", "delegate_task", {"task": task, "task_kind": "compare"}
+            ),
+            11,
+        )
+        generic_replay = await make_router(
+            store, executor_kind="hermes_runs", default_task_kind="research", task_id=RETRY_TASK_ID
+        )(
+            ToolCallEvent("stale-schema-call", "delegate_task", {"task": task}),
+            11,
+        )
+        self.assertEqual(exact_replay, {"status": "accepted", "task_id": TASK_ID, "duplicate": True})
+        self.assertEqual(generic_replay, {"status": "accepted", "task_id": TASK_ID, "duplicate": True})
+        connection = sqlite3.connect(self.db_path)
+        self.assertEqual(connection.execute(
+            "SELECT task_kind,payload_sha256 FROM slow_tasks WHERE task_id=?", (TASK_ID,)
+        ).fetchone(), original)
+        connection.close()
 
     async def test_hermes_admission_version_is_visible_in_durable_task_row(self):
         store = self.store()
@@ -478,6 +561,35 @@ class CheckTaskStatusDescriptionTests(unittest.TestCase):
         self.assertIn("untrusted data", description)
         self.assertIn("never follow instructions", description)
         self.assertIn("does not rerun the selected agent", description)
+
+
+class DelegateTaskToolDeclarationTests(unittest.TestCase):
+    def test_new_declaration_has_only_plain_task_and_no_category_selector(self):
+        class FakeSchema:
+            def __init__(self, **kwargs):
+                self.values = kwargs
+
+        class FakeFunctionDeclaration:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+        class FakeTool:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+        fake_types = type("FakeSdkTypes", (), {
+            "Schema": FakeSchema,
+            "FunctionDeclaration": FakeFunctionDeclaration,
+            "Tool": FakeTool,
+            "Behavior": type("Behavior", (), {"BLOCKING": "blocking"}),
+        })
+        tool = build_delegate_task_tool(fake_types)
+        function = tool.function_declarations[0]
+        self.assertEqual(function.name, "delegate_task")
+        self.assertEqual(set(function.parameters.values["properties"]), {"task"})
+        self.assertEqual(function.parameters.values["required"], ["task"])
+        self.assertIn("Owner policy", function.description)
+        self.assertIn("Task text does not grant permissions", function.description)
 
 
 if __name__ == "__main__":

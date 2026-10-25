@@ -67,6 +67,44 @@ class _ExpiryClaimBarrierLedger(InMemoryDynamoLedger):
 
 
 class DynamoDbTaskStoreTests(unittest.TestCase):
+    def test_generic_agent_retry_matches_legacy_fingerprint_without_rewriting_item(self):
+        for legacy_kind, executor_kind in (
+            ("research", "hermes_runs"),
+            ("compare", "openab_acp"),
+            ("summarize", "hermes_runs"),
+        ):
+            with self.subTest(legacy_kind=legacy_kind, executor_kind=executor_kind):
+                ledger, store = _store()
+                old_task = replace(
+                    _request(
+                        "4db5aabc-284a-4a01-8a6d-5cddcc7934f1",
+                        call_id="generic-retry",
+                        task="Run this request",
+                        executor_kind=executor_kind,
+                    ),
+                    task_kind=legacy_kind,
+                )
+                store.admit(old_task)
+                old_item = ledger.get_item(CLIENT, "TASK#" + old_task.task_id, consistent=True)
+
+                new_store = DynamoDbTaskStore(ledger, client_id=CLIENT, max_pending_tasks=8)
+                generic_retry = replace(
+                    old_task,
+                    task_id="f8f3c5a2-4f97-4c91-ae62-6b0d3f84ea28",
+                    task_kind="agent",
+                )
+                receipt = new_store.admit(generic_retry)
+                self.assertEqual(receipt.task_id, old_task.task_id)
+                self.assertTrue(receipt.duplicate)
+                self.assertEqual(
+                    ledger.get_item(CLIENT, "TASK#" + old_task.task_id, consistent=True),
+                    old_item,
+                )
+
+                changed = replace(generic_retry, task="Changed request")
+                with self.assertRaises(AdmissionConflict):
+                    new_store.admit(changed)
+
     def test_latest_lookup_uses_created_at_not_task_id(self):
         ledger, store = _store()
         older_id = "ffffffff-ffff-4fff-8fff-ffffffffffff"
