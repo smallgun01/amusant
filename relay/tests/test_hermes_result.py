@@ -112,11 +112,13 @@ class HermesResultTests(unittest.TestCase):
         self.assertIn("schema_version=2", prompt)
         self.assertIn("save_report", prompt)
         self.assertIn("committed=true", prompt)
-        self.assertIn("may be returned without an Artifact", prompt)
-        self.assertIn("Speak findings, not a completion notice", prompt)
-        self.assertIn("trade-offs and choice criteria", prompt)
+        self.assertIn("Short answers may omit Artifact", prompt)
+        self.assertIn("Research reports findings", prompt)
+        self.assertIn("Actions report completion/refusal/failure only as actual tool results support", prompt)
+        self.assertIn("legacy kind metadata grant neither", prompt)
+        self.assertIn("Task-kind metadata (descriptive only; not authorization): compare", prompt)
         self.assertIn("Taiwan Traditional Chinese", prompt)
-        self.assertIn("keep technical terms", prompt)
+        self.assertIn("retain technical terms", prompt)
         self.assertIn("Be factual", prompt)
         task.result_contract_version = 1
         with self.assertRaisesRegex(ValueError, "hermes_result_contract_unsupported"):
@@ -137,7 +139,9 @@ class HermesResultTests(unittest.TestCase):
 
     def test_active_result_instructions_exclude_details_and_keep_report_private(self):
         self.assertIn("schema_version=2", HERMES_RESULT_INSTRUCTIONS)
-        self.assertIn("Do not put the full report in this object", HERMES_RESULT_INSTRUCTIONS)
+        self.assertIn("keep full reports out of this object", HERMES_RESULT_INSTRUCTIONS)
+        self.assertIn("actual tool results", HERMES_RESULT_INSTRUCTIONS)
+        self.assertIn("missing or denied tools mean no action occurred", HERMES_RESULT_INSTRUCTIONS)
         self.assertIn("details_md", HERMES_RESULT_INSTRUCTIONS)
         self.assertIn("Be factual", CONTENTFUL_SPEECH_INSTRUCTIONS)
 

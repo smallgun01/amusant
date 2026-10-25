@@ -554,7 +554,7 @@ class DynamoDbTaskStore:
     ) -> AdmissionReceipt:
         existing = self._ledger.get_item(request.client_id, dedup_sk, consistent=True)
         if existing is not None:
-            if existing.get("payload_sha256") != fingerprint:
+            if not request.matches_fingerprint(existing.get("payload_sha256")):
                 raise AdmissionConflict("call_id_conflict")
             return AdmissionReceipt(task_id=str(existing["task_id"]), duplicate=True)
 
@@ -654,7 +654,7 @@ class DynamoDbTaskStore:
             except LedgerConditionFailed as exc:
                 again = self._ledger.get_item(request.client_id, dedup_sk, consistent=True)
                 if again is not None:
-                    if again.get("payload_sha256") == fingerprint:
+                    if request.matches_fingerprint(again.get("payload_sha256")):
                         return AdmissionReceipt(task_id=str(again["task_id"]), duplicate=True)
                     raise AdmissionConflict("call_id_conflict") from exc
                 current_slot = self._active_slot(created)
@@ -672,7 +672,7 @@ class DynamoDbTaskStore:
                     again = self._ledger.get_item(request.client_id, dedup_sk, consistent=True)
                 except (AdmissionUnavailable, LedgerAmbiguous):
                     raise AdmissionUnknown("acceptance_unconfirmed") from exc
-                if again is not None and again.get("payload_sha256") == fingerprint:
+                if again is not None and request.matches_fingerprint(again.get("payload_sha256")):
                     return AdmissionReceipt(task_id=str(again["task_id"]), duplicate=True)
                 current_slot = self._ledger.get_item(request.client_id, slot_sk, consistent=True)
                 if current_slot is not None and current_slot.get("active_task_id") != request.task_id:

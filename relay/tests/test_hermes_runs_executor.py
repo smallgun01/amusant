@@ -715,6 +715,12 @@ class HermesRunsExecutorTests(unittest.TestCase):
         }
         default_config = load_relay_process_config(common, expected_device_token="device-token-123")
         self.assertEqual(default_config.slow_executor_kind, "hermes_runs")
+        self.assertEqual(default_config.default_task_kind, "agent")
+        legacy_hint_config = load_relay_process_config(
+            {**common, "AMUSANT_DEFAULT_TASK_KIND": "compare"},
+            expected_device_token="device-token-123",
+        )
+        self.assertEqual(legacy_hint_config.default_task_kind, "compare")
         config = load_relay_process_config({**common, "AMUSANT_SLOW_EXECUTOR": "hermes_runs"}, expected_device_token="device-token-123")
         self.assertEqual(config.slow_executor_kind, "hermes_runs")
         v2_config = load_relay_process_config({**common, "AMUSANT_RESULT_CONTRACT_VERSION": "2"}, expected_device_token="device-token-123")

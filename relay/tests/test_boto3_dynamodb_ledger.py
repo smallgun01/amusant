@@ -462,6 +462,46 @@ class Boto3DynamoLedgerTests(unittest.TestCase):
             self.assertEqual(inbox["status"], "completed")
             self.assertEqual(inbox["speak"], "Done.")
 
+    def test_generic_retry_matches_historical_v2_item_through_moto(self):
+        try:
+            import boto3
+            from moto import mock_aws
+        except ImportError:
+            self.skipTest("moto/boto3 not installed")
+        with mock_aws():
+            client = boto3.client("dynamodb", region_name="us-east-1")
+            _create_table(client)
+            from relay.boto3_dynamodb_ledger import Boto3DynamoLedger
+
+            task_id = str(uuid4())
+            legacy = _admit_hermes_request(task_id, task_kind="research")
+            original_store = DynamoDbTaskStore(
+                Boto3DynamoLedger(client, TABLE), client_id=CLIENT, max_pending_tasks=8
+            )
+            original_store.admit(legacy)
+            old_item = client.get_item(
+                TableName=TABLE,
+                Key={"pk": {"S": CLIENT}, "sk": {"S": "TASK#" + task_id}},
+                ConsistentRead=True,
+            )["Item"]
+
+            generic_retry = replace(legacy, task_kind="agent")
+            retry_store = DynamoDbTaskStore(
+                Boto3DynamoLedger(client, TABLE), client_id=CLIENT, max_pending_tasks=8
+            )
+            receipt = retry_store.admit(generic_retry)
+            current_item = client.get_item(
+                TableName=TABLE,
+                Key={"pk": {"S": CLIENT}, "sk": {"S": "TASK#" + task_id}},
+                ConsistentRead=True,
+            )["Item"]
+
+            self.assertTrue(receipt.duplicate)
+            self.assertEqual(receipt.task_id, task_id)
+            self.assertEqual(current_item, old_item)
+            self.assertEqual(current_item["task_kind"]["S"], "research")
+            self.assertEqual(current_item["payload_sha256"]["S"], legacy.fingerprint())
+
     def test_deferred_known_run_releases_claim_and_reclaims_only_at_persisted_due_time(self):
         try:
             import boto3

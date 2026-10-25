@@ -78,16 +78,17 @@ def request_for(
     )
 
 
-def make_router(store, *, client_id=CLIENT, now=NOW):
+def make_router(store, *, client_id=CLIENT, now=NOW, executor_kind="openab_acp"):
     return SlowPathToolRouter(
         store=store,
         client_id=client_id,
         conversation_id=CONVERSATION,
         backend_id="openab",
-        default_task_kind="research",
+        default_task_kind="agent",
         max_task_ttl_seconds=600,
         acceptance_timeout_seconds=1.0,
         now=lambda: now,
+        executor_kind=executor_kind,
     )
 
 
@@ -269,6 +270,105 @@ class InboxTests(unittest.IsolatedAsyncioTestCase):
             expected_error="presentation_failed",
             status_flags={"interrupted": True},
         )
+
+    async def test_generic_agent_path_handles_research_success_and_missing_tool_without_artifacts(self):
+        store = self.store()
+        scenarios = (
+            (
+                "Research the current fixture",
+                "The available evidence favors option A.",
+                "Research result",
+                "The reviewed evidence favors option A.",
+            ),
+            (
+                "Create a reminder using the configured Agent tool",
+                "Synthetic Hermes receipt confirms the reminder was created.",
+                "Action result",
+                "Synthetic receipt confirms the reminder was created.",
+            ),
+            (
+                "Create a booking using the configured Agent tool",
+                "The required tool is unavailable, so no booking was made.",
+                "Action unavailable",
+                "No booking was made because the required tool is unavailable.",
+            ),
+        )
+        outputs = [
+            json.dumps({
+                "schema_version": 2,
+                "speak": speak,
+                "card": {"title": title, "lines": [line]},
+                "execution_status": "completed",
+                "artifact_status": "none",
+                "presentation_status": "ready",
+                "artifact_ref": None,
+            })
+            for _, speak, title, line in scenarios
+        ]
+        prompts = []
+
+        def request_json(method, path, body, headers):
+            if method == "POST":
+                index = len(prompts)
+                prompts.append(body["input"])
+                return 202, {"run_id": "run-generic-" + str(index)}
+            index = int(path.rsplit("-", 1)[1])
+            return 200, {
+                "run_id": "run-generic-" + str(index),
+                "status": "completed",
+                "output": outputs[index],
+            }
+
+        executor = HermesRunsExecutor(
+            url="http://127.0.0.1:8642",
+            api_key="local-test-api-key-123",
+            save_backend_run_id=store.save_backend_run_id,
+            update_poll_state=store.update_hermes_poll_state,
+            run_deadline_seconds=60.0,
+            poll_cycle_seconds=0.01,
+            http_timeout_seconds=0.05,
+            poll_interval_seconds=0.001,
+            update_stop_state=store.update_hermes_stop_state,
+            stop_grace_seconds=2.0,
+            stop_max_attempts=3,
+            stop_retry_base_seconds=0.001,
+            stop_retry_max_seconds=0.01,
+            request_json=request_json,
+            clock=lambda: NOW,
+        )
+        router = make_router(store, executor_kind="hermes_runs")
+        dispatcher = AsyncDispatcher(store, executor, now=lambda: NOW)
+        for index, (task_text, expected_speak, _title, _line) in enumerate(scenarios):
+            with self.subTest(index=index):
+                accepted = await router(ToolCallEvent(
+                    "generic-call-" + str(index), "delegate_task", {"task": task_text},
+                ), index + 1)
+                self.assertEqual(accepted["status"], "accepted")
+                task_id = accepted["task_id"]
+                await dispatcher.dispatch_available()
+
+                row = store.get_by_call(
+                    client_id=CLIENT,
+                    conversation_id=CONVERSATION,
+                    turn_id=index + 1,
+                    call_id="generic-call-" + str(index),
+                )
+                result = store.get_result(task_id)
+                lookup = await router(ToolCallEvent(
+                    "generic-read-" + str(index), INBOX_TOOL_NAME,
+                    {"task_id": task_id},
+                ), index + 4)
+                self.assertEqual((row["task_kind"], row["status"]), ("agent", "completed"))
+                self.assertEqual(lookup["status"], "completed")
+                self.assertEqual(lookup["speak"], expected_speak)
+                self.assertEqual(result["artifact_status"], "none")
+                self.assertIsNone(result["artifact_ref"])
+                self.assertTrue(result["speak"])
+
+        self.assertEqual(len(prompts), 3)
+        for prompt in prompts:
+            self.assertIn("Task-kind metadata (descriptive only; not authorization): agent", prompt)
+            self.assertIn("missing or denied tools mean no action occurred", prompt)
 
     async def test_other_client_cannot_read_inbox(self):
         store = self.store()

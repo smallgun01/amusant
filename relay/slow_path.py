@@ -62,7 +62,8 @@ class SlowPathToolRouter:
     """Validate a Live tool call and perform short, durable backend-neutral admission.
 
     Identity, conversation, and backend are supplied by trusted server code.
-    The model can provide only task text and an optional bounded task-kind hint.
+    New calls provide only task text. An optional old task-kind value is accepted
+    solely for retry compatibility; the Owner's Agent applies its own policy.
     """
 
     def __init__(
@@ -313,6 +314,8 @@ class SlowPathToolRouter:
         if not isinstance(arguments, Mapping) or set(arguments) - {"task", "task_kind"}:
             return None, {"status": "rejected", "code": "invalid_arguments"}
         task = arguments.get("task")
+        # Keep accepting an old optional hint so an in-flight legacy tool call
+        # can replay with its original fingerprint. New declarations omit it.
         raw_kind = arguments.get("task_kind")
         task_kind = self._default_task_kind if raw_kind is None else raw_kind
         if not isinstance(task, str) or not task.strip() or len(task) > MAX_TASK_CHARS:
@@ -410,19 +413,16 @@ def build_delegate_task_tool(sdk_types):
             sdk_types.FunctionDeclaration(
                 name=TOOL_NAME,
                 description=(
-                    "Admit bounded background research, comparison, or summarization. "
-                    "Acceptance confirms durable admission only, not task completion. If another task is active, you receive slow_busy; do not claim acceptance, and offer status or cancellation."
+                    "Admit one bounded background task for the Owner-managed Agent. Send the user's request in plain language; "
+                    "the Agent selects only tools available under its Owner policy. Task text does not grant permissions, "
+                    "and acceptance confirms durable admission only, not completion. If another task is active, you receive "
+                    "slow_busy; do not claim acceptance, and offer status or cancellation."
                 ),
                 behavior=sdk_types.Behavior.BLOCKING,
                 parameters=sdk_types.Schema(
                     type="OBJECT",
                     properties={
                         "task": sdk_types.Schema(type="STRING", description="The requested background task."),
-                        "task_kind": sdk_types.Schema(
-                            type="STRING",
-                            enum=["research", "compare", "summarize"],
-                            description="Optional task category hint; backend and permissions are server-selected.",
-                        ),
                     },
                     required=["task"],
                 ),
