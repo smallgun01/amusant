@@ -1,53 +1,64 @@
-# OCI A1 offline deployment package — #85 B1/B2 merged (E1 GO only)
+# OCI A1 deployment package — Amusant integration, Owner-managed Hermes
 
-[PR #87](https://github.com/smallgun01/amusant/pull/87) wires **Relay → authenticated Option D Facade → Hermes** with private Docker network isolation. [PR #90](https://github.com/smallgun01/amusant/pull/90) additionally proved the **integrated** Relay/Dispatcher/SQLite→Facade→pinned Hermes→Artifact/Inbox path with synthetic providers on a native ARM64 runner. Both are merged; [#85](https://github.com/smallgun01/amusant/issues/85) is closed as **E1 GO**. This does **not** establish OCI deployment, actual model/provider operation, production credentials, external device ingress, real cancellation or 1 OCPU performance.
+[ADR-0003](../../docs/adr/0003-oci-a1-hermes-sqlite.md) retains the four-service topology. [ADR-0004](../../docs/adr/0004-owner-managed-hermes.md) defines Owner management and native access. Runtime baseline after #116 is v2-only; this README does not establish which release is currently deployed.
 
-## Historical host-readiness snapshot (2026-10-21)
-
-The following records the initial host-access milestone only; its runtime status is superseded by the owner's [2026-10-22 #62 live evidence](https://github.com/smallgun01/amusant/issues/62#issuecomment-6344705541) and the consolidated [GO2/GO3 evidence record](../../docs/oci-go2-go3-live-evidence-20261022.md), including the 2026-10-23 reconciliation documented in [PR #106](https://github.com/smallgun01/amusant/pull/106). The owner reported a functional four-service backend and StickS3 FAST over a temporary private SSH forward; the physical Slow path was reconciled as failed with no result. This does not establish formal E3/E4 acceptance or public device ingress. The G1 TCP/443 path below is **proposed and uninstalled**; this package creates no listener and changes no OCI rule.
-
-At the 2026-10-21 snapshot, the owner reported an existing OCI Ubuntu ARM64 A1 VM and an N100 OpenClaw SSH **read-only** connection using a dedicated unprivileged account (BatchMode exit 0). At that time, Docker/Compose, block volumes, secrets and actual OCI runtime execution had **not** been proven. The snapshot's H2 inventory guidance is retained in [HOST-READINESS.md](HOST-READINESS.md); nothing in this package auto-deploys services or opens ports.
+[#87](https://github.com/smallgun01/amusant/pull/87) wired Relay -> private Facade -> Hermes. [#90](https://github.com/smallgun01/amusant/pull/90) proved the integrated fake-provider path on native ARM64; #85 is complete for E1. Preserve the [2026-10-22/23 GO 2/3 live evidence](../../docs/oci-go2-go3-live-evidence-20261022.md). Neither offline CI nor earlier functional evidence establishes full current E3/E4 acceptance. [HOST-READINESS.md](HOST-READINESS.md) includes historical host-access observations, not blanket SSH/sudo/Docker authority.
 
 ## Runtime topology
 
-- The proposed, uninstalled G1 path would use the host's selected private VNIC address on TCP/443 and forward opaque TCP to Relay's existing private listener on `relay_api:8443`; TLS-PSK and Bearer checks would still terminate only in Relay. No OCI ingress rule or listener is created here. A private-VNIC bind alone does not prevent a connection arriving through an OCI public-IP/NAT mapping if a separate cloud rule allows it; public access requires a separate owner review and authorization.
-- Relay joins only relay_api and relay_egress. It has no route to the Hermes API network, Hermes port 8642, the result volume, or Hermes artifacts.
-- Facade joins relay_api and hermes_api, listens only on its Relay-side IP, and exposes no host port. It is the only service that holds the separate Hermes API credential. Relay receives a facade-only key.
-- Hermes joins only hermes_api and hermes_egress. Its Runs API binds to its static Hermes-side IP and is never published.
-- The egress proxy has one listener on each egress network and accepts only the configured Relay and Hermes IPs. It permits CONNECT to public destinations on port 443 and rejects private, loopback, link-local, reserved, and mixed public/private DNS answers. Facade has no egress network.
-- Compose does not publish a host port. If separately installed after review, the G1 systemd socket would bind TCP/443 on the selected RFC1918 private VNIC address and use one fixed Relay target. The four internal subnets must be private, non-overlapping, and separate from the VCN.
+- G1 remains separately reviewed. The proposed host private-VNIC TCP/443 -> Relay TCP/8443 path forwards opaque TLS-PSK; it does not terminate PSK in a normal HTTPS reverse proxy. A private bind alone does not prevent public-IP/NAT reachability if cloud rules allow it.
+- Relay joins `relay_api` and `relay_egress`. It cannot reach raw Hermes Runs or mount Facade artifacts.
+- Facade joins `relay_api` and `hermes_api`, publishes no host port, and alone mounts result state. Relay uses a Facade-only key; it does not obtain the Hermes API key.
+- Hermes joins `hermes_api` and `hermes_egress`, keeps its Runs API private and its Home persistent. The existing entrypoint launches Hermes Gateway.
+- Egress Proxy accepts configured Relay/Hermes peers and public HTTPS CONNECT/443, rejecting private/loopback/link-local/reserved or mixed DNS targets. Facade has no egress network. This is network policy, not a per-tool allowlist.
 
-All service images require immutable @sha256 references. Preflight validates image digests, four isolated subnets, unique static addresses, and the private host binding. The systemd renderer fixes the proposed ingress at TCP/443 and Relay's internal target at TCP/8443. `RELAY_PUBLISH_PORT` is an optional legacy Compose setting, retained for existing `.env` compatibility; it is not used by Compose or the ingress renderer. Neither command changes a host or makes cloud/provider calls. See [G1 ingress decision, tests, and rollback](G1-INGRESS-DECISION.md).
+Keep immutable `@sha256` image references, non-overlapping private subnets, distinct secrets, non-root UIDs and resource limits. Compose publishes no host port. `RELAY_PUBLISH_PORT` is a legacy compatibility setting, not an active listener. See [G1 decision](G1-INGRESS-DECISION.md); this documentation creates no listener or cloud rule.
 
-## Hermes plugin and result boundary
+## Owner-managed Hermes configuration
 
-The runtime plugin is mounted at /opt/data/plugins/amusant-option-d. Manually merge hermes-config.fragment.yaml into an operator-owned configuration, enable the plugin and its API toolset, and pass the full reviewed config path as HERMES_CONFIG_FILE. Compose mounts that file read-only. There is no automatic config migration, and the POC fake-provider configuration is not used.
+`hermes-config.fragment.yaml` documents the Amusant plugin requirement and a minimal example. **It is not the complete production profile or a permanent tool ceiling.** Merge it into the Owner's existing configuration without replacing model settings, platform tool policies, MCP servers, Skills, memory, credentials or native channels. Do not copy the intentionally restricted fake-provider fixtures into production as the Owner's full capabilities.
 
-Hermes submits report text through the Facade's narrow authenticated writer API. The Facade derives owner, task, session, and Run identity from its own request ledger, mints the opaque artifact reference, and writes the report. The plugin receives only a bounded commit acknowledgement; the output hook asks the Facade to validate and project the short presentation against the committed artifact.
+Owner controls effective Telegram/API-server toolsets and approval policy in Hermes. They may differ by platform; Relay/Facade must not mirror those lists. A Skill installed in a profile is not proof it is enabled and usable through every platform. Verify effective availability, dependencies and authorization without defaulting to `all` or unattended approval.
 
-New Hermes Runs use Result Contract v2 by default. Its optional-Artifact envelope carries only a bounded short answer/card and trusted artifact status/reference; the full report stays within the Facade-owned writer boundary and never enters Relay or Gemini Live. Facade and the mounted plugin reject the old v1 presentation schema. The stored `details_md` column remains for unrelated historical and ACP paths; Hermes results store only the bounded speech there. The Hermes HTTP `/v1/runs` routes and Facade's `/internal/v1/...` writer routes are separate API namespaces and remain unchanged.
+The current Compose mounts `/opt/data/config.yaml` read-only. For the initial operational path, retain this protection and update the backing configuration through an authorized Owner/Operator Hermes-side workflow, then apply/restart only with explicit approval. If native setup requires direct writes, propose the smallest specific mount/configuration change; do not make the whole host writable or add sudo/Docker socket access. Preserve Hermes Home and state on update. A writable Home does not make the separately read-only config writable.
 
-The Facade creates a fresh `facade-ledger.sqlite3` and artifact directory on the results mount. Prepare an empty `results/facade` directory owned by UID 10003 with mode 0700. The Facade checks that ownership at startup and enforces mode 0700. Only Facade mounts this volume. Its SQLite database and WAL files are mode 0600; the artifact subdirectory is mode 0700 and report files are mode 0600. Hermes cannot read or write the Facade ledger or artifacts. The writer listener is bound only to the hermes_api network and accepts a report body without any caller-supplied identity or artifact reference. Do not copy or migrate a POC database into this directory.
+External API keys, OAuth and native-channel credentials belong to Hermes-native secure setup/storage. Do not pass them through Relay, prompts, PRs, ordinary Telegram bot messages or the public repo. Amusant's own device/FAST/transport credentials remain separate; its Compose `.env` remains a non-secret configuration file under the existing package contract.
 
-## Offline build and checks
+## Native Owner access: planned integration, not deployed evidence
 
-Build from the repository root:
+Use the existing Hermes-native Telegram adapter and the intended Owner profile, not an Amusant Telegram bot or a second Agent. Prefer Owner-only private DM, explicit user-ID authorization and outbound long polling; no new public Hermes listener is needed for that design. Verify pinned-image adapter dependencies and use of the existing egress proxy before proposing any install/network change.
 
-    docker buildx build --platform linux/arm64 --load -f deploy/oci-a1/Dockerfile.relay -t amusant-relay:oci-arm64 .
-    docker buildx build --platform linux/arm64 --load -f deploy/oci-a1/Dockerfile.facade -t amusant-facade:oci-arm64 .
-    docker buildx build --platform linux/arm64 --load -f deploy/oci-a1/Dockerfile.egress-proxy -t amusant-egress-proxy:oci-arm64 .
+Telegram is a convenient direct conversation/management entry, not a universal secret-entry UI. Keep native CLI/UI/OAuth procedures where needed. Native replies must not be forced into the Amusant `speak/card` envelope. Check the existing session-scoped hook with a non-Amusant-session regression.
 
-Set all image references and owner-approved timing/resource values in a private .env. Secret files stay outside Git and .env: separate facade, Hermes API, and Facade-writer keys are required, plus Gemini/device credentials for Relay. Relay mounts only the facade key; Facade mounts the facade, Hermes, and writer keys; Hermes mounts only the Hermes API and writer keys. On Linux, keys shared with Facade or Hermes must be root:20000 mode 0440. Prepare `results/facade` on the mounted block volume as UID 10003, mode 0700. Relay-only secret files follow the existing Relay entrypoint ownership/mode checks.
+Same profile does not imply shared conversation sessions, cross-channel approval, Amusant Inbox visibility or access to Facade files. Do not promise that an API Run resumes after a Telegram 'yes'. Native Cron notifications may target Telegram under Owner policy; Amusant does not implement their scheduler or globally reserve those Runs.
 
-Prepare the operator-owned Hermes config and data directories before starting Compose. Run:
+Follow [OpenClaw O1/O2 instructions](../../docs/handoffs/20261025-openclaw.md). The first deliverable is a sanitized inventory/change plan. No token creation, private-config write, restart, Telegram message or real-provider test is authorized by this README.
 
-    python deploy/oci-a1/preflight.py --env-file deploy/oci-a1/.env
-    docker compose --env-file deploy/oci-a1/.env -f deploy/oci-a1/compose.yaml config --quiet
+## Amusant plugin and result boundary
 
-These two commands validate **static** inputs only; they neither start the service nor constitute #90 E1 evidence. PR #87 CI verifies ARM64 Relay/Facade/proxy images, static Compose isolation and two-UID Facade write/readback. The separately merged #90 B2 proof uses the **real Relay runtime** with a fake Gemini provider and pinned Hermes with a fake model: Run submit, trusted report commit, 10k/30k marker isolation, bounded Inbox, wrong-owner/key denial, raw-Hermes GET/SSE denial, duplicate/ambiguous submit, in-process Relay runtime restart/GET-only recovery and Stop status handling. Native ARM64 [native ARM64 E2E #39240814687](https://github.com/smallgun01/amusant/actions/runs/39240814687) PASS; 23/23 local contract tests and [regular CI #39240814701](https://github.com/smallgun01/amusant/actions/runs/39240814701) PASS. [Harness instructions](../../spikes/004-relay-facade-hermes-e2e/README.md) and [selective CI workflow](../../.github/workflows/issue-85-pr-b2-e2e.yml) document the exact E1 limits.
+Mount the reviewed plugin at `/opt/data/plugins/amusant-option-d` and enable it in the Owner's effective profile. Its writer uses Facade-derived owner/task/session/Run identity; model text cannot choose trusted refs or paths. New Hermes Runs use Result Contract v2 only: bounded short answer/card, optional Artifact and trusted status/reference. HTTP `/v1/runs` and writer `/internal/v1/...` remain API namespaces, not result versions.
 
-**Important STOP caveat:** Pinned Hermes v2026.9.24 reported terminal `failed / interrupt` for an active fake-provider Run. Relay and Inbox correctly showed `hermes_failed` and the proof recorded `stop_cancel_confirmed=false`; E1 STOP *handling* passed, but true active-run cancellation, provider/tool settlement and billing cessation remain **unverified**, as do OCI host restart and off-host restoration.
+`save_report` stores bounded text through the private writer; its 64 KiB cap is not a cap on all native Hermes files. Only Facade mounts `result_state`; Hermes-native attachments do not automatically retrieve those reports. Existing report readback/export is a separate authenticated delivery task. Do not share the result mount with Relay or create public file URLs.
 
-Relay retains its durable task ledger, persisted Run ID, GET-only restart recovery, per-owner single-flight, deadlines and stop semantics. Hermes remains the same pinned image; this package does not fork Hermes. Keep the existing Relay and Hermes volumes. This package does not deploy to OCI, alter ingress, call real providers, manipulate production credentials, or perform data migrations.
+For a fresh install only, prepare empty `results/facade` as UID 10003, mode 0700. Facade SQLite/WAL/report files use mode 0600. Preserve all existing production state on update; never empty an existing directory to rerun a bootstrap or copy a POC database into it.
 
-For the complete v2-only compatible deployment bundle, the operator-controlled historical data precheck, backup, cutover, and rollback procedure, see [Result Contract v2 cutover and rollback](../../docs/result-contract-v2-cutover.md).
+## Offline build and static checks
+
+Build from the repository root in an authorized development environment:
+
+```sh
+docker buildx build --platform linux/arm64 --load -f deploy/oci-a1/Dockerfile.relay -t amusant-relay:oci-arm64 .
+docker buildx build --platform linux/arm64 --load -f deploy/oci-a1/Dockerfile.facade -t amusant-facade:oci-arm64 .
+docker buildx build --platform linux/arm64 --load -f deploy/oci-a1/Dockerfile.egress-proxy -t amusant-egress-proxy:oci-arm64 .
+```
+
+Use private approved image/timing/resource values. Integration keys remain separate mounted files: Relay gets its Facade key; Facade gets Facade/Hermes/writer keys; Hermes gets Hermes API/writer keys. Linux shared keys use root:20000, mode 0440; Relay-only files follow entrypoint checks. Never print secrets or rendered configuration containing them.
+
+```sh
+python deploy/oci-a1/preflight.py --env-file deploy/oci-a1/.env
+docker compose --env-file deploy/oci-a1/.env -f deploy/oci-a1/compose.yaml config --quiet
+```
+
+These are static checks, not service starts or live acceptance. Runtime/ARM64 builds are not required for a Markdown-only alignment PR. [B2 harness](../../spikes/004-relay-facade-hermes-e2e/README.md) and [selective CI](../../.github/workflows/issue-85-pr-b2-e2e.yml) retain offline evidence limits. #90 observed `failed / interrupt`, `stop_cancel_confirmed=false`; do not label that confirmed real-provider cancellation or billing settlement.
+
+Preserve per-channel single-flight, GET-without-resubmission recovery and cancellation evidence. Use [v2 cutover/rollback](../../docs/result-contract-v2-cutover.md) for a separately approved coordinated release, including plugin/config and preserved state. Do not deploy an unreviewed branch or hot-patch live code to bypass a failed gate.

@@ -1,50 +1,53 @@
-# Slow Task single-flight and recovery — Issue #61 draft
+# Amusant-channel single-flight, cancellation and recovery
 
-> Draft implementation notes for review. This document does not approve production timing values, deployment, or a Hermes server contract change.
+Aligned 2026-10-25. [SPEC](../SPEC.md) / [ADR-0004](adr/0004-owner-managed-hermes.md) define scope. Runtime baseline is #116; #118 remains a separate reviewed candidate, not assumed deployed. [Original implementation and fixture record](https://github.com/smallgun01/amusant/blob/685db3bf5a48017b0a535354ec4efc64e89dc972/docs/slow-task-single-flight.md) is retained unchanged in history.
 
 ## Policy and state model
 
-A new Slow Task is accepted only when its authenticated owner has no outstanding Slow Task. The reservation begins atomically with durable admission and includes the internal first-dispatch state, POST-in-flight, a known/deferred Hermes Run, a stop request, and unresolved remote activity. A deferred poll frees the Relay's local Dispatcher claim, **not** the owner's Slow Task slot.
+Accept a new task only when its authenticated Owner has no outstanding **Amusant-admitted Run**. The reservation starts atomically with durable admission and includes first dispatch, POST-in-flight, known/deferred execution, stop requests and unresolved remote activity. A deferred poll frees the local Dispatcher claim, not the Owner's channel slot.
 
-| State | Meaning | Owner slot |
+| State | Meaning | Amusant slot |
 | --- | --- | --- |
-| idle | No outstanding task | Available |
-| queued / running | Accepted; first dispatch or execution/polling is pending | Held |
-| stopping | Owner cancellation or Run-deadline stop is recorded | Held |
-| uncertain | Remote activity or persistence outcome cannot be confirmed | Held; operator reconciliation required |
-| terminal | Confirmed result/failure/stop, or a known pre-POST rejection/cancel | Released |
+| idle | No outstanding channel task | Available |
+| queued / running | Accepted, dispatch or execution/polling pending | Held |
+| stopping | Owner/deadline stop intent recorded | Held |
+| uncertain | Remote or persistence outcome unconfirmed | Held; use the implemented reviewed recovery/reconciliation path |
+| terminal | Trusted terminal confirmation or known pre-POST cancellation/rejection | Released |
 
-A Hermes GET that confirms remote `completed` but has missing, partial, malformed, or unsupported v2 output preserves the confirmed execution state and stores only a fixed bounded delivery-failure result; the untrusted payload is never stored or spoken, and the confirmed terminal Run releases the owner slot. A transport failure or expired/unresolved Run remains uncertain and busy. A pre-cutover v1-pinned task is not submitted or polled under v2 and requires operator reconciliation before runtime cutover.
+Native Telegram and Hermes Cron work is outside this Relay slot. Do not create a global Hermes queue/lock or cancel unrelated native work. Resource contention is managed and measured at Hermes/host boundaries.
 
-A distinct admission while busy returns structured slow_busy and may include active_task_id; it creates no task, outbox, or Inbox row and sends no Hermes POST. Duplicate trusted call identity plus identical payload is resolved before the busy check and returns its original receipt; a changed payload remains a conflict. Busy applies to new Slow Tasks, not FAST conversation, status lookup, or cancel.
+A distinct busy admission returns `slow_busy` without a new task, outbox, Inbox or Hermes POST. Identical trusted call identity/payload returns the original receipt before the busy check; changed payload conflicts. FAST conversation, status lookup and cancel remain available while busy.
 
-## Cancellation and Hermes contract boundary
+## Execution versus result delivery
 
-FAST exposes an owner-scoped cancel_task tool with only task_id as model-supplied input. Relay derives the owner from authenticated server identity. The tool records cancellation durably and reports stopping; it does not assert that the remote Run has stopped.
+Authenticated exact-Run GET can confirm native `completed` even when presentation is missing/invalid. Preserve that fact and record a fixed bounded delivery failure; never store or speak the malformed source. Keep already trusted, recoverable artifact metadata when available, but do not salvage a reference from an invalid/untrusted envelope. A completed Run is not proof an external action succeeded.
 
-For a known Run, Relay sends POST /v1/runs/{run_id}/stop with the existing bearer/session headers, then polls GET /v1/runs/{run_id}. Source was checked at Hermes tag v2026.9.24, commit f97608f178d1ffeca59860195ab7da295f7c8e5f (pinned image docker.io/nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7; local OCI revision label matches the source commit, but a signed build attestation was not independently checked). In gateway/platforms/api_server_runs.py, the active Run stop handler returns HTTP 200 with status=stopping; already-terminal Runs return their current status, and a nonterminal Run without an active in-process agent/task returns 409 run_not_active. Any 2xx is persisted only as stop-request acknowledgement, including an empty 202; only a terminal GET releases the reservation. The focused Phase 2B Docker fake-provider gate passed on pinned image sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7 at code head 8e10d7342ff9196c23f019a082d49e15bb8a6e71: it observed HTTP 200/status=stopping, then GET status cancelled, with one fake-provider request. This is local compatibility evidence only, not production deployment or signed image provenance. No firmware/client change is included.
+Transport failures, mismatched owner/Run IDs and unresolved/expired state do not release the slot. Historical v1-pinned tasks are not submitted or reinterpreted as new v2 work; follow the [cutover procedure](result-contract-v2-cutover.md).
 
-Timeout follows the same path: retain the #58A persisted Run deadline, record run_deadline as the stop reason, request stop, and keep the slot through bounded retry/backoff and GET confirmation. If stop grace/retry bounds are exhausted, persist uncertain and require operator action; elapsed time alone never unlocks the owner.
+## Cancellation and timing
 
-Hermes requires explicit values for AMUSANT_HERMES_RUN_DEADLINE_SECONDS, AMUSANT_HERMES_POLL_CYCLE_SECONDS, AMUSANT_HERMES_HTTP_TIMEOUT_SECONDS, AMUSANT_HERMES_POLL_INTERVAL_SECONDS, AMUSANT_HERMES_STOP_GRACE_SECONDS, AMUSANT_HERMES_STOP_MAX_ATTEMPTS, AMUSANT_HERMES_STOP_RETRY_BASE_SECONDS, and AMUSANT_HERMES_STOP_RETRY_MAX_SECONDS. No product defaults are selected here; values used in tests are fixtures only.
+`cancel_task(task_id)` derives Owner identity from authenticated context. For a bound Run it durably requests STOP, then GETs for confirmation. STOP Accepted is not Terminal Confirmed. No slot release merely because a timer expired, no blind Run re-POST, and no cancellation of the whole Gateway.
 
-## Existing data and migration
+GET-only recovery means no new Run submission; it must not suppress a first authorized Owner/deadline STOP. Concurrent Cancel intent must survive a recovery GET completing. These are explicit [#118 review regressions](https://github.com/smallgun01/amusant/pull/118#pullrequestreview-5641201516), not claims the candidate has already fixed them.
 
-- SQLite advances its schema to v7 by adding stop/reconciliation fields to the existing task row. Admission is serialized in the existing transaction and checks earlier active rows; it does not create a second store.
-- DynamoDB uses the existing owner partition and a conditional SLOT#SLOW reservation item. Before enabling the marker META#SLOW_SINGLE_FLIGHT_V1, a strongly consistent, paginated legacy-task query is used. More than 100 retained terminal history rows do not cause a false busy result. More than 100 genuinely active legacy rows remains fail-closed.
-- Existing multiple known Run IDs are recovered by GET only; unsubmitted legacy work is not posted ahead of a known Run. An ambiguous row without a Run ID keeps the owner busy and prevents another legacy POST. Once known Runs reach terminal state, the oldest still-unsubmitted legacy item may proceed. Rows are not silently discarded or auto-cancelled.
-- Explicit OpenAB ACP execution remains available for the existing rollback path. New Slow Task admission still follows the owner single-flight policy; no user-facing FIFO promise is made.
+A Run stop does not remove a Cron job, cancel a booking, undo a Calendar event or settle provider billing. Those are separate Hermes operations requiring appropriate intent/authorization.
 
-## Deliberate operator reconciliation
+Keep existing explicit `AMUSANT_HERMES_*` deadline, poll, HTTP and STOP-grace/retry settings. This document selects no new product timing defaults; test values are fixtures. Pin the actual Hermes image/source before claiming API stop compatibility; dated local fake-provider outcomes are not live cost/settlement proof.
 
-Never reconcile based only on a Relay timeout or a failed stop request. Independently verify the Hermes Run's terminal state, or verify that an ambiguous POST created no remote Run; attach the evidence reference to the task record. The CLI requires an explicit release flag.
+## Storage and compatibility
 
-~~~sh
+SQLite and DynamoDB adapters implement the same admission/stop/dedup invariants. Historical migration steps (including the v7 lifecycle and v8 result-contract metadata) remain history, not instructions to reset the current schema. Preserve old fingerprints, existing Runs and unresolved slots during later generic-task migrations.
+
+Known Runs are recovered without new Run POSTs. Legacy unsubmitted work cannot overtake an unresolved known Run or ambiguous submission. ACP remains a separately configured legacy path, not automatic failure recovery or a user-facing FIFO promise.
+
+## Operator reconciliation
+
+Never reconcile from timeout alone. Independently establish the bound remote terminal state, or demonstrate no remote Run existed for an ambiguous submission; retain a sanitized evidence reference. The existing operator CLI requires an explicit release flag:
+
+```sh
 python -m relay.operator_reconcile --help
-~~~
+```
 
-For a known Run, the supplied verified Run ID must match the durable ID and the evidence reference is persisted with operator identity, state, and timestamp. A manually confirmed completed Run is marked failed/no-result because this tool cannot retrieve a result; it does not synthesize completion content. Never use no_remote_run when a durable Run ID exists.
+The existing manual reconciliation tool records confirmed completed-without-retrieved-result as `failed/no-result`; it does not invent result content. This special manual disposition must not erase the native execution fact in evidence or become a reason for normal result polling to discard a verified result. Never use `no_remote_run` when a durable Run ID exists.
 
-## Verification boundary
-
-Automated acceptance tests use SQLite, Moto/InMemory DynamoDB, and deterministic fake providers. They prove storage transitions and protocol handling, not Hermes server stop support, paid-model behavior, AWS/N100 behavior, or deployment acceptance. Production integration and timing values remain separate review gates.
+Any live reconciliation is a separately approved mutation. Documentation, fake-clock tests, a green Draft gate or an elapsed grace period do not authorize it. See [Codex C1](handoffs/20261025-codex.md) and [OpenClaw gates](handoffs/20261025-openclaw.md).

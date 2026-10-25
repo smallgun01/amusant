@@ -1,42 +1,53 @@
 # Project Amusant
 
-> **2026-10-25 documentation alignment (source/acceptance boundaries):** [#106](https://github.com/smallgun01/amusant/pull/106) records OCI GO 2 backend and GO 3 physical FAST functional evidence, not full E3/E4 acceptance. [#107](https://github.com/smallgun01/amusant/pull/107) merged optional-Artifact Result Contract v2 source, but v1 remains the deployment default until separately enabled and verified. [#109](https://github.com/smallgun01/amusant/pull/109) proves G1 ingress **offline only**. [#112](https://github.com/smallgun01/amusant/pull/112), [#113](https://github.com/smallgun01/amusant/pull/113), and [#114](https://github.com/smallgun01/amusant/pull/114) merged fixes for Gemini Live result injection, spoken-session handoff and substantive `speak` guidance, but **post-fix physical new-PTT audio / Inbox `spoken` acceptance is not yet evidenced**. Keep [#46](https://github.com/smallgun01/amusant/issues/46), [#58](https://github.com/smallgun01/amusant/issues/58), [#62](https://github.com/smallgun01/amusant/issues/62) and [#27](https://github.com/smallgun01/amusant/issues/27) open at their actual gates. Source merged ≠ deployed ≠ physical/cloud accepted; no live authorization follows from this note.
+Amusant is a **one-owner, PTT-first personal AI companion** integrating a dedicated device, real-time voice communication, and an independently managed Agent backend. StickS3 is the edge device; Gemini Live handles FAST conversation; **Hermes is the Owner-managed personal Agent**, not a report-only executor or an Agent platform reimplemented by Amusant.
 
-> **2026-10-22 live evidence update:** OCI GO 2 real backend Relay → Facade → Hermes → artifact → bounded Inbox **functional PASS**; GO 3 real StickS3 → temporary private SSH-forwarded OCI Relay → Gemini Live → audible speech **functional PASS**. Physical Slow delegation hit the 120-second deadline and initially entered `uncertain`; later native Hermes GET confirmed `completed` **without recorded tool calls or a saved report**, and the Owner successfully reconciled the Task Ledger to `failed / hermes_operator_reconciled_completed_no_result` on 2026-10-23, releasing its single-flight reservation. **No completed physical Slow Inbox spoken loop**. See [GO 2/3 live evidence](docs/oci-go2-go3-live-evidence-20261022.md) and [#62](https://github.com/smallgun01/amusant/issues/62). Public G1 ingress, formal E3/E4, stop confirmation, off-host restore and load remain open.
+**Owner decision, 2026-10-25:** Hermes owns reasoning, tools, Skills, MCP, memory, external-service credentials, authorizations, and execution workflows. Users manage these through Hermes-native interfaces. Amusant owns the low-friction voice experience and reliable, bounded task/result delivery. See [SPEC](SPEC.md) and [ADR-0004](docs/adr/0004-owner-managed-hermes.md).
 
-Amusant is an independently maintained, **one-owner, PTT-first voice companion**. StickS3 is the physical edge; Gemini Live is the FAST conversational path; Hermes Native Runs performs delegated SLOW work. Kai is a pinned upstream interoperability reference. Muse Charm is a category/UX benchmark, not a compatibility or feature-parity promise.
+## Two interfaces, one Agent backend
 
-> **Current implementation target (reviewed 2026-10-25; owner-reported OCI GO 2 backend and GO 3 physical FAST functional PASS, not full E3/E4):** a single OCI Ampere A1 host with isolated **Relay → Option D Facade → Hermes** roles, a persistent SQLite Task Ledger/Inbox and separate Hermes/Facade artifact state. The egress proxy is a network boundary, not another Agent/Worker. [ADR-0003](docs/adr/0003-oci-a1-hermes-sqlite.md) governs this target. AWS ECS/OpenAB/DynamoDB are historical proof/explicit legacy alternatives, **not** a second active M1 backend. #62 owner-reported GO 1 `READY_TO_COMPOSE_UP`: Docker/Compose, persistent mount reboot, ARM64 image pulls, secrets and static preflight PASS. GO 2 backend and GO 3 tunneled physical FAST were tested; physical Slow spoken result and formal operations/security acceptance remain open. See [OCI host readiness](deploy/oci-a1/HOST-READINESS.md).
+```text
+Owner -- StickS3 <--> Relay <--> Gemini Live (FAST)
+                       |
+                       +-- Task Ledger / Inbox
+                       +-- private Facade <--> Hermes Gateway / Agent
+Owner -- Hermes-native Telegram / CLI / UI ------^
+                                               |-- Owner-managed tools / Skills / MCP
+                                               |-- memory / credentials / approvals
+                                               +-- Cron / native content delivery
+```
 
-## Current delivery status
+The native-management path is an integration requirement, **not a claim it is deployed**. The same backend/profile does not imply the same conversation session, automatic approval forwarding, or automatic access to Facade-owned files. Telegram is the initial direct conversational channel; secrets and OAuth use appropriate Hermes-native secure setup, not bot chat messages.
 
-| Workstream | Verified | Outstanding product gate |
+The selected hosting remains one OCI A1 host with four isolated services: Relay, Facade, Hermes, and Egress Proxy. This decision does not merge services, add an Admin API, expose Hermes publicly, or give an Agent host/Docker privileges. See [ADR-0003](docs/adr/0003-oci-a1-hermes-sqlite.md).
+
+## Current implementation and evidence
+
+Runtime source baseline: `685db3bf5a48017b0a535354ec4efc64e89dc972`, after [#116](https://github.com/smallgun01/amusant/pull/116). **New Hermes Runs are v2-only; Artifacts are optional.** A merged source revision does not identify the deployed OCI bundle.
+
+| Area | Recorded evidence | Remaining boundary |
 | --- | --- | --- |
-| [WS1 / #47](https://github.com/smallgun01/amusant/issues/47) — StickS3 & FAST | Local FAST 10/10; #95 W2b-1 BLE teardown and #97 W2b-QR **merged / owner physical E2 PASS** (#36/#47): official Android QR scan 5/5, Security 1 Wi-Fi setup, clean END/DEINIT/SETUP RETURN, local two-way PTT | **W2a multi-SSID Pending** (#36 OPEN); #67 full CJK/OpenCC, #31 H0 latency/battery and #27 OCI G1 remain separate |
-| [WS2 / #48](https://github.com/smallgun01/amusant/issues/48) — Hermes | Native Runs/GET-only/single-flight #45/#60/#65; Option D #75/#80; [#87](https://github.com/smallgun01/amusant/pull/87)/[#90](https://github.com/smallgun01/amusant/pull/90) merged integrated **offline E1 GO**. [#94](https://github.com/smallgun01/amusant/pull/94) H1.2 **offline effective-toolset preflight** merged; Case A/B PASS with fake provider | [#56](https://github.com/smallgun01/amusant/issues/56) full input/v2/section-read and artifact lifecycle, [#58](https://github.com/smallgun01/amusant/issues/58) explicit real-provider timing/STOP/cost decisions and consented live validation. #94 does not authorize real tools, provider calls or production |
-| [WS3 / #49](https://github.com/smallgun01/amusant/issues/49) — OCI & E2E | #85 integrated ARM64 E1 GO; [#62](https://github.com/smallgun01/amusant/issues/62) **GO 2 backend functional PASS and GO 3 tunneled FAST physical PASS** owner-reported 2026-10-22/23 | **G3a** complete physical Slow→Inbox→new PTT spoken result NOT YET PASS; formal E3/E4 restore/load/STOP/security/cost and #27 ingress pending. E3 restore/load/STOP/security/cost and #27 G1 pending |
-| [WS4 / #50](https://github.com/smallgun01/amusant/issues/50) — operations | Offline regression, bounded shutdown, SQLite online backup/integrity/retention audit (#78) | Off-host encrypted backup/restore, load & cost, cancel behavior and E3/E4 operational gates |
+| Device / FAST | Local FAST and BLE/QR owner tests; OCI tunneled FAST functional evidence | Formal latency/battery, W2a and permanent ingress remain separate gates |
+| Backend pipeline | Native Runs, Task Ledger/Inbox, private Facade, bounded v2, offline integration; dated GO 2 backend functional evidence | Latest deployed images/plugin/config and full physical Slow result readback require matching evidence |
+| General Agent integration | Owner-managed architecture accepted | Research-oriented delegation interface still needs neutralization; native management access is not yet accepted |
+| Reliability | Existing recovery/single-flight code; [#118](https://github.com/smallgun01/amusant/pull/118) is a separate unmerged candidate at this snapshot | Its review findings and execution-versus-delivery semantics must be resolved |
 
-**E1 evidence boundary (2026-10-19):** [native ARM64 E2E #39240814687](https://github.com/smallgun01/amusant/actions/runs/39240814687) and [regular CI #39240814701](https://github.com/smallgun01/amusant/actions/runs/39240814701) passed the synthetic-provider B2 integration. STOP handling was exercised, but pinned Hermes returned `failed / interrupt`; `stop_cancel_confirmed=false`. This does **not** establish successful active-run cancellation, billable-provider settlement or OCI availability.
-The last full hardware/real-provider acceptance is **not** implied by a green CI or a merged PR. See [STATUS.md](STATUS.md) for evidence scope.
+[STATUS.md](STATUS.md) separates source, offline tests, deployment, physical acceptance, and native management. Preserve the [2026-10-22/23 live record](docs/oci-go2-go3-live-evidence-20261022.md); do not erase earlier functional evidence or invent a new PASS.
 
-## Documentation authority (read in this order)
+## Scope boundaries
 
-1. **[SPEC.md](SPEC.md) — v0.5 candidate**: current product requirements, non-goals, trust boundaries and acceptance. Its clearly marked v0.4 appendix is historical only.
-2. **[ADR-0003](docs/adr/0003-oci-a1-hermes-sqlite.md)**: accepted OCI/Hermes/SQLite decision and target trust boundary, subject to gates. [ADR-0001](docs/adr/0001-openab-acp-slow-path.md) and [ADR-0002](docs/adr/0002-external-task-store.md) document earlier AWS/OpenAB decisions, not the present target.
-3. **[PLAN.md](PLAN.md)** and **[WS1–WS4 execution index](docs/project-management/workstreams.md)**: sequencing and responsible workstreams; they cannot silently redefine product requirements.
-4. **[STATUS.md](STATUS.md)**: linked implementation/test/deployment evidence with dates. It never grants deployment authority.
-5. **[Hermes result-delivery proposal](docs/hermes-h1.2-result-delivery-proposal.md)**: feature proposals versus shipped **offline** result boundary; [#94](https://github.com/smallgun01/amusant/pull/94) is a separate **toolset-only E1** preflight, not full H1.2 acceptance. [OCI offline package](deploy/oci-a1/README.md) and [host-readiness handoff](deploy/oci-a1/HOST-READINESS.md) are **not** a live canary runbook or authorization.
+- Add an ordinary Hermes Skill/MCP/tool through Hermes configuration, without changing Relay/Facade code. New hardware or interaction protocols may still require an explicitly scoped adapter change.
+- Relay authenticates, submits, tracks and cancels its own Runs; it does not classify document intent, duplicate tool allowlists, or schedule all Hermes work.
+- Facade validates the Amusant channel's identity, format, bounds and stored-artifact integrity. It is not a business-success judge or a gateway for every native Hermes conversation.
+- Single-flight applies to **Amusant-admitted Runs**. No unsolicited speech applies to **Amusant device audio**, not Owner-configured native Telegram/Cron notifications.
+- Known Runs recover without blind resubmission. A STOP acknowledgement is not terminal confirmation, and stopping a Run does not undo a previously completed external action.
 
-**Evidence vocabulary:** E1 merged/offline; E2 real local/physical; E3 bounded real cloud/integration; E4 sustained operational acceptance. Tests do not advance to a higher tier without matching evidence and explicit owner approval. Repository edits are **not** approval for OCI/AWS/Cloudflare changes, production ingress, hardware flashing, secret changes or paid model execution.
+## Documentation and next work
 
-## M1 product loop
+Read [SPEC](SPEC.md) for requirements, [ADR-0004](docs/adr/0004-owner-managed-hermes.md) for the responsibility decision, [ADR-0003](docs/adr/0003-oci-a1-hermes-sqlite.md) for hosting/isolation, [PLAN](PLAN.md) and [WS index](docs/project-management/workstreams.md) for sequence, and [STATUS](STATUS.md) for evidence.
 
-StickS3 PTT → authorized Relay/Gemini FAST → durable delegated task → Facade-sanitized Hermes result → owner-scoped Inbox → **new tool-disabled Live session reads bounded `speak` on explicit PTT**. No unsolicited voice, general task queue, third-party tenancy, extra Agent, raw report to Gemini, or automatic AWS data migration.
+The [handoff index](docs/handoffs/20261025-owner-managed-hermes.md) contains separate **Codex** and **OpenClaw** work orders for the Owner to forward. This documentation PR does not execute those orders, merge runtime PRs, change OCI, or authorize paid calls.
 
-**Critical path (after #85 E1 GO):** accepted offline Facade integration [PR #87](https://github.com/smallgun01/amusant/pull/87)/[PR #90](https://github.com/smallgun01/amusant/pull/90) → [#62](https://github.com/smallgun01/amusant/issues/62) OCI preflight and separately approved bounded E3 canary → [#46](https://github.com/smallgun01/amusant/issues/46) genuine software S1 → device G2 then G3a physical Slow closed loop. [#27](https://github.com/smallgun01/amusant/issues/27) secure G1 edge ingress and #56/#58 product-policy preparation run **in parallel** with the canary prerequisites; no new feature backend or deploy permission is implied.
+[#117](https://github.com/smallgun01/amusant/pull/117)'s transcript-derived Artifact admission policy is **superseded by the Owner decision and must not be implemented or merged**. The GitHub PR lifecycle is tracked separately; a document is not evidence that a PR was closed.
 
-## Project references
-
-- Upstream Kai firmware: [zbruceli/kai](https://github.com/zbruceli/kai), pinned revision `1681fb3c11acd28525d8987bba4b9bf4bc2a288f`. Its source is not copied wholesale.
-- [FAST provider and tests](fast_voice/README.md) · [Relay usage](relay/README.md) · [Historical AWS bounded test](docs/p4-t4b-live-acceptance.md) · [Historical P0 record](SPEC-P0-DELTA.md).
+Kai is a pinned interoperability reference (`1681fb3c11acd28525d8987bba4b9bf4bc2a288f`); Muse Charm is a category/UX benchmark, not a compatibility promise. [FAST](fast_voice/README.md) · [Relay](relay/README.md) · [OCI package](deploy/oci-a1/README.md) · [Historical evidence index](docs/history/20261025-documentation-baseline.md).

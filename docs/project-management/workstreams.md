@@ -1,35 +1,41 @@
-# Amusant WS1–WS4 — Current M1 delivery gates
+# Amusant WS1-WS4 — Owner-managed Agent integration
 
-> **2026-10-25 documentation alignment (source/acceptance boundaries):** [#106](https://github.com/smallgun01/amusant/pull/106) records OCI GO 2 backend and GO 3 physical FAST functional evidence, not full E3/E4 acceptance. [#107](https://github.com/smallgun01/amusant/pull/107) merged optional-Artifact Result Contract v2 source, but v1 remains the deployment default until separately enabled and verified. [#109](https://github.com/smallgun01/amusant/pull/109) proves G1 ingress **offline only**. [#112](https://github.com/smallgun01/amusant/pull/112), [#113](https://github.com/smallgun01/amusant/pull/113), and [#114](https://github.com/smallgun01/amusant/pull/114) merged fixes for Gemini Live result injection, spoken-session handoff and substantive `speak` guidance, but **post-fix physical new-PTT audio / Inbox `spoken` acceptance is not yet evidenced**. Keep [#46](https://github.com/smallgun01/amusant/issues/46), [#58](https://github.com/smallgun01/amusant/issues/58), [#62](https://github.com/smallgun01/amusant/issues/62) and [#27](https://github.com/smallgun01/amusant/issues/27) open at their actual gates. Source merged ≠ deployed ≠ physical/cloud accepted; no live authorization follows from this note.
+Aligned 2026-10-25 to [SPEC](../../SPEC.md), [ADR-0004](../adr/0004-owner-managed-hermes.md) and retained [OCI architecture](../adr/0003-oci-a1-hermes-sqlite.md). [STATUS](../../STATUS.md) owns evidence. This index assigns work; it does not grant deployment authority.
 
-> **2026-10-22 LIVE OVERRIDE:** #62 GO 2 real backend functional PASS; GO 3 physical StickS3 → temporary SSH-forwarded OCI Relay → Gemini Live **audible FAST PASS**. One physical Slow delegation reached Hermes but timed out at 120s and was initially `uncertain`; native Hermes later confirmed `completed` with zero recorded tools and no report. **2026-10-23 Owner operator reconciliation PASS:** the old Relay task is now `failed / hermes_operator_reconciled_completed_no_result`, and its single-flight reservation was released (no new admission yet tested). Thus **G3a/S1 still OPEN**, #58 STOP/deadline diagnosis pending, #27 public ingress unproven. See [live evidence](../oci-go2-go3-live-evidence-20261022.md). The GO 1-only tracker below is an earlier snapshot.
+## Workstreams
 
-> **Earlier review baseline 2026-10-22** against `main@73436c6`. [SPEC](../../SPEC.md) governs product acceptance, [ADR-0003](../adr/0003-oci-a1-hermes-sqlite.md) the architecture and [STATUS](../../STATUS.md) evidence. Owner-reported OCI SSH access is recorded in the [host handoff](../../deploy/oci-a1/HOST-READINESS.md), not a live deploy gate. This index authorizes no cloud mutation, paid providers, public ingress, flash or state migration.
-
-## Workstream index and near-term WIP
-
-| Lane / owning Issue | Current delivery | Blocking gate / external dependency |
+| Lane / tracker | Responsibility | Next scoped work |
 | --- | --- | --- |
-| **WS1 — [#47](https://github.com/smallgun01/amusant/issues/47)** StickS3/Fast | Local FAST PASS; **#95 W2b-1 BLE and #97 W2b-QR merged/owner E2 PASS** (#36/#47): official Android 5/5 QR scans, Wi-Fi + END/DEINIT/RETURN, local voice | **#36 W2a multi-SSID Pending**; #67 CJK/OpenCC full hardware, #31 H0 latency/battery, #27 G1 separate |
-| **WS2 — [#48](https://github.com/smallgun01/amusant/issues/48)** Hermes contract | #45/#60/#65 Native Runs, #75/#80 Option D, [#87](https://github.com/smallgun01/amusant/pull/87)/[#90](https://github.com/smallgun01/amusant/pull/90) **offline E1 GO**. [#94](https://github.com/smallgun01/amusant/pull/94) native ARM64 **fake-provider H1.2 toolset Case A/B PASS** | #56 full typed-input/v2/section-read, #58 timing/STOP/cost decisions, real-provider/tool scope and #46 S1; #94 is only a bounded offline toolset preflight |
-| **WS3 — [#49](https://github.com/smallgun01/amusant/issues/49)** OCI/Integration | #85 integrated E1 GO; **#62 GO 2 backend functional PASS / GO 3 SSH-tunneled physical FAST PASS** owner evidence 2026-10-22/23: Compose, persistence, image pulls, secrets and static checks PASS | **G3a new-PTT spoken result NOT ACCEPTED**; formal E3/E4 restore/security/load/STOP/cost and #27 permanent ingress pending |
-| **WS4 — [#50](https://github.com/smallgun01/amusant/issues/50)** Reliability | #78 SQLite maintenance, #89 general CI proof, #90 path-filtered ARM64 integrated E1 and #94 path-filtered H1.2 toolset E1 | Off-host encrypted backup/restore, STOP/billing, timing/monitoring, actual host contention and E4; never equate offline resource ceilings to observed capacity |
+| WS1 / #47 | StickS3, provisioning, FAST speech/display and physical UX | Preserve working FAST/BLE/QR; separate W2a, CJK, latency/battery and ingress acceptance |
+| WS2 / #48 | Generic Hermes task/result integration, not Agent administration | Codex C1 #118, then C2 generic delegation; channel-scoped plugin and truthful outcomes |
+| WS3 / #49 | Deployment compatibility and voice/native access integration | OpenClaw O1 release/evidence inventory, native Owner path proposal; approved O2/V1 only |
+| WS4 / #50 | Persistence, secrets, resources, backup/restore, CI discipline | Both-store recovery regressions; preserve Owner profile; gated host evidence and restore/load work |
 
-## Required order (no new feature branches on the critical path)
+## Coordination
 
-1. **H5-P1B E1 COMPLETE:** #87/#90 merged and pinned native ARM64 offline Relay→Facade→Hermes→Artifact→Inbox proof passed. **Not** a live OCI test, actual provider-cancellation confirmation, paid-model test or full host reboot.
-2. **#62 GO 2 backend / GO 3 tunneled FAST functionally exercised:** owner evidence documents four-service live backend and a temporary restricted SSH-forwarded StickS3 FAST test. Next is the separately authorized physical Slow→new PTT spoken result. No public G1 or formal E3 acceptance implied.
-3. **S1 / #46:** Genuine software Gemini FAST → durable Hermes SLOW → bounded Inbox → new tool-disabled Live spoken session, including restart/negative paths. Real traffic needs separate Owner approval.
-4. **G2 FAST then G3a SLOW:** secure device connection on a known Wi-Fi; S1 must be satisfied for G3a. G3b mobility, scheduling, proactive cues and Kai feature parity are post-M1 backlogs.
+Codex owns repository runtime edits/tests. OpenClaw owns permitted host inspection, change planning and separately authorized operations. Owner supplies credentials through secure native mechanisms, approves merges/live changes and performs device interaction. Review checks scope and evidence; it does not substitute for those approvals.
 
-## Gate vocabulary and coordination
+Use [the handoff index](../handoffs/20261025-owner-managed-hermes.md). C1 and O1 can proceed in parallel. C2 store/executor edits wait for C1 review/landing; do not maintain competing branches that each alter lifecycle or migrations. OpenClaw reports a repo defect to Codex rather than hot-patching the live container.
 
-- **E1:** reviewed/merged code + pinned offline tests. **E2:** physical/local real-device evidence. **E3:** approved bounded cloud/provider evidence. **E4:** sustained operational/security/cost verification. No automatic promotion.
-- **Single-flight:** exactly one outstanding SLOW task, immediate `slow_busy`; legacy 8-item FIFO remains historical only. No surprise voice. Hermes produces full report and short result; Relay/Gemini do not summarize artifacts.
-- **B0 resolved:** Hermes implementation target and OCI A1 + SQLite chosen, *not* production deployed. AWS/OpenAB/DynamoDB one-off receipts are historical, not new deployment blockers. [#35](https://github.com/smallgun01/amusant/issues/35) ECS Service A is superseded; [#30](https://github.com/smallgun01/amusant/issues/30) tracks bounded residual reliability work, not an entire AWS PR-C/D requirement for OCI.
-- **WIP limit:** one active build per WS1, WS2, WS3; one scoped WS4 remediation. [#43](https://github.com/smallgun01/amusant/issues/43) is capability backlog, not feature-parity mandate. A Draft PR, issue comment or old AWS acceptance does not authorize merge, flashing, paid calls or new cloud resources.
-- **Preserve trust boundaries:** StickS3→Relay G1, Relay→Facade private auth, Facade→Hermes private Runs, Hermes→Facade trusted writer, provider traffic via controlled egress. No extra Worker/SQS/Agent, direct Relay→Hermes, public Hermes/Facade API or unreviewed tool credentials.
+## Required sequence and limits
 
-## Archived evidence
+1. Land the documentation baseline; do not implement superseded #117.
+2. Resolve #118 review P1s and completed-versus-delivery semantics; keep required CI honest.
+3. Reconcile existing OCI/device evidence and prepare native Hermes access without mutation under O1.
+4. Implement generic delegation offline and prepare a reviewed, compatible release bundle.
+5. With separate Owner authority, verify deployed v2 voice delivery and independent native access; reuse existing evidence where valid.
 
-Historical P0–P4/H0 and AWS ACP/DynamoDB decisions remain in [PLAN.md](../../PLAN.md), [STATUS.md](../../STATUS.md), [ADR-0001](../adr/0001-openab-acp-slow-path.md), [ADR-0002](../adr/0002-external-task-store.md) and [P4-T4b](../p4-t4b-live-acceptance.md). Those documents explain what was proven *then*; they do not override current gates.
+Do not wait for a catalog of Calendar/Cron/booking adapters. Those capabilities belong to Hermes. Native scheduling/notifications are not new Relay features. Native management is required integration work, not a mandate to implement every upstream capability before the current voice loop can be tested.
+
+Keep one major build per affected lane plus scoped reliability remediation. Documentation-only PRs use lightweight checks. Draft heavy-job skips save minutes but are not runtime evidence; corrected Ready runtime PRs require applicable full jobs.
+
+## Channel boundaries
+
+- One outstanding Amusant-admitted Run per Owner, not one job across all Hermes channels.
+- No unsolicited Amusant speech, not a ban on Owner-configured native Telegram delivery.
+- Shared Agent/profile is not shared session/approval/Inbox; do not promise automatic continuation.
+- No raw reports/credentials to Relay or Live, no direct Relay-to-Hermes route, no public Hermes/Facade API, no new Worker/queue/Admin service.
+
+## History
+
+[#87/#90](https://github.com/smallgun01/amusant/pull/90) remain offline integration evidence; [GO 2/3](../oci-go2-go3-live-evidence-20261022.md) remains dated live functional evidence. Legacy WS and AWS snapshots are available through the [immutable history index](../history/20261025-documentation-baseline.md), not competing current requirements.
