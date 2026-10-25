@@ -2,7 +2,7 @@
 
 日期：2026-10-25（Asia/Taipei）  
 對象：Codex Desktop（Windows 11 開發環境）  
-搭配文件：Amusant_Grok_Bot_Validation_Proposal_20261025.md  
+搭配文件：docs/project-management/grok-bot-validation-v0.2.md  
 狀態：可轉交工作單；v0.2 已納入 Zongzhu／Grok Gadgets／Groki mandatory references；本文件未觸發實作、PR 或部署。
 
 ## 1. 任務目標與目前可開始的工作
