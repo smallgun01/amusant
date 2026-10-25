@@ -20,7 +20,7 @@ A distinct busy admission returns `slow_busy` without a new task, outbox, Inbox 
 
 ## Execution versus result delivery
 
-Authenticated exact-Run GET can confirm native `completed` even when presentation is missing, invalid, or Facade-reported failed. Preserve that fact and record a fixed bounded delivery failure; never store or speak malformed source. Preserve artifact state/reference only from a fully validated Facade envelope; never salvage a reference from an invalid/untrusted envelope. A completed Run is not proof an external action succeeded.
+Authenticated exact-Run GET can confirm native `completed` even when presentation is missing, invalid, partial/interrupted, or Facade-reported failed. Preserve that fact and record a fixed bounded delivery failure; never store or speak malformed or partial source. Preserve artifact state/reference only from a fully validated Facade envelope; never salvage a reference from an invalid/untrusted envelope. A completed Run is not proof an external action succeeded.
 
 Transport failures, mismatched owner/Run IDs and unresolved/expired state do not release the slot. Historical v1-pinned tasks are not submitted or reinterpreted as new v2 work; follow the [cutover procedure](result-contract-v2-cutover.md).
 

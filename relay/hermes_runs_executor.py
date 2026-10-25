@@ -9,7 +9,7 @@ import json
 import math
 import socket
 import ssl
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 from urllib.parse import quote, urlparse
@@ -350,7 +350,25 @@ class HermesRunsExecutor:
         def classify_terminal(state: str, payload: dict[str, Any]) -> ExecutionOutcome | None:
             if state == "completed":
                 if payload.get("partial") is True or payload.get("interrupted") is True:
-                    return ExecutionOutcome(status="failed", code="hermes_result_incomplete")
+                    # The authenticated native Run is terminal-completed, but
+                    # partial/interrupted presentation must never be exposed.
+                    # Parse only to retain verified Artifact facts; discard the
+                    # envelope's speech/card and keep the execution fact.
+                    result = delivery_failure("presentation_failed")
+                    output = _extract_output(payload)
+                    if output is not None:
+                        try:
+                            verified = parse_hermes_run_result(output)
+                        except ValueError:
+                            pass
+                        else:
+                            result = replace(
+                                result,
+                                artifact_status=verified.artifact_status,
+                                artifact_ref=verified.artifact_ref,
+                                delivery_error=verified.delivery_error or result.delivery_error,
+                            )
+                    return ExecutionOutcome(status="completed", result=result)
                 output = _extract_output(payload)
                 if output is None:
                     return ExecutionOutcome(

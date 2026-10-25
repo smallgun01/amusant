@@ -372,6 +372,17 @@ class HermesRunsExecutorTests(unittest.TestCase):
         self.assertEqual(outcome.backend_run_id, "run-bound")
         self.assertIsNone(outcome.result)
 
+    def test_get_without_run_binding_cannot_terminalize_or_release(self):
+        executor = self.make_executor(
+            lambda *args: (200, {"status": "completed", "output": facade_result("unbound")}),
+            [],
+            auto_bind=False,
+        )
+        outcome = asyncio.run(executor.execute(self.make_task(run_id="run-bound")))
+        self.assertEqual((outcome.status, outcome.code), ("deferred", "hermes_run_binding_unconfirmed"))
+        self.assertEqual(outcome.backend_run_id, "run-bound")
+        self.assertIsNone(outcome.result)
+
     def test_owner_session_namespace_is_stable_and_isolated(self):
         executor = self.make_executor(lambda *args: (200, {"status": "completed", "output": facade_result("ok")}), [])
         first = executor._session_key("client-a")
@@ -472,22 +483,55 @@ class HermesRunsExecutorTests(unittest.TestCase):
         self.assertIsNone(outcome.result.artifact_status)
         self.assertNotIn("untrusted speech", outcome.result.speak)
 
-    def test_completed_partial_payload_is_failed_without_speech(self):
-        result = json.dumps({
+    def test_completed_partial_or_interrupted_presentation_keeps_execution_and_verified_artifact(self):
+        reference = "art_" + "c" * 24
+        output = json.dumps({
             "schema_version": 2,
             "speak": "Partial result.",
             "card": {"title": "Partial", "lines": ["Some data"]},
             "execution_status": "completed",
-            "artifact_status": "none",
+            "artifact_status": "committed",
             "presentation_status": "ready",
-            "artifact_ref": None,
+            "artifact_ref": reference,
+        })
+        for flag in ("partial", "interrupted"):
+            with self.subTest(flag=flag):
+                executor = self.make_executor(
+                    lambda *args: (200, {"status": "completed", flag: True, "output": output}), []
+                )
+                outcome = asyncio.run(executor.execute(self.make_task(run_id="run-incomplete-" + flag)))
+                self.assertEqual((outcome.status, outcome.code), ("completed", "ok"))
+                self.assertEqual(outcome.result.delivery_error, "presentation_failed")
+                self.assertEqual(outcome.result.presentation_status, "failed")
+                self.assertEqual(outcome.result.speak, "The task finished, but result delivery needs recovery.")
+                self.assertEqual(outcome.result.card, {
+                    "title": "Result needs recovery",
+                    "lines": ["The short result could not be safely delivered."],
+                })
+                self.assertEqual(outcome.result.details_md, outcome.result.speak)
+                self.assertNotIn("Partial result.", outcome.result.speak)
+                self.assertEqual(outcome.result.artifact_status, "committed")
+                self.assertEqual(outcome.result.artifact_ref, reference)
+
+    def test_incomplete_presentation_does_not_salvage_artifact_from_invalid_envelope(self):
+        output = json.dumps({
+            "schema_version": 2,
+            "speak": "Untrusted partial text.",
+            "card": {"title": "Untrusted", "lines": ["Untrusted partial content"]},
+            "execution_status": "completed",
+            "artifact_status": "committed",
+            "presentation_status": "unknown",
+            "artifact_ref": "art_" + "d" * 24,
         })
         executor = self.make_executor(
-            lambda *args: (200, {"status": "completed", "partial": True, "output": result}), []
+            lambda *args: (200, {"status": "completed", "partial": True, "output": output}), []
         )
-        outcome = asyncio.run(executor.execute(self.make_task(run_id="run-partial")))
-        self.assertEqual((outcome.status, outcome.code), ("failed", "hermes_result_incomplete"))
-        self.assertIsNone(outcome.result)
+        outcome = asyncio.run(executor.execute(self.make_task(run_id="run-invalid-partial")))
+        self.assertEqual((outcome.status, outcome.code), ("completed", "ok"))
+        self.assertEqual(outcome.result.delivery_error, "presentation_failed")
+        self.assertEqual(outcome.result.speak, "The task finished, but result delivery needs recovery.")
+        self.assertIsNone(outcome.result.artifact_status)
+        self.assertIsNone(outcome.result.artifact_ref)
 
     def test_tool_failure_does_not_publish_partial_output(self):
         executor = self.make_executor(
