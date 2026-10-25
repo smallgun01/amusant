@@ -2,6 +2,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
+import sqlite3
 import tempfile
 import threading
 import time
@@ -83,7 +84,9 @@ class SQLiteSlowPathTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_task_only_call_uses_generic_agent_kind(self):
         store = self.store()
-        result = await make_router(store)(
+        result = await make_router(
+            store, executor_kind="hermes_runs", default_task_kind="research"
+        )(
             ToolCallEvent("generic-call", "delegate_task", {"task": "Complete this ordinary Agent task"}),
             9,
         )
@@ -97,6 +100,69 @@ class SQLiteSlowPathTests(unittest.IsolatedAsyncioTestCase):
             )["task_kind"],
             "agent",
         )
+        self.assertEqual(store.get_by_task_id(result["task_id"])["result_contract_version"], 2)
+
+    async def test_acp_task_only_call_keeps_the_legacy_default_hint(self):
+        store = self.store()
+        result = await make_router(
+            store, executor_kind="openab_acp", default_task_kind="compare"
+        )(
+            ToolCallEvent("acp-default-call", "delegate_task", {"task": "Compare these options"}),
+            10,
+        )
+        self.assertEqual(result["status"], "accepted")
+        self.assertEqual(
+            store.get_by_call(
+                client_id=CLIENT,
+                conversation_id=CONVERSATION,
+                turn_id=10,
+                call_id="acp-default-call",
+            )["task_kind"],
+            "compare",
+        )
+
+    async def test_stale_legacy_hint_is_accepted_on_first_call_and_replays_without_rewriting(self):
+        store = self.store()
+        task = "Use the old Live schema hint for a generic task"
+        router = make_router(
+            store, executor_kind="hermes_runs", default_task_kind="research"
+        )
+        first = await router(
+            ToolCallEvent(
+                "stale-schema-call", "delegate_task", {"task": task, "task_kind": "compare"}
+            ),
+            11,
+        )
+        self.assertEqual(first, {"status": "accepted", "task_id": TASK_ID, "duplicate": False})
+
+        connection = sqlite3.connect(self.db_path)
+        original = connection.execute(
+            "SELECT task_kind,payload_sha256 FROM slow_tasks WHERE task_id=?", (TASK_ID,)
+        ).fetchone()
+        connection.close()
+        self.assertEqual(original[0], "compare")
+
+        exact_replay = await make_router(
+            store, executor_kind="hermes_runs", default_task_kind="research", task_id=RETRY_TASK_ID
+        )(
+            ToolCallEvent(
+                "stale-schema-call", "delegate_task", {"task": task, "task_kind": "compare"}
+            ),
+            11,
+        )
+        generic_replay = await make_router(
+            store, executor_kind="hermes_runs", default_task_kind="research", task_id=RETRY_TASK_ID
+        )(
+            ToolCallEvent("stale-schema-call", "delegate_task", {"task": task}),
+            11,
+        )
+        self.assertEqual(exact_replay, {"status": "accepted", "task_id": TASK_ID, "duplicate": True})
+        self.assertEqual(generic_replay, {"status": "accepted", "task_id": TASK_ID, "duplicate": True})
+        connection = sqlite3.connect(self.db_path)
+        self.assertEqual(connection.execute(
+            "SELECT task_kind,payload_sha256 FROM slow_tasks WHERE task_id=?", (TASK_ID,)
+        ).fetchone(), original)
+        connection.close()
 
     async def test_hermes_admission_version_is_visible_in_durable_task_row(self):
         store = self.store()

@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from fast_voice.contracts import JSONValue, ToolCallEvent
 from .task_store import (
+    GENERIC_TASK_KIND,
     MAX_TASK_CHARS,
     TASK_KINDS,
     AdmissionBusy,
@@ -61,9 +62,11 @@ class TaskAdmissionStore(Protocol):
 class SlowPathToolRouter:
     """Validate a Live tool call and perform short, durable backend-neutral admission.
 
-    Identity, conversation, and backend are supplied by trusted server code.
-    New calls provide only task text. An optional old task-kind value is accepted
-    solely for retry compatibility; the Owner's Agent applies its own policy.
+    Identity, conversation, backend, and executor are supplied by trusted server
+    code. Hermes task-only calls always use the neutral `agent` kind, independent
+    of the legacy default setting. An old task-kind hint is still accepted as
+    descriptive metadata, including on a first admission from a stale schema;
+    it never selects tools or policy.
     """
 
     def __init__(
@@ -314,10 +317,17 @@ class SlowPathToolRouter:
         if not isinstance(arguments, Mapping) or set(arguments) - {"task", "task_kind"}:
             return None, {"status": "rejected", "code": "invalid_arguments"}
         task = arguments.get("task")
-        # Keep accepting an old optional hint so an in-flight legacy tool call
-        # can replay with its original fingerprint. New declarations omit it.
+        # Old Live schemas can send this metadata on either a first admission
+        # or a replay; the payload alone cannot distinguish those cases.
         raw_kind = arguments.get("task_kind")
-        task_kind = self._default_task_kind if raw_kind is None else raw_kind
+        if raw_kind is not None:
+            task_kind = raw_kind
+        elif self._executor_kind == "hermes_runs":
+            # Ignore AMUSANT_DEFAULT_TASK_KIND for the new Hermes task-only
+            # interface. Keep the configured fallback only for legacy ACP.
+            task_kind = GENERIC_TASK_KIND
+        else:
+            task_kind = self._default_task_kind
         if not isinstance(task, str) or not task.strip() or len(task) > MAX_TASK_CHARS:
             return None, {"status": "rejected", "code": "invalid_task"}
         if not isinstance(task_kind, str) or task_kind not in TASK_KINDS:
