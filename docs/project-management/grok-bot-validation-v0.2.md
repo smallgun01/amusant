@@ -1,8 +1,8 @@
 # Amusant Grok Bot 驗證提案 v0.2
 
-日期：2026-10-25（Asia/Taipei）  
-Owner：Arthur  
-用途：判斷託管 Grok Bot 是否值得成為 Amusant 主要 Agent 後端。  
+日期：2026-10-25（Asia/Taipei）
+Owner：Arthur
+用途：判斷託管 Grok Bot 是否值得成為 Amusant 主要 Agent 後端。
 狀態：設計與可轉交工作單；v0.2 已納入三個公開 Grok Bot 硬體整合案例；尚未執行 Amusant Grok 實測、實作、PR、部署或權限變更。
 
 ## 1. 決策與產品假設
@@ -53,7 +53,7 @@ Grok-C0／Grok-O0 必須把下列 repo 當成 mandatory references，而不是�
 
 ## 3. 授權與順序
 
-當前可做：設計、唯讀 source／證據盤點、操作計畫、案例與離線測試設計。  
+當前可做：設計、唯讀 source／證據盤點、操作計畫、案例與離線測試設計。
 當前真實 Grok 呼叫預算：0；新增部署與權限變更：0。
 
 Owner 後續轉交並指示啟動相應階段後，執行已涵蓋的工作；同一個已核可範圍不逐次重問。仍需區分 repo/offline 工作、原生產品操作，以及主機／網路變更。
