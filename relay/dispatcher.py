@@ -237,6 +237,8 @@ class AsyncDispatcher:
                     stop_reason=refreshed.get("stop_reason"),
                     stop_attempts=int(refreshed.get("stop_attempts") or 0),
                     stop_accepted_at=refreshed.get("stop_accepted_at"),
+                    next_poll_at=refreshed.get("next_poll_at"),
+                    poll_attempts=int(refreshed.get("poll_attempts") or 0),
                 )
                 outcome = await self._executor.execute(task)
             except Exception as exc:
@@ -286,6 +288,31 @@ class AsyncDispatcher:
                 await self._store_call(self._store.complete, task.task_id, result=outcome.result)
                 return
             if outcome.status == "uncertain":
+                if (
+                    task.executor_kind == "hermes_runs"
+                    and task.backend_run_id
+                    and outcome.backend_run_id == task.backend_run_id
+                    and outcome.next_poll_at
+                    and hasattr(self._store, "defer_hermes_recovery")
+                ):
+                    try:
+                        next_poll = datetime.fromisoformat(outcome.next_poll_at)
+                        if next_poll.tzinfo is None or next_poll.utcoffset() is None:
+                            raise ValueError("poll timestamp must be timezone-aware")
+                        await self._store_call(
+                            self._store.defer_hermes_recovery,
+                            task.task_id,
+                            backend_run_id=outcome.backend_run_id,
+                            next_poll_at=next_poll,
+                            poll_attempts=outcome.poll_attempts,
+                            code=outcome.code or "hermes_result_unconfirmed",
+                        )
+                        return
+                    except Exception:
+                        # Do not overwrite a concurrent STOP intent, or an
+                        # ambiguous successful recovery write. The claim lease
+                        # remains the recovery boundary if persistence failed.
+                        return
                 await self._store_call(
                     self._store.mark_uncertain,
                     task.task_id,

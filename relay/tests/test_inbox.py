@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import tempfile
@@ -140,71 +141,134 @@ class InboxTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await router.mark_spoken(TASK_ID))
         self.assertEqual(store.get_inbox(TASK_ID)["delivery_state"], "spoken")
 
-    async def test_invalid_or_missing_v2_output_stays_completed_but_readback_flags_delivery_failure(self):
+    async def _assert_completed_v2_delivery_failure(
+        self,
+        *,
+        task_id,
+        label,
+        output,
+        expected_error,
+        status_flags=None,
+        expected_artifact_status=None,
+        expected_artifact_ref=None,
+    ):
         store = self.store()
-        cases = (
-            (TASK_ID, "invalid", "x" * 500_000, "presentation_invalid"),
-            (TASK_ID_2, "missing", None, "presentation_missing"),
-        )
+        run_id = "run-v2-" + label
+        store.admit(request_for(
+            task_id,
+            call_id="call-v2-" + label,
+            executor_kind="hermes_runs",
+            result_contract_version=2,
+        ))
         router = make_router(store)
-        for task_id, label, output, expected_error in cases:
-            with self.subTest(output=label):
-                store.admit(request_for(
-                    task_id,
-                    turn_id=1 if task_id == TASK_ID else 2,
-                    call_id="call-v2-" + label,
-                    executor_kind="hermes_runs",
-                    result_contract_version=2,
-                ))
 
-                def request_json(method, _path, _body, _headers):
-                    if method == "POST":
-                        return 200, {"run_id": "run-v2-" + label}
-                    payload = {"status": "completed"}
-                    if output is not None:
-                        payload["output"] = output
-                    return 200, payload
+        def request_json(method, _path, _body, _headers):
+            if method == "POST":
+                return 200, {"run_id": run_id}
+            payload = {"run_id": run_id, "status": "completed", **(status_flags or {})}
+            if output is not None:
+                payload["output"] = output
+            return 200, payload
 
-                executor = HermesRunsExecutor(
-                    url="http://127.0.0.1:8642",
-                    api_key="local-test-api-key-123",
-                    save_backend_run_id=lambda *_args, **_kwargs: None,
-                    update_poll_state=lambda *_args, **_kwargs: None,
-                    run_deadline_seconds=60.0,
-                    poll_cycle_seconds=0.01,
-                    http_timeout_seconds=0.05,
-                    poll_interval_seconds=0.001,
-                    update_stop_state=lambda *_args, **_kwargs: None,
-                    stop_grace_seconds=2.0,
-                    stop_max_attempts=3,
-                    stop_retry_base_seconds=0.001,
-                    stop_retry_max_seconds=0.01,
-                    request_json=request_json,
-                    clock=lambda: NOW,
-                )
-                await AsyncDispatcher(store, executor, now=lambda: NOW).dispatch_available()
+        executor = HermesRunsExecutor(
+            url="http://127.0.0.1:8642",
+            api_key="local-test-api-key-123",
+            save_backend_run_id=store.save_backend_run_id,
+            update_poll_state=store.update_hermes_poll_state,
+            run_deadline_seconds=60.0,
+            poll_cycle_seconds=0.01,
+            http_timeout_seconds=0.05,
+            poll_interval_seconds=0.001,
+            update_stop_state=store.update_hermes_stop_state,
+            stop_grace_seconds=2.0,
+            stop_max_attempts=3,
+            stop_retry_base_seconds=0.001,
+            stop_retry_max_seconds=0.01,
+            request_json=request_json,
+            clock=lambda: NOW,
+        )
+        await AsyncDispatcher(store, executor, now=lambda: NOW).dispatch_available()
 
-                status = await router(ToolCallEvent(
-                    "lookup-v2-" + label, INBOX_TOOL_NAME, {"task_id": task_id},
-                ), 3)
-                self.assertEqual(status["status"], "completed")
-                self.assertEqual(status["result_delivery_status"], "failed")
-                self.assertEqual(status["result_delivery_error"], expected_error)
-                self.assertEqual(status["speak"], "The task finished, but result delivery needs recovery.")
-                self.assertNotIn("x" * 1024, str(status))
+        status = await router(ToolCallEvent(
+            "lookup-v2-" + label, INBOX_TOOL_NAME, {"task_id": task_id},
+        ), 3)
+        self.assertEqual(status["status"], "completed")
+        self.assertEqual(status["result_delivery_status"], "failed")
+        self.assertEqual(status["result_delivery_error"], expected_error)
+        self.assertEqual(status["speak"], "The task finished, but result delivery needs recovery.")
+        self.assertNotIn("artifact_ref", status)
+        self.assertNotIn("x" * 1024, str(status))
 
-                readback = await router(ToolCallEvent(
-                    "readback-v2-" + label, INBOX_TOOL_NAME,
-                    {"task_id": task_id, "speak": True},
-                ), 4)
-                self.assertTrue(readback["speak_now"])
-                self.assertEqual(readback["result_delivery_status"], "failed")
-                self.assertEqual(readback["result_delivery_error"], expected_error)
-                self.assertEqual(readback["delivery_state"], "read")
-                self.assertTrue(await router.mark_spoken(task_id))
-                self.assertEqual(store.get_inbox(task_id)["delivery_state"], "spoken")
-        self.assertTrue(await router.mark_spoken(TASK_ID))
-        self.assertEqual(store.get_inbox(TASK_ID)["delivery_state"], "spoken")
+        readback = await router(ToolCallEvent(
+            "readback-v2-" + label, INBOX_TOOL_NAME,
+            {"task_id": task_id, "speak": True},
+        ), 4)
+        self.assertTrue(readback["speak_now"])
+        self.assertEqual(readback["result_delivery_status"], "failed")
+        self.assertEqual(readback["result_delivery_error"], expected_error)
+        self.assertEqual(readback["delivery_state"], "read")
+        self.assertNotIn("artifact_ref", readback)
+        persisted = store.get_result(task_id)
+        self.assertEqual(persisted["delivery_error"], expected_error)
+        self.assertEqual(persisted["artifact_status"], expected_artifact_status)
+        self.assertEqual(persisted["artifact_ref"], expected_artifact_ref)
+        self.assertTrue(await router.mark_spoken(task_id))
+        self.assertEqual(store.get_inbox(task_id)["delivery_state"], "spoken")
+
+    async def test_invalid_v2_output_stays_completed_but_readback_flags_delivery_failure(self):
+        await self._assert_completed_v2_delivery_failure(
+            task_id=TASK_ID,
+            label="invalid",
+            output="x" * 500_000,
+            expected_error="presentation_invalid",
+        )
+
+    async def test_missing_v2_output_stays_completed_but_readback_flags_delivery_failure(self):
+        await self._assert_completed_v2_delivery_failure(
+            task_id=TASK_ID,
+            label="missing",
+            output=None,
+            expected_error="presentation_missing",
+        )
+
+    async def test_partial_v2_output_keeps_execution_and_validated_artifact_in_inbox(self):
+        artifact_ref = "art_" + "e" * 24
+        output = json.dumps({
+            "schema_version": 2,
+            "speak": "Partial answer must not be delivered.",
+            "card": {"title": "Partial answer", "lines": ["Unverified line"]},
+            "execution_status": "completed",
+            "artifact_status": "committed",
+            "presentation_status": "ready",
+            "artifact_ref": artifact_ref,
+        })
+        await self._assert_completed_v2_delivery_failure(
+            task_id=TASK_ID,
+            label="partial",
+            output=output,
+            expected_error="presentation_failed",
+            status_flags={"partial": True},
+            expected_artifact_status="committed",
+            expected_artifact_ref=artifact_ref,
+        )
+
+    async def test_interrupted_v2_output_does_not_recover_unverified_artifact_in_inbox(self):
+        output = json.dumps({
+            "schema_version": 2,
+            "speak": "Untrusted interrupted text.",
+            "card": {"title": "Untrusted", "lines": ["Untrusted content"]},
+            "execution_status": "completed",
+            "artifact_status": "committed",
+            "presentation_status": "unknown",
+            "artifact_ref": "art_" + "f" * 24,
+        })
+        await self._assert_completed_v2_delivery_failure(
+            task_id=TASK_ID,
+            label="interrupted",
+            output=output,
+            expected_error="presentation_failed",
+            status_flags={"interrupted": True},
+        )
 
     async def test_other_client_cannot_read_inbox(self):
         store = self.store()

@@ -9,7 +9,7 @@ import json
 import math
 import socket
 import ssl
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 from urllib.parse import quote, urlparse
@@ -20,9 +20,7 @@ from .task_store import ClaimedTask
 
 MAX_RESPONSE_BYTES = 1024 * 1024
 _RFC1918 = (ipaddress.ip_network("10.0.0.0/8"), ipaddress.ip_network("172.16.0.0/12"), ipaddress.ip_network("192.168.0.0/16"))
-_TERMINAL_SUCCESS = {"completed"}
 _TERMINAL_FAILURE = {"failed"}
-_TERMINAL_UNCERTAIN = {"cancelled", "interrupted", "expired"}
 _NONTERMINAL = {"queued", "pending", "running", "waiting_for_approval", "stopping"}
 
 
@@ -209,8 +207,6 @@ class HermesRunsExecutor:
         if not isinstance(task.client_id, str) or not task.client_id:
             return ExecutionOutcome(status="failed", code="invalid_task_owner")
         if type(getattr(task, "result_contract_version", None)) is not int or task.result_contract_version != 2:
-            # The durable row may represent a pre-cutover Run. Do not submit,
-            # poll, parse, or terminalize it under the v2 contract.
             return ExecutionOutcome(status="uncertain", code="unsupported_result_contract")
         headers = {
             "Authorization": f"Bearer {self._api_key}",
@@ -230,23 +226,16 @@ class HermesRunsExecutor:
                 run_started_at + timedelta(seconds=self._run_deadline_seconds)
             )
             next_poll_at = _parse_utc_timestamp(task.next_poll_at) if task.next_poll_at else now
+            stop_requested_at = _parse_utc_timestamp(task.stop_requested_at) if task.stop_requested_at else None
+            stop_accepted_at = _parse_utc_timestamp(task.stop_accepted_at) if task.stop_accepted_at else None
         except (OverflowError, TypeError, ValueError):
-            return ExecutionOutcome(status="uncertain", code="hermes_run_deadline_unconfirmed")
+            return ExecutionOutcome(status="uncertain", code="hermes_run_state_unconfirmed")
         poll_attempts = int(task.poll_attempts or 0)
-        stop_requested_at = None
-        stop_accepted_at = None
-        try:
-            if task.stop_requested_at:
-                stop_requested_at = _parse_utc_timestamp(task.stop_requested_at)
-            if task.stop_accepted_at:
-                stop_accepted_at = _parse_utc_timestamp(task.stop_accepted_at)
-        except (TypeError, ValueError):
-            return ExecutionOutcome(status="uncertain", code="hermes_stop_state_unconfirmed")
-        stop_reason = task.stop_reason
         stop_attempts = int(task.stop_attempts or 0)
+        stop_reason = task.stop_reason
 
         if run_id is None:
-            if stop_requested_at is not None:
+            if stop_requested_at is not None or task.status == "uncertain":
                 return ExecutionOutcome(status="uncertain", code="hermes_submission_unconfirmed")
             try:
                 prompt = build_hermes_run_prompt(task)
@@ -258,7 +247,7 @@ class HermesRunsExecutor:
                     {**headers, "Content-Type": "application/json", "Idempotency-Key": task.task_id},
                 )
             except Exception:
-                # Acceptance may be ambiguous; without a durable Run ID never submit again.
+                # A lost POST response is ambiguous. Without a durable Run ID, never replay it.
                 raise HermesRequestError("Hermes submission outcome is unknown") from None
             if 400 <= status < 500:
                 return ExecutionOutcome(status="failed", code="hermes_submit_rejected")
@@ -282,7 +271,7 @@ class HermesRunsExecutor:
             except Exception:
                 raise HermesRequestError("Hermes Run ID/deadline persistence is unconfirmed") from None
         elif not task.run_deadline_at or not task.run_started_at:
-            # One-time backfill for a known Run from a pre-58A TaskStore row. Never POST again.
+            # Backfill known legacy Runs only; this path never submits.
             try:
                 await asyncio.to_thread(
                     self._save_backend_run_id,
@@ -297,13 +286,11 @@ class HermesRunsExecutor:
                 return ExecutionOutcome(status="uncertain", code="hermes_run_deadline_unconfirmed")
 
         quoted_id = quote(run_id, safe="")
-        loop = asyncio.get_running_loop()
-        cycle_deadline = loop.time() + self._poll_cycle_seconds
 
-        def deferred() -> ExecutionOutcome:
+        def outcome(status: str, code: str) -> ExecutionOutcome:
             return ExecutionOutcome(
-                status="deferred",
-                code="hermes_poll_cycle_complete",
+                status=status,
+                code=code,
                 backend_run_id=run_id,
                 run_started_at=_utc_iso(run_started_at),
                 run_deadline_at=_utc_iso(run_deadline_at),
@@ -320,7 +307,7 @@ class HermesRunsExecutor:
                     poll_attempts=poll_attempts,
                 )
             except Exception:
-                raise HermesRequestError("Hermes next-poll state persistence is unconfirmed") from None
+                raise HermesRequestError("Hermes poll state persistence is unconfirmed") from None
 
         async def persist_stop_state(*, accepted_at: datetime | None, next_at: datetime) -> None:
             try:
@@ -338,201 +325,191 @@ class HermesRunsExecutor:
             exponent = min(max(0, attempts - 1), 16)
             return min(self._stop_retry_base_seconds * (2 ** exponent), self._stop_retry_max_seconds)
 
-        def terminal(state: str, payload: dict[str, Any]) -> ExecutionOutcome | None:
-            if state in _TERMINAL_SUCCESS:
-                # The API has confirmed a terminal remote Run. Invalid output is
-                # a local result failure, not evidence of possible remote activity.
+        async def get_once():
+            """Count an initiated GET durably and schedule from its completion time."""
+            nonlocal poll_attempts, next_poll_at
+            poll_attempts += 1
+            # If Relay restarts while this GET is in flight, the next claim waits
+            # through the configured request bound plus the poll interval.
+            next_poll_at = self._clock() + timedelta(
+                seconds=self._http_timeout_seconds + self._poll_interval
+            )
+            await persist_poll_state()
+            try:
+                response = await asyncio.to_thread(
+                    self._request_json, "GET", f"/v1/runs/{quoted_id}", None, headers
+                )
+            except Exception:
+                response = None
+            next_poll_at = self._clock() + timedelta(seconds=self._poll_interval)
+            await persist_poll_state()
+            if response is None:
+                return None, "hermes_get_failed"
+            return response, None
+
+        def classify_terminal(state: str, payload: dict[str, Any]) -> ExecutionOutcome | None:
+            if state == "completed":
                 if payload.get("partial") is True or payload.get("interrupted") is True:
-                    return ExecutionOutcome(status="completed", result=delivery_failure("presentation_failed"))
+                    # The authenticated native Run is terminal-completed, but
+                    # partial/interrupted presentation must never be exposed.
+                    # Parse only to retain verified Artifact facts; discard the
+                    # envelope's speech/card and keep the execution fact.
+                    result = delivery_failure("presentation_failed")
+                    output = _extract_output(payload)
+                    if output is not None:
+                        try:
+                            verified = parse_hermes_run_result(output)
+                        except ValueError:
+                            pass
+                        else:
+                            result = replace(
+                                result,
+                                artifact_status=verified.artifact_status,
+                                artifact_ref=verified.artifact_ref,
+                                delivery_error=verified.delivery_error or result.delivery_error,
+                            )
+                    return ExecutionOutcome(status="completed", result=result)
                 output = _extract_output(payload)
                 if output is None:
-                    return ExecutionOutcome(status="completed", result=delivery_failure("presentation_missing"))
+                    return ExecutionOutcome(
+                        status="completed", result=delivery_failure("presentation_missing")
+                    )
                 try:
                     result = parse_hermes_run_result(output)
                 except ValueError:
-                    return ExecutionOutcome(status="completed", result=delivery_failure("presentation_invalid"))
+                    # The authenticated Facade has confirmed native execution
+                    # completion. Invalid presentation is a delivery failure;
+                    # do not turn it into a native Hermes failure or expose
+                    # fields from malformed output as trusted metadata.
+                    return ExecutionOutcome(
+                        status="completed", result=delivery_failure("presentation_invalid")
+                    )
                 return ExecutionOutcome(status="completed", result=result)
             if state in _TERMINAL_FAILURE:
                 return ExecutionOutcome(status="failed", code=f"hermes_{state}")
             if state in {"cancelled", "interrupted"}:
-                if stop_requested_at is None:
-                    return ExecutionOutcome(status="uncertain", code=f"hermes_{state}")
                 code = "hermes_run_timed_out" if stop_reason == "run_deadline" else "hermes_cancelled"
                 return ExecutionOutcome(status="failed", code=code)
-            if state == "expired":
-                return ExecutionOutcome(status="uncertain", code="hermes_expired")
-            if state not in _NONTERMINAL:
-                return ExecutionOutcome(status="uncertain", code="hermes_result_unconfirmed")
+            # Hermes `expired` does not prove that the Run stopped executing.
             return None
 
+        def validate_status_response(response):
+            if response is None:
+                return None, "hermes_get_failed"
+            http_status, payload = response
+            # Only a successful, exact Run binding can establish remote state.
+            if http_status != 200:
+                return None, "hermes_run_status_unconfirmed"
+            if not isinstance(payload, dict) or payload.get("run_id") != run_id:
+                return None, "hermes_run_binding_unconfirmed"
+            state = payload.get("status")
+            if not isinstance(state, str):
+                return None, "hermes_run_status_unconfirmed"
+            return (state.lower(), payload), None
+
+        async def process_get(*, recovery: bool, stop_grace_deadline: datetime | None = None):
+            response, request_error = await get_once()
+            classified, validation_error = validate_status_response(response)
+            error = request_error or validation_error
+            if error is None:
+                state, payload = classified
+                terminal_result = classify_terminal(state, payload)
+                if terminal_result is not None:
+                    return terminal_result
+                if state == "expired":
+                    if recovery and stop_requested_at is None and self._clock() >= run_deadline_at:
+                        return outcome("uncertain", "hermes_run_deadline_exceeded")
+                    return outcome("uncertain", "hermes_expired")
+                if state in _NONTERMINAL:
+                    if recovery:
+                        if stop_requested_at is None and self._clock() >= run_deadline_at:
+                            return outcome("uncertain", "hermes_run_deadline_exceeded")
+                        return outcome("uncertain", "hermes_recovery_nonterminal")
+                    if stop_grace_deadline is not None:
+                        if self._clock() >= stop_grace_deadline:
+                            return outcome("uncertain", "hermes_stop_unconfirmed")
+                        return outcome("deferred", "hermes_stop_pending")
+                    if self._clock() >= run_deadline_at:
+                        return ExecutionOutcome(status="uncertain", code="hermes_run_deadline_exceeded")
+                    return outcome("deferred", "hermes_poll_cycle_complete")
+                return outcome("uncertain", "hermes_remote_state_unconfirmed")
+            if recovery:
+                if stop_requested_at is None and self._clock() >= run_deadline_at:
+                    return outcome("uncertain", "hermes_run_deadline_exceeded")
+                return outcome("uncertain", error)
+            if stop_grace_deadline is not None:
+                if self._clock() >= stop_grace_deadline:
+                    return outcome("uncertain", "hermes_stop_unconfirmed")
+                return outcome("deferred", "hermes_stop_pending")
+            if self._clock() >= run_deadline_at:
+                return ExecutionOutcome(status="uncertain", code="hermes_run_deadline_exceeded")
+            return outcome("deferred", error)
+
+        # Uncertain known Runs resume by GET, but the durable deadline remains
+        # authoritative: it may trigger the first STOP for this bound Run. A
+        # recorded Owner/deadline STOP also takes priority over uncertainty so
+        # recovery cannot strand an intent raised while a GET was in flight.
+        if task.status == "uncertain" and stop_requested_at is None:
+            return await process_get(recovery=True)
+
         if stop_requested_at is not None:
-            if run_id is None:
-                return ExecutionOutcome(status="uncertain", code="hermes_submission_unconfirmed")
             grace_deadline = stop_requested_at + timedelta(seconds=self._stop_grace_seconds)
             now = self._clock()
             if stop_accepted_at is None and stop_attempts < self._stop_max_attempts and now < grace_deadline:
                 stop_attempts += 1
+                stop_http = None
+                stop_payload: dict[str, Any] = {}
                 try:
                     stop_http, stop_payload = await asyncio.to_thread(
-                        self._request_json,
-                        "POST",
-                        f"/v1/runs/{quoted_id}/stop",
-                        None,
-                        headers,
+                        self._request_json, "POST", f"/v1/runs/{quoted_id}/stop", None, headers
                     )
                 except Exception:
-                    now = self._clock()
-                    if stop_attempts >= self._stop_max_attempts or now >= grace_deadline:
-                        await persist_stop_state(accepted_at=stop_accepted_at, next_at=now)
-                        return ExecutionOutcome(status="uncertain", code="hermes_stop_unconfirmed")
-                    next_poll_at = now + timedelta(seconds=retry_delay(stop_attempts))
-                    poll_attempts += 1
-                    await persist_poll_state()
-                    await persist_stop_state(accepted_at=None, next_at=next_poll_at)
-                    return deferred()
-                if stop_http in {408, 429} or stop_http >= 500:
-                    now = self._clock()
-                    if stop_attempts >= self._stop_max_attempts or now >= grace_deadline:
-                        await persist_stop_state(accepted_at=stop_accepted_at, next_at=now)
-                        return ExecutionOutcome(status="uncertain", code="hermes_stop_unconfirmed")
-                    next_poll_at = now + timedelta(seconds=retry_delay(stop_attempts))
-                    poll_attempts += 1
-                    await persist_poll_state()
-                    await persist_stop_state(accepted_at=None, next_at=next_poll_at)
-                    return deferred()
-                if stop_http >= 400 and stop_http not in {404, 409, 410}:
-                    await persist_stop_state(accepted_at=stop_accepted_at, next_at=self._clock())
-                    return ExecutionOutcome(status="uncertain", code="hermes_stop_rejected")
+                    stop_http = 599
                 if 200 <= stop_http < 300:
-                    # Any 2xx confirms that the stop request was accepted, not that
-                    # the Run terminated. Hermes v2026.9.24 returns 200 with
-                    # {status: stopping}; tolerate 202/empty JSON too. Only GET
-                    # status below may establish the terminal outcome.
+                    # Stop Accepted records an accepted request only. GET below
+                    # remains the sole source of terminal confirmation.
                     stop_accepted_at = self._clock()
-                    await persist_stop_state(accepted_at=stop_accepted_at, next_at=stop_accepted_at)
+                    await persist_stop_state(accepted_at=stop_accepted_at, next_at=self._clock())
+                elif stop_http in {408, 429, 599} or stop_http >= 500:
+                    now = self._clock()
+                    retry_at = now + timedelta(seconds=retry_delay(stop_attempts))
+                    await persist_stop_state(accepted_at=None, next_at=retry_at)
+                    if stop_attempts >= self._stop_max_attempts or now >= grace_deadline:
+                        next_poll_at = retry_at
+                        return outcome("uncertain", "hermes_stop_unconfirmed")
+                    next_poll_at = retry_at
+                    return outcome("deferred", "hermes_stop_retry_scheduled")
+                elif stop_http >= 400 and stop_http not in {404, 409, 410}:
+                    await persist_stop_state(accepted_at=None, next_at=self._clock())
+                    # Still perform GET: a trusted terminal status can close the
+                    # Run even when the stop endpoint rejected the request.
+            result = await process_get(recovery=False, stop_grace_deadline=grace_deadline)
+            if result.status == "deferred" and result.next_poll_at:
+                # Persist the STOP retry/GET cadence together with the claimed row.
+                await persist_stop_state(accepted_at=stop_accepted_at, next_at=_parse_utc_timestamp(result.next_poll_at))
+            return result
 
-            try:
-                status_code, payload = await asyncio.to_thread(
-                    self._request_json, "GET", f"/v1/runs/{quoted_id}", None, headers
-                )
-            except Exception:
-                now = self._clock()
-                if now >= grace_deadline or (stop_accepted_at is None and stop_attempts >= self._stop_max_attempts):
-                    await persist_stop_state(accepted_at=stop_accepted_at, next_at=now)
-                    return ExecutionOutcome(status="uncertain", code="hermes_stop_unconfirmed")
-                delay = self._poll_interval if stop_accepted_at is not None else retry_delay(max(1, stop_attempts))
-                next_poll_at = now + timedelta(seconds=delay)
-                poll_attempts += 1
-                await persist_poll_state()
-                await persist_stop_state(accepted_at=stop_accepted_at, next_at=next_poll_at)
-                return deferred()
-            if status_code in {408, 429} or status_code >= 500:
-                now = self._clock()
-                if now >= grace_deadline or (stop_accepted_at is None and stop_attempts >= self._stop_max_attempts):
-                    await persist_stop_state(accepted_at=stop_accepted_at, next_at=now)
-                    return ExecutionOutcome(status="uncertain", code="hermes_stop_unconfirmed")
-                delay = self._poll_interval if stop_accepted_at is not None else retry_delay(max(1, stop_attempts))
-                next_poll_at = now + timedelta(seconds=delay)
-                poll_attempts += 1
-                await persist_poll_state()
-                await persist_stop_state(accepted_at=stop_accepted_at, next_at=next_poll_at)
-                return deferred()
-            if status_code >= 400:
-                code = "hermes_run_status_expired" if status_code in {404, 410} else "hermes_stop_unconfirmed"
-                await persist_stop_state(accepted_at=stop_accepted_at, next_at=self._clock())
-                return ExecutionOutcome(status="uncertain", code=code)
-            state = payload.get("status")
-            if not isinstance(state, str):
-                await persist_stop_state(accepted_at=stop_accepted_at, next_at=self._clock())
-                return ExecutionOutcome(status="uncertain", code="hermes_stop_unconfirmed")
-            state = state.lower()
-            terminal_result = terminal(state, payload)
-            if terminal_result is not None:
-                return terminal_result
+        now = self._clock()
+        if run_deadline_at <= now:
+            return ExecutionOutcome(status="uncertain", code="hermes_run_deadline_exceeded")
+        if next_poll_at > now:
+            await asyncio.sleep((next_poll_at - now).total_seconds())
             now = self._clock()
-            if now >= grace_deadline or (stop_accepted_at is None and stop_attempts >= self._stop_max_attempts):
-                return ExecutionOutcome(status="uncertain", code="hermes_stop_unconfirmed")
-            delay = self._poll_interval if stop_accepted_at is not None else retry_delay(max(1, stop_attempts))
-            next_poll_at = now + timedelta(seconds=delay)
-            poll_attempts += 1
-            await persist_poll_state()
-            await persist_stop_state(accepted_at=stop_accepted_at, next_at=next_poll_at)
-            return deferred()
+            if next_poll_at > now:
+                return outcome("deferred", "hermes_poll_not_due")
 
+        loop = asyncio.get_running_loop()
+        cycle_deadline = loop.time() + self._poll_cycle_seconds
         while True:
-            now = self._clock()
-            run_remaining = (run_deadline_at - now).total_seconds()
-            if run_remaining <= 0:
-                return ExecutionOutcome(status="uncertain", code="hermes_run_deadline_exceeded")
-            cycle_remaining = cycle_deadline - loop.time()
-            if cycle_remaining <= 0:
-                if next_poll_at <= now:
-                    next_poll_at = now + timedelta(seconds=self._poll_interval)
-                    await persist_poll_state()
-                return deferred()
-            wait_until_poll = (next_poll_at - now).total_seconds()
-            if wait_until_poll > 0:
-                wait_seconds = min(wait_until_poll, run_remaining, cycle_remaining)
-                await asyncio.sleep(wait_seconds)
-                now = self._clock()
-                if (run_deadline_at - now).total_seconds() <= 0:
-                    return ExecutionOutcome(status="uncertain", code="hermes_run_deadline_exceeded")
-                if (next_poll_at - now).total_seconds() > 0:
-                    return deferred()
-                continue
-            try:
-                status_code, payload = await asyncio.to_thread(
-                    self._request_json, "GET", f"/v1/runs/{quoted_id}", None, headers
-                )
-            except Exception:
-                now = self._clock()
-                if (run_deadline_at - now).total_seconds() <= 0:
-                    return ExecutionOutcome(status="uncertain", code="hermes_run_deadline_exceeded")
-                poll_attempts += 1
-                next_poll_at = now + timedelta(seconds=self._poll_interval)
-                await persist_poll_state()
-                return deferred()
-            if status_code in {408, 429} or status_code >= 500:
-                now = self._clock()
-                if (run_deadline_at - now).total_seconds() <= 0:
-                    return ExecutionOutcome(status="uncertain", code="hermes_run_deadline_exceeded")
-                poll_attempts += 1
-                next_poll_at = now + timedelta(seconds=self._poll_interval)
-                await persist_poll_state()
-                return deferred()
-            if status_code >= 400:
-                code = "hermes_run_status_expired" if status_code in {404, 410} else "hermes_result_unconfirmed"
-                return ExecutionOutcome(status="uncertain", code=code)
-            state = payload.get("status")
-            if not isinstance(state, str):
-                return ExecutionOutcome(status="uncertain", code="hermes_result_unconfirmed")
-            state = state.lower()
-            if state in _TERMINAL_SUCCESS:
-                # A confirmed remote terminal with an invalid result is safely
-                # terminal but not speakable; Dispatcher records failed and frees
-                # the slot without storing or reading the untrusted payload.
-                if payload.get("partial") is True or payload.get("interrupted") is True:
-                    return ExecutionOutcome(status="completed", result=delivery_failure("presentation_failed"))
-                output = _extract_output(payload)
-                if output is None:
-                    return ExecutionOutcome(status="completed", result=delivery_failure("presentation_missing"))
-                try:
-                    result = parse_hermes_run_result(output)
-                except ValueError:
-                    return ExecutionOutcome(status="completed", result=delivery_failure("presentation_invalid"))
-                return ExecutionOutcome(status="completed", result=result)
-            if state in _TERMINAL_FAILURE:
-                return ExecutionOutcome(status="failed", code=f"hermes_{state}")
-            if state in _TERMINAL_UNCERTAIN:
-                return ExecutionOutcome(status="uncertain", code=f"hermes_{state}")
-            if state not in _NONTERMINAL:
-                return ExecutionOutcome(status="uncertain", code="hermes_result_unconfirmed")
-            poll_attempts += 1
-            next_poll_at = self._clock() + timedelta(seconds=self._poll_interval)
-            await persist_poll_state()
-            remaining = min(cycle_deadline - loop.time(), (run_deadline_at - self._clock()).total_seconds())
-            if remaining <= 0 or remaining < self._poll_interval:
-                return deferred()
+            result = await process_get(recovery=False)
+            if result.status != "deferred" or result.code != "hermes_poll_cycle_complete":
+                return result
+            remaining = min(
+                cycle_deadline - loop.time(),
+                (run_deadline_at - self._clock()).total_seconds(),
+            )
+            if remaining <= self._poll_interval:
+                return result
             await asyncio.sleep(self._poll_interval)
 
 

@@ -84,7 +84,15 @@ def _condition_holds(current: dict[str, object] | None, condition: str) -> bool:
     if condition == "exists":
         return True
     if condition == "claimed":
-        return current.get("outbox_state") == "claimed"
+        return current.get("outbox_state") == "claimed" and (
+            current.get("status") == "running"
+            or (
+                current.get("status") == "uncertain"
+                and current.get("executor_kind") == "hermes_runs"
+                and current.get("result_contract_version") == 2
+                and bool(current.get("backend_run_id"))
+            )
+        )
     if condition == "claimed_unsent":
         return current.get("outbox_state") == "claimed" and not current.get("dispatch_started_at")
     if condition == "claimed_started":
@@ -103,8 +111,6 @@ def _condition_holds(current: dict[str, object] | None, condition: str) -> bool:
         )
     if condition == "uncertain_task":
         return current.get("outbox_state") == "uncertain" and current.get("status") == "uncertain"
-    if condition == "uncertain_task":
-        return current.get("outbox_state") == "uncertain" and current.get("status") == "uncertain"
     if condition == "pending_queued":
         return current.get("outbox_state") == "pending" and current.get("status") == "queued"
     if condition == "pending_running_known_run":
@@ -112,6 +118,63 @@ def _condition_holds(current: dict[str, object] | None, condition: str) -> bool:
             current.get("outbox_state") == "pending"
             and current.get("status") == "running"
             and bool(current.get("backend_run_id"))
+        )
+    if condition == "uncertain_known_run":
+        return (
+            current.get("outbox_state") == "uncertain"
+            and current.get("status") == "uncertain"
+            and current.get("executor_kind") == "hermes_runs"
+            and current.get("result_contract_version") == 2
+            and bool(current.get("backend_run_id"))
+        )
+    if condition == "pending_uncertain_known_run":
+        return (
+            current.get("outbox_state") == "pending"
+            and current.get("status") == "uncertain"
+            and current.get("executor_kind") == "hermes_runs"
+            and current.get("result_contract_version") == 2
+            and bool(current.get("backend_run_id"))
+        )
+    if condition == "claimed_started_run_recovery":
+        return (
+            current.get("outbox_state") == "claimed"
+            and current.get("status") in {"running", "uncertain"}
+            and current.get("executor_kind") == "hermes_runs"
+            and current.get("result_contract_version") == 2
+            and bool(current.get("dispatch_started_at"))
+            and bool(current.get("backend_run_id"))
+        )
+    if condition == "claimed_started_run_recovery_no_stop":
+        return (
+            current.get("outbox_state") == "claimed"
+            and current.get("status") in {"running", "uncertain"}
+            and current.get("executor_kind") == "hermes_runs"
+            and current.get("result_contract_version") == 2
+            and bool(current.get("dispatch_started_at"))
+            and bool(current.get("backend_run_id"))
+            and not current.get("stop_requested_at")
+        )
+    if condition == "claimed_started_run_recovery_stop_unaccepted":
+        return (
+            current.get("outbox_state") == "claimed"
+            and current.get("status") in {"running", "uncertain"}
+            and current.get("executor_kind") == "hermes_runs"
+            and current.get("result_contract_version") == 2
+            and bool(current.get("dispatch_started_at"))
+            and bool(current.get("backend_run_id"))
+            and bool(current.get("stop_requested_at"))
+            and not current.get("stop_accepted_at")
+        )
+    if condition == "claimed_started_run_recovery_stop_accepted":
+        return (
+            current.get("outbox_state") == "claimed"
+            and current.get("status") in {"running", "uncertain"}
+            and current.get("executor_kind") == "hermes_runs"
+            and current.get("result_contract_version") == 2
+            and bool(current.get("dispatch_started_at"))
+            and bool(current.get("backend_run_id"))
+            and bool(current.get("stop_requested_at"))
+            and bool(current.get("stop_accepted_at"))
         )
     if condition == "cancel_pending_unsubmitted":
         return (
@@ -651,13 +714,14 @@ class DynamoDbTaskStore:
             if state != "claimed":
                 continue
             if started and has_run:
+                still_uncertain = row.get("status") == "uncertain"
                 updated = self._ledger.update_item(
                     str(row["pk"]), str(row["sk"]),
                     {
-                        "outbox_state": "pending",
-                        "status": "running",
+                        "outbox_state": "uncertain" if still_uncertain else "pending",
+                        "status": "uncertain" if still_uncertain else "running",
                         "claimed_until": None,
-                        "last_error": None,
+                        "last_error": row.get("last_error") if still_uncertain else None,
                     },
                     condition="claimed_started_run_known",
                 )
@@ -694,22 +758,38 @@ class DynamoDbTaskStore:
         legacy_mode = self._ledger.get_item(self._client_id, _slot_sk(), consistent=True) is None and not self._slot_ready()
         eligible = [
             row for row in rows
-            if row.get("outbox_state") == "pending"
-            and (
+            if (
                 (
-                    row.get("status") == "queued"
+                    row.get("outbox_state") == "pending"
+                    and row.get("status") == "queued"
                     and str(row.get("expires_at") or "") > now_iso
                     and not row.get("dispatch_started_at")
                     and not row.get("backend_run_id")
                 )
                 or (
-                    row.get("executor_kind") == "hermes_runs"
+                    row.get("outbox_state") == "pending"
+                    and row.get("executor_kind") == "hermes_runs"
                     and row.get("backend_run_id")
                     and row.get("status") in {"queued", "running"}
                     and (
                         not row.get("next_poll_at")
                         or str(row.get("next_poll_at")) <= now_iso
-                        or (row.get("run_deadline_at") and str(row.get("run_deadline_at")) <= now_iso)
+                        or (
+                            not row.get("stop_requested_at")
+                            and row.get("run_deadline_at")
+                            and str(row.get("run_deadline_at")) <= now_iso
+                        )
+                    )
+                )
+                or (
+                    row.get("outbox_state") in {"pending", "uncertain"}
+                    and row.get("status") == "uncertain"
+                    and row.get("executor_kind") == "hermes_runs"
+                    and int(row.get("result_contract_version") or 1) == 2
+                    and row.get("backend_run_id")
+                    and (
+                        not row.get("next_poll_at")
+                        or str(row.get("next_poll_at")) <= now_iso
                     )
                 )
             )
@@ -742,18 +822,23 @@ class DynamoDbTaskStore:
         claimed_ids: set[str] = set()
         for row in eligible[:limit]:
             state = row.get("outbox_state")
-            condition = (
-                "pending_running_known_run"
-                if row.get("status") == "running" and row.get("backend_run_id")
-                else "pending_queued"
-            )
+            if row.get("status") == "uncertain":
+                condition = (
+                    "uncertain_known_run"
+                    if state == "uncertain"
+                    else "pending_uncertain_known_run"
+                )
+            elif row.get("status") == "running" and row.get("backend_run_id"):
+                condition = "pending_running_known_run"
+            else:
+                condition = "pending_queued"
             try:
                 updated = self._ledger.update_item(
                     str(row["pk"]),
                     str(row["sk"]),
                     {
                         "outbox_state": "claimed",
-                        "status": "running",
+                        "status": "uncertain" if row.get("status") == "uncertain" else "running",
                         "attempts": int(row.get("attempts") or 0) + 1,
                         "claimed_until": claimed_until,
                     },
@@ -785,19 +870,27 @@ class DynamoDbTaskStore:
                     stop_attempts=int(updated.get("stop_attempts") or 0),
                     stop_accepted_at=str(updated["stop_accepted_at"]) if updated.get("stop_accepted_at") else None,
                     result_contract_version=int(updated.get("result_contract_version") or 1),
+                    status=str(updated.get("status") or "running"),
+                    last_error=str(updated["last_error"]) if updated.get("last_error") else None,
                 )
             )
         wake_candidates: list[datetime] = []
         for row in rows:
             if (
                 str(row.get("task_id") or "") in claimed_ids
-                or row.get("outbox_state") != "pending"
+                or row.get("outbox_state") not in {"pending", "uncertain"}
                 or row.get("executor_kind") != "hermes_runs"
                 or not row.get("backend_run_id")
-                or row.get("status") not in {"queued", "running"}
+                or row.get("status") not in {"queued", "running", "uncertain"}
+                or (row.get("status") == "uncertain" and int(row.get("result_contract_version") or 1) != 2)
             ):
                 continue
-            for value in (row.get("next_poll_at"), row.get("run_deadline_at")):
+            wake_values = (
+                (row.get("next_poll_at"),)
+                if row.get("stop_requested_at") or row.get("status") == "uncertain"
+                else (row.get("next_poll_at"), row.get("run_deadline_at"))
+            )
+            for value in wake_values:
                 if not isinstance(value, str) or not value:
                     continue
                 try:
@@ -1008,6 +1101,136 @@ class DynamoDbTaskStore:
                 ):
                     return
                 raise AdmissionUnknown("hermes_defer_state_unconfirmed") from exc
+
+    def defer_hermes_recovery(
+        self,
+        task_id: str,
+        *,
+        backend_run_id: str,
+        next_poll_at: datetime,
+        poll_attempts: int,
+        code: str,
+    ) -> None:
+        if not isinstance(backend_run_id, str) or not _RUN_ID_RE.fullmatch(backend_run_id):
+            raise AdmissionUnavailable("invalid_backend_run_id")
+        if type(poll_attempts) is not int or poll_attempts < 0:
+            raise AdmissionUnavailable("invalid_poll_attempts")
+        next_poll_iso = _utc_iso(next_poll_at)
+        error = _sanitize_error(code)
+        with self._lock:
+            key = _task_sk(task_id)
+            for _ in range(3):
+                try:
+                    current = self._ledger.get_item(self._client_id, key, consistent=True)
+                except (AdmissionUnavailable, LedgerAmbiguous):
+                    raise AdmissionUnavailable("hermes_recovery_state_unavailable") from None
+                if (
+                    current is None
+                    or current.get("executor_kind") != "hermes_runs"
+                    or current.get("result_contract_version") != 2
+                    or current.get("backend_run_id") != backend_run_id
+                    or not current.get("dispatch_started_at")
+                    or current.get("outbox_state") != "claimed"
+                    or current.get("status") not in {"running", "uncertain"}
+                ):
+                    raise AdmissionUnavailable("hermes_recovery_state_unavailable")
+
+                stop_requested_at = current.get("stop_requested_at")
+                stop_accepted_at = current.get("stop_accepted_at")
+                first_stop_due = (
+                    bool(stop_requested_at)
+                    and not stop_accepted_at
+                    and int(current.get("stop_attempts") or 0) == 0
+                )
+                effective_poll_iso = next_poll_iso
+                if first_stop_due:
+                    effective_poll_iso = min(
+                        next_poll_iso,
+                        _utc_iso(datetime.fromisoformat(str(stop_requested_at))),
+                    )
+                task_status = "running" if first_stop_due else "uncertain"
+                outbox_state = "pending" if first_stop_due else "uncertain"
+                last_error = None if first_stop_due else error
+                patch: dict[str, object] = {
+                    "outbox_state": outbox_state,
+                    "status": task_status,
+                    "claimed_until": None,
+                    "last_error": last_error,
+                    "next_poll_at": effective_poll_iso,
+                    "poll_attempts": poll_attempts,
+                    "delivery_state": "pending",
+                    "inbox_updated_at": next_poll_iso,
+                }
+                condition = (
+                    "claimed_started_run_recovery_no_stop" if not stop_requested_at
+                    else "claimed_started_run_recovery_stop_accepted" if stop_accepted_at
+                    else "claimed_started_run_recovery_stop_unaccepted"
+                )
+                try:
+                    updated = self._ledger.update_item(
+                        self._client_id,
+                        key,
+                        patch,
+                        condition=condition,
+                    )
+                    self._align_dedup_ttl(updated)
+                    return
+                except LedgerConditionFailed as exc:
+                    try:
+                        fresh = self._ledger.get_item(self._client_id, key, consistent=True)
+                    except (AdmissionUnavailable, LedgerAmbiguous):
+                        raise AdmissionUnavailable("hermes_recovery_state_unavailable") from exc
+                    # A concurrent cancellation may have won after our read and
+                    # already moved the durable Run back to the due queue.
+                    if (
+                        fresh is not None
+                        and fresh.get("backend_run_id") == backend_run_id
+                        and fresh.get("stop_requested_at")
+                        and fresh.get("outbox_state") == "pending"
+                        and fresh.get("status") == "running"
+                        and not fresh.get("claimed_until")
+                    ):
+                        return
+                    if (
+                        fresh is not None
+                        and fresh.get("outbox_state") == "claimed"
+                        and fresh.get("backend_run_id") == backend_run_id
+                    ):
+                        continue
+                    raise AdmissionUnavailable("hermes_recovery_state_unavailable") from exc
+                except LedgerAmbiguous as exc:
+                    try:
+                        fresh = self._ledger.get_item(self._client_id, key, consistent=True)
+                    except (AdmissionUnavailable, LedgerAmbiguous):
+                        raise AdmissionUnknown("hermes_recovery_state_unconfirmed") from exc
+                    if (
+                        fresh is not None
+                        and fresh.get("outbox_state") == outbox_state
+                        and fresh.get("status") == task_status
+                        and fresh.get("backend_run_id") == backend_run_id
+                        and fresh.get("next_poll_at") == effective_poll_iso
+                        and int(fresh.get("poll_attempts") or 0) == poll_attempts
+                        and fresh.get("last_error") == last_error
+                    ):
+                        return
+                    if (
+                        fresh is not None
+                        and fresh.get("backend_run_id") == backend_run_id
+                        and fresh.get("stop_requested_at")
+                        and fresh.get("outbox_state") == "pending"
+                        and fresh.get("status") == "running"
+                        and not fresh.get("claimed_until")
+                    ):
+                        return
+                    if (
+                        fresh is not None
+                        and fresh.get("outbox_state") == "claimed"
+                        and fresh.get("backend_run_id") == backend_run_id
+                        and fresh.get("stop_requested_at") != stop_requested_at
+                    ):
+                        continue
+                    raise AdmissionUnknown("hermes_recovery_state_unconfirmed") from exc
+            raise AdmissionUnavailable("hermes_recovery_state_unavailable")
 
     def request_cancel(self, *, client_id: str, task_id: str, now: datetime) -> CancelReceipt:
         if client_id != self._client_id or not _ID_RE.fullmatch(client_id):

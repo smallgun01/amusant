@@ -22,12 +22,47 @@ _AMBIGUOUS_WRITE_CODES = {
 
 _CONDITIONS = {
     "exists": "attribute_exists(pk)",
-    "claimed": "outbox_state = :claimed",
+    "claimed": (
+        "outbox_state = :claimed AND (#status = :running OR "
+        "(#status = :uncertain AND executor_kind = :hermes_runs AND "
+        "result_contract_version = :v2 AND attribute_exists(backend_run_id)))"
+    ),
     "claimed_unsent": "outbox_state = :claimed AND attribute_not_exists(dispatch_started_at)",
     "claimed_started": "outbox_state = :claimed AND attribute_exists(dispatch_started_at)",
     "claimed_started_run_id_absent": "outbox_state = :claimed AND attribute_exists(dispatch_started_at) AND attribute_not_exists(backend_run_id)",
     "claimed_started_run_known": "outbox_state = :claimed AND attribute_exists(dispatch_started_at) AND attribute_exists(backend_run_id)",
     "uncertain_task": "outbox_state = :uncertain AND #status = :uncertain",
+    "uncertain_known_run": (
+        "outbox_state = :uncertain AND #status = :uncertain AND executor_kind = :hermes_runs "
+        "AND result_contract_version = :v2 AND attribute_exists(backend_run_id)"
+    ),
+    "pending_uncertain_known_run": (
+        "outbox_state = :pending AND #status = :uncertain AND executor_kind = :hermes_runs "
+        "AND result_contract_version = :v2 AND attribute_exists(backend_run_id)"
+    ),
+    "claimed_started_run_recovery": (
+        "outbox_state = :claimed AND #status IN (:running,:uncertain) "
+        "AND executor_kind = :hermes_runs AND result_contract_version = :v2 "
+        "AND attribute_exists(dispatch_started_at) AND attribute_exists(backend_run_id)"
+    ),
+    "claimed_started_run_recovery_no_stop": (
+        "outbox_state = :claimed AND #status IN (:running,:uncertain) "
+        "AND executor_kind = :hermes_runs AND result_contract_version = :v2 "
+        "AND attribute_exists(dispatch_started_at) AND attribute_exists(backend_run_id) "
+        "AND attribute_not_exists(stop_requested_at)"
+    ),
+    "claimed_started_run_recovery_stop_unaccepted": (
+        "outbox_state = :claimed AND #status IN (:running,:uncertain) "
+        "AND executor_kind = :hermes_runs AND result_contract_version = :v2 "
+        "AND attribute_exists(dispatch_started_at) AND attribute_exists(backend_run_id) "
+        "AND attribute_exists(stop_requested_at) AND attribute_not_exists(stop_accepted_at)"
+    ),
+    "claimed_started_run_recovery_stop_accepted": (
+        "outbox_state = :claimed AND #status IN (:running,:uncertain) "
+        "AND executor_kind = :hermes_runs AND result_contract_version = :v2 "
+        "AND attribute_exists(dispatch_started_at) AND attribute_exists(backend_run_id) "
+        "AND attribute_exists(stop_requested_at) AND attribute_exists(stop_accepted_at)"
+    ),
     "pending_queued": "outbox_state = :pending AND #status = :queued",
     "pending_running_known_run": "outbox_state = :pending AND #status = :running AND attribute_exists(backend_run_id)",
     "cancel_pending_unsubmitted": "outbox_state = :pending AND #status = :queued AND attribute_not_exists(dispatch_started_at) AND attribute_not_exists(backend_run_id)",
@@ -294,6 +329,10 @@ class Boto3DynamoLedger:
             values[":running"] = {"S": "running"}
         if ":uncertain" in expression:
             values[":uncertain"] = {"S": "uncertain"}
+        if ":hermes_runs" in expression:
+            values[":hermes_runs"] = {"S": "hermes_runs"}
+        if ":v2" in expression:
+            values[":v2"] = {"N": "2"}
         if ":completed" in expression:
             values[":completed"] = {"S": "completed"}
         if ":ds_spoken" in expression:

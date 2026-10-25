@@ -11,7 +11,7 @@ Accept a new task only when its authenticated Owner has no outstanding **Amusant
 | idle | No outstanding channel task | Available |
 | queued / running | Accepted, dispatch or execution/polling pending | Held |
 | stopping | Owner/deadline stop intent recorded | Held |
-| uncertain | Remote or persistence outcome unconfirmed | Held; use the implemented reviewed recovery/reconciliation path |
+| uncertain | Remote or persistence outcome unconfirmed | Held; known v2 Runs resume by authenticated GET, and a due Owner/deadline intent can issue its first bounded STOP without resubmitting the Run |
 | terminal | Trusted terminal confirmation or known pre-POST cancellation/rejection | Released |
 
 Native Telegram and Hermes Cron work is outside this Relay slot. Do not create a global Hermes queue/lock or cancel unrelated native work. Resource contention is managed and measured at Hermes/host boundaries.
@@ -20,7 +20,7 @@ A distinct busy admission returns `slow_busy` without a new task, outbox, Inbox 
 
 ## Execution versus result delivery
 
-Authenticated exact-Run GET can confirm native `completed` even when presentation is missing/invalid. Preserve that fact and record a fixed bounded delivery failure; never store or speak the malformed source. Keep already trusted, recoverable artifact metadata when available, but do not salvage a reference from an invalid/untrusted envelope. A completed Run is not proof an external action succeeded.
+Authenticated exact-Run GET can confirm native `completed` even when presentation is missing, invalid, partial/interrupted, or Facade-reported failed. Preserve that fact and record a fixed bounded delivery failure; never store or speak malformed or partial source. Preserve artifact state/reference only from a fully validated Facade envelope; never salvage a reference from an invalid/untrusted envelope. A completed Run is not proof an external action succeeded.
 
 Transport failures, mismatched owner/Run IDs and unresolved/expired state do not release the slot. Historical v1-pinned tasks are not submitted or reinterpreted as new v2 work; follow the [cutover procedure](result-contract-v2-cutover.md).
 
@@ -28,7 +28,7 @@ Transport failures, mismatched owner/Run IDs and unresolved/expired state do not
 
 `cancel_task(task_id)` derives Owner identity from authenticated context. For a bound Run it durably requests STOP, then GETs for confirmation. STOP Accepted is not Terminal Confirmed. No slot release merely because a timer expired, no blind Run re-POST, and no cancellation of the whole Gateway.
 
-GET-only recovery means no new Run submission; it must not suppress a first authorized Owner/deadline STOP. Concurrent Cancel intent must survive a recovery GET completing. These are explicit [#118 review regressions](https://github.com/smallgun01/amusant/pull/118#pullrequestreview-5641201516), not claims the candidate has already fixed them.
+GET-only recovery means no new Run submission; it must not suppress a first authorized Owner/deadline STOP. At the persisted Run deadline, nonterminal or failed recovery still routes the first bounded STOP. A concurrent Owner Cancel must survive recovery deferral and route its first STOP on the next due claim. After STOP acceptance, the expired deadline no longer causes immediate GETs; `next_poll_at` controls cadence, and an accepted STOP is not repeated. These review regressions are fixed in the [#118 candidate](https://github.com/smallgun01/amusant/pull/118) with fake-clock/blocked-GET tests for SQLite and InMemory Dynamo task stores; the PR remains subject to review and is not claimed as deployed.
 
 A Run stop does not remove a Cron job, cancel a booking, undo a Calendar event or settle provider billing. Those are separate Hermes operations requiring appropriate intent/authorization.
 

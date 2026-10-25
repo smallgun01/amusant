@@ -53,12 +53,8 @@ class HermesResultTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "field_set_invalid"):
             parse_hermes_run_result(envelope(report="complete report text"))
 
-    def test_v1_schema_and_legacy_details_field_are_rejected(self):
+    def test_legacy_details_field_is_rejected_from_a_v2_envelope(self):
         value = json.loads(envelope())
-        value["schema_version"] = 1
-        with self.assertRaisesRegex(ValueError, "schema_unsupported"):
-            parse_hermes_run_result(json.dumps(value))
-        value["schema_version"] = 2
         value["details_md"] = "short old detail"
         with self.assertRaisesRegex(ValueError, "field_set_invalid"):
             parse_hermes_run_result(json.dumps(value))

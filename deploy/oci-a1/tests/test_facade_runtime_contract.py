@@ -242,6 +242,26 @@ class FacadeRuntimeContractTests(unittest.TestCase):
         self.assertEqual(code, 401)
         self.upstream.assert_not_called()
 
+    def test_run_status_binding_is_owner_scoped_and_returns_exact_run_id(self):
+        wrong_owner, hidden, _ = self._relay(
+            "GET", "/v1/runs/" + RUN_ID, owner_key="another-owner-session-key-123456"
+        )
+        self.assertEqual(wrong_owner, 404)
+        self.assertNotIn("run_id", hidden)
+        self.assertNotIn("status", hidden)
+        self.upstream.assert_not_called()
+
+        wrong_run, hidden_run, _ = self._relay("GET", "/v1/runs/run_not_owned_by_task")
+        self.assertEqual(wrong_run, 404)
+        self.assertNotIn("run_id", hidden_run)
+        self.assertNotIn("status", hidden_run)
+        self.upstream.assert_not_called()
+
+        code, bound, _ = self._relay("GET", "/v1/runs/" + RUN_ID)
+        self.assertEqual(code, 200)
+        self.assertEqual((bound["run_id"], bound["status"]), (RUN_ID, "running"))
+        self.upstream.assert_called_once()
+
     def test_writer_rejects_caller_supplied_artifact_reference(self):
         code, payload, raw = self._writer(
             "POST", "/internal/v1/artifacts",
@@ -580,33 +600,24 @@ class FacadeRuntimeContractTests(unittest.TestCase):
         self.upstream.assert_not_called()
         self.assertEqual(self.facade.request_by_session(SESSION_ID)["result_contract_version"], 1)
 
-        legacy_presentation = json.dumps({
-            "schema_version": 1,
-            "speak": "Old result",
-            "card": {"title": "Old", "lines": ["Retired"]},
-            "details_md": "old details",
-        }, separators=(",", ":"))
         code, rejected, _ = self._writer(
-            "POST", "/internal/v1/presentation", {"presentation": legacy_presentation}
+            "POST", "/internal/v1/presentation", {"presentation": self._v2_presentation()}
         )
         self.assertEqual(code, 409)
         self.assertEqual(rejected["error"]["code"], "result_contract_mismatch")
 
-    def test_v1_presentation_schema_is_rejected_for_a_v2_run(self):
+    def test_v2_presentation_with_legacy_details_field_is_rejected(self):
         self._pin_v2()
-        legacy_presentation = json.dumps({
-            "schema_version": 1,
-            "speak": "Old result",
-            "card": {"title": "Old", "lines": ["Retired"]},
-            "details_md": "old details",
-        }, separators=(",", ":"))
+        v2_with_legacy_details = json.loads(self._v2_presentation())
+        v2_with_legacy_details["details_md"] = "legacy field"
+        v2_with_legacy_details = json.dumps(v2_with_legacy_details, separators=(",", ":"))
         code, rejected, _ = self._writer(
-            "POST", "/internal/v1/presentation", {"presentation": legacy_presentation}
+            "POST", "/internal/v1/presentation", {"presentation": v2_with_legacy_details}
         )
         self.assertEqual(code, 422)
         self.assertEqual(rejected["error"]["code"], "presentation_invalid")
         import hermes_plugin as plugin
-        self.assertFalse(plugin._valid_presentation(json.loads(legacy_presentation)))
+        self.assertFalse(plugin._valid_presentation(json.loads(v2_with_legacy_details)))
 
     def test_v2_report_commit_preserves_ref_and_failed_writer_is_not_none(self):
         self._pin_v2()
