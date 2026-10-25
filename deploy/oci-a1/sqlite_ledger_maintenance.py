@@ -10,10 +10,15 @@ from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import os
+import re
 import sqlite3
 import sys
 
-EXPECTED_LEDGER_SCHEMA_VERSION = 9
+SUPPORTED_LEDGER_SCHEMA_VERSIONS = {8, 9}
+TASK_KIND_VALUES_BY_SCHEMA = {
+    8: ("research", "compare", "summarize"),
+    9: ("research", "compare", "summarize", "agent"),
+}
 REQUIRED_LEDGER_COLUMNS = {
     "slow_tasks": {"task_id", "status", "created_at", "stop_requested_at", "manual_reconciled_at", "result_contract_version"},
     "dispatch_outbox": {"task_id", "state"},
@@ -48,15 +53,28 @@ def _assert_integrity(connection: sqlite3.Connection) -> None:
 
 
 def _assert_ledger_schema(connection: sqlite3.Connection) -> None:
-    # Keep this version synchronized with relay.task_store.SCHEMA_VERSION without
-    # importing the Relay package into this standalone offline utility.
+    # Keep supported versions synchronized with relay.task_store.SCHEMA_VERSION
+    # without importing the Relay package into this standalone offline utility.
     version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-    if version != EXPECTED_LEDGER_SCHEMA_VERSION:
+    if version not in SUPPORTED_LEDGER_SCHEMA_VERSIONS:
         raise ValueError("SQLite Ledger schema version mismatch")
     for table, required_columns in REQUIRED_LEDGER_COLUMNS.items():
         columns = {str(row[1]) for row in connection.execute(f'PRAGMA table_info("{table}")')}
         if not required_columns.issubset(columns):
             raise ValueError("SQLite Ledger schema is incomplete")
+    task_schema = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='slow_tasks'"
+    ).fetchone()
+    if task_schema is None or not isinstance(task_schema[0], str):
+        raise ValueError("SQLite Ledger schema is incomplete")
+    check = re.search(
+        r"task_kind\s+text\s+not\s+null\s+check\s*\(\s*task_kind\s+in\s*\(([^)]*)\)\s*\)",
+        task_schema[0],
+        re.IGNORECASE,
+    )
+    values = tuple(re.findall(r"'([^']+)'", check.group(1))) if check else ()
+    if values != TASK_KIND_VALUES_BY_SCHEMA[version]:
+        raise ValueError("SQLite Ledger task_kind constraint mismatch")
 
 
 def backup(source: Path, destination: Path) -> None:
@@ -72,6 +90,7 @@ def backup(source: Path, destination: Path) -> None:
     os.close(fd)
     try:
         with closing(_connect_readonly(source)) as src, closing(sqlite3.connect(destination)) as dst:
+            _assert_integrity(src)
             src.backup(dst, pages=128, sleep=0.05)
             _assert_integrity(dst)
             dst.commit()

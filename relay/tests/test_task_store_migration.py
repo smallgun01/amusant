@@ -2,12 +2,20 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+import importlib.util
 from pathlib import Path
+import shutil
 import sqlite3
 import tempfile
 import unittest
 
 from relay.task_store import AdmissionReceipt, SQLiteTaskStore, TaskAdmissionRequest
+
+MAINTENANCE_SCRIPT = Path(__file__).resolve().parents[2] / "deploy" / "oci-a1" / "sqlite_ledger_maintenance.py"
+maintenance_spec = importlib.util.spec_from_file_location("oci_ledger_maintenance", MAINTENANCE_SCRIPT)
+assert maintenance_spec and maintenance_spec.loader
+maintenance = importlib.util.module_from_spec(maintenance_spec)
+maintenance_spec.loader.exec_module(maintenance)
 
 NOW = datetime(2026, 10, 25, 8, 0, tzinfo=timezone.utc)
 ACTIVE_TASK_ID = "4db5aabc-284a-4a01-8a6d-5cddcc7934f1"
@@ -198,8 +206,19 @@ class TaskStoreMigrationTests(unittest.TestCase):
             connection.commit()
             connection.close()
 
-            store = SQLiteTaskStore(database_path=path, max_pending_tasks=8)
-            connection = sqlite3.connect(path)
+            backup_path = Path(temp_dir) / "pre-v9-backup.sqlite3"
+            maintenance.backup(path, backup_path)
+            maintenance.verify(path)
+            maintenance.verify(backup_path)
+            with sqlite3.connect(backup_path) as backup_connection:
+                self.assertEqual(backup_connection.execute("PRAGMA user_version").fetchone()[0], 8)
+                self.assertEqual(backup_connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+            restored_path = Path(temp_dir) / "isolated-restore.sqlite3"
+            shutil.copyfile(backup_path, restored_path)
+            store = SQLiteTaskStore(database_path=restored_path, max_pending_tasks=8)
+            maintenance.verify(restored_path)
+            connection = sqlite3.connect(restored_path)
             self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 9)
             schema = connection.execute(
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name='slow_tasks'"
@@ -238,11 +257,27 @@ class TaskStoreMigrationTests(unittest.TestCase):
             self.assertEqual(store.admit(replay), AdmissionReceipt(task_id=ACTIVE_TASK_ID, duplicate=True))
             replay_terminal = replace(terminal, task_id=REPLAY_TASK_ID, task_kind="agent")
             self.assertEqual(store.admit(replay_terminal), AdmissionReceipt(task_id=TERMINAL_TASK_ID, duplicate=True))
-            connection = sqlite3.connect(path)
+            maintenance.verify(restored_path)
+            connection = sqlite3.connect(restored_path)
             self.assertEqual(connection.execute(
                 "SELECT task_kind,payload_sha256 FROM slow_tasks WHERE task_id=?", (ACTIVE_TASK_ID,)
             ).fetchone(), ("research", active.fingerprint()))
+            self.assertEqual(connection.execute(
+                "SELECT speak,artifact_status,artifact_ref,presentation_status,delivery_error "
+                "FROM task_results WHERE task_id=?", (TERMINAL_TASK_ID,)
+            ).fetchone(), ("Historical bounded result.", "committed", "art_historicalartifactreference123",
+                           "failed", "presentation_failed"))
+            self.assertEqual(connection.execute(
+                "SELECT delivery_state FROM task_inbox WHERE task_id=?", (TERMINAL_TASK_ID,)
+            ).fetchone(), ("spoken",))
+            self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
             connection.close()
+            maintenance.verify(backup_path)
+            with sqlite3.connect(backup_path) as backup_connection:
+                self.assertEqual(backup_connection.execute("PRAGMA user_version").fetchone()[0], 8)
+            maintenance.verify(path)
+            with sqlite3.connect(path) as source_connection:
+                self.assertEqual(source_connection.execute("PRAGMA user_version").fetchone()[0], 8)
 
             generic = _request(
                 task_id=GENERIC_TASK_ID,

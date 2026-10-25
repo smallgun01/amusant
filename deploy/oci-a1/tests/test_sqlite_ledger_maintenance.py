@@ -170,6 +170,7 @@ class LedgerMaintenanceTests(unittest.TestCase):
         fixtures = (
             ("empty.sqlite3", ""),
             ("unrelated.sqlite3", "CREATE TABLE unrelated (value TEXT)"),
+            ("incomplete-v8.sqlite3", "PRAGMA user_version=8; CREATE TABLE slow_tasks (task_id TEXT)"),
             ("incomplete-v9.sqlite3", "PRAGMA user_version=9; CREATE TABLE slow_tasks (task_id TEXT)"),
         )
         for filename, setup_sql in fixtures:
@@ -184,6 +185,13 @@ class LedgerMaintenanceTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     maintenance.backup(source, destination)
                 self.assertFalse(destination.exists())
+
+    def test_schema_version_must_match_the_task_kind_constraint(self) -> None:
+        with closing(sqlite3.connect(self.source)) as db:
+            db.execute("PRAGMA user_version=8")
+            db.commit()
+        with self.assertRaisesRegex(ValueError, "task_kind constraint"):
+            maintenance.verify(self.source)
 
     def test_reject_missing_or_symlink_source(self) -> None:
         with self.assertRaises(ValueError):
