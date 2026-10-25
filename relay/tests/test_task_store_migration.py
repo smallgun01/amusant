@@ -291,8 +291,8 @@ class TaskStoreMigrationTests(unittest.TestCase):
                 executor_kind="hermes_runs",
             )
             self.assertFalse(store.admit(generic).duplicate)
-            reopened = SQLiteTaskStore(database_path=path, max_pending_tasks=8)
-            connection = sqlite3.connect(path)
+            reopened = SQLiteTaskStore(database_path=restored_path, max_pending_tasks=8)
+            connection = sqlite3.connect(restored_path)
             self.assertEqual(connection.execute(
                 "SELECT task_kind FROM slow_tasks WHERE task_id=?", (GENERIC_TASK_ID,)
             ).fetchone(), ("agent",))
