@@ -46,6 +46,12 @@ def _parser() -> argparse.ArgumentParser:
     _add_db(readback)
     readback.add_argument("--task-id", required=True)
 
+    recover = commands.add_parser(
+        "recover", help="mark a crashed Routine send unknown after its local sender process exits"
+    )
+    _add_db(recover)
+    recover.add_argument("--task-id", required=True)
+
     close = commands.add_parser("close", help="manually close a local experiment task")
     _add_db(close)
     close.add_argument("--task-id", required=True)
@@ -109,6 +115,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             _emit(store.list_tasks())
         elif args.command == "readback":
             _emit(store.readback(args.task_id))
+        elif args.command == "recover":
+            _emit(store.recover_submission(args.task_id))
         elif args.command == "close":
             store.close_task(args.task_id, args.reason)
             _emit({"task_id": args.task_id, "closed": True, "native_state": "unknown"})

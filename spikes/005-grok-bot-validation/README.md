@@ -1,6 +1,6 @@
 # Grok Bot validation spike (G2 offline-only)
 
-This isolated spike validates one bounded result path without changing Relay, Facade, Hermes, production data, CI, or PR #120. The applicable stage gate and Owner-reported evidence are in [`grok-bot-validation-v0.3.md`](../../docs/project-management/grok-bot-validation-v0.3.md); unmodified contract and security requirements remain in [v0.2](../../docs/project-management/grok-bot-validation-v0.2.md).
+This isolated spike validates one bounded result path without changing Relay, Facade, Hermes, production data, or PR #120. The existing offline CI job runs this spike with its own locked dependencies. The applicable stage gate and Owner-reported evidence are in [`grok-bot-validation-v0.3.md`](../../docs/project-management/grok-bot-validation-v0.3.md); unmodified contract and security requirements remain in [v0.2](../../docs/project-management/grok-bot-validation-v0.2.md).
 
 G1 is Owner-reported as four PASS cases and accepted. This code is only G2 offline evidence. It does not establish Grok account access, a real Routine run, a deployed Remote MCP/OAuth endpoint, native Run completion, or a Relay integration. G3 remains unstarted and requires its own environment, permissions, limits, and Owner review.
 
@@ -44,6 +44,8 @@ $env:GROK_PILOT_RESULT_TOKEN = $prepared.result_token
 & $pilot list --db $db
 & $pilot readback --db $db --task-id $taskId
 & $pilot evidence --db $db
+# Optional after a sender crash and after verifying its PID has exited:
+# & $pilot recover --db $db --task-id $taskId
 & $pilot close --db $db --task-id $taskId --reason 'Owner review complete'
 & $pilot revoke --db $db --task-id $taskId
 Remove-Item Env:GROK_PILOT_RESULT_TOKEN
@@ -56,7 +58,9 @@ The future one-shot Routine POST is implemented behind `--live`; it requires an 
 grok-pilot submit --db <private G3 database> --task-id <new G3 task id> --routine-url https://owner-provided.example/routine --live
 ```
 
-**Do not run that `--live` command as part of G2.** It is documented for a later, separately authorized G3 only. It performs at most one POST, disables redirects, has no automatic retry, and preserves `acceptance_unknown` after timeout, crash, or redirect. A second send attempt is refused. This code has not been validated against a real Grok Routine contract or endpoint.
+**Do not run that `--live` command as part of G2.** It is documented for a later, separately authorized G3 only. It performs at most one POST, disables redirects, has no automatic retry, and preserves `acceptance_unknown` after timeout or redirect. If the sender process crashes while the durable state is `sending`, opening the store leaves that state unchanged. After confirming the recorded sender process has exited, an operator may explicitly run `grok-pilot recover --db <private database> --task-id <task id>`; this only changes the state to `acceptance_unknown` and never sends again. Active or unverifiable sender PIDs fail closed. A second send attempt is refused. This code has not been validated against a real Grok Routine contract or endpoint.
+
+On POSIX systems, the database directory must be a real directory with mode `0700`; the database, WAL, SHM, and journal files are protected with mode `0600`. Existing databases or parent directories with broader access are refused instead of silently accepted. On Windows, use the current user's private `%LOCALAPPDATA%` directory; the database inherits its Windows ACL, which this G2 code does not inspect. Windows ACL verification remains a separate review item.
 
 ## Ubuntu setup and CLI
 
@@ -81,6 +85,8 @@ export GROK_PILOT_RESULT_TOKEN="$(python3 -c 'import json,sys; print(json.load(s
 "$pilot" list --db "$db"
 "$pilot" readback --db "$db" --task-id "$task_id"
 "$pilot" evidence --db "$db"
+# Optional after a sender crash and after verifying its PID has exited:
+# "$pilot" recover --db "$db" --task-id "$task_id"
 "$pilot" close --db "$db" --task-id "$task_id" --reason 'Owner review complete'
 "$pilot" revoke --db "$db" --task-id "$task_id"
 unset GROK_PILOT_RESULT_TOKEN

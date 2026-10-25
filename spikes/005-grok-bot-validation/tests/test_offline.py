@@ -6,7 +6,11 @@ import hashlib
 import io
 import json
 import logging
+import os
 import socket
+import stat
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 from typing import Any
@@ -34,6 +38,8 @@ _previous_logging_disable = logging.root.manager.disable
 logging.disable(logging.CRITICAL)
 TEST_TMP_ROOT = Path(__file__).resolve().parents[1] / ".test-tmp"
 TEST_TMP_ROOT.mkdir(parents=True, exist_ok=True)
+if os.name != "nt":
+    TEST_TMP_ROOT.chmod(0o700)
 
 
 def temporary_database_path() -> Path:
@@ -196,9 +202,27 @@ class OfflineStoreTests(unittest.TestCase):
         self.assertIsNone(self.store.readback(self.task_id)["receipt_id"])
 
     def test_crash_after_sending_becomes_unknown_and_cannot_resend(self):
-        self.store.begin_submission(self.task_id)
+        child_script = (
+            "import os, sys; "
+            "from grok_pilot.store import PilotStore; "
+            "PilotStore(sys.argv[1]).begin_submission(sys.argv[2]); "
+            "os._exit(17)"
+        )
+        crashed = subprocess.run(
+            [sys.executable, "-c", child_script, str(self.db), self.task_id],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(crashed.returncode, 17, crashed.stderr)
         restarted = PilotStore(self.db)
-        self.assertEqual(restarted.get_task(self.task_id)["submission_state"], "acceptance_unknown")
+        self.assertEqual(restarted.get_task(self.task_id)["submission_state"], "sending")
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            result_code = cli_main(["recover", "--db", str(self.db), "--task-id", self.task_id])
+        self.assertEqual(result_code, 0)
+        recovered = json.loads(stdout.getvalue())
+        self.assertEqual(recovered["submission_state"], "acceptance_unknown")
         attempts = 0
 
         def handler(request: httpx2.Request) -> httpx2.Response:
@@ -216,6 +240,50 @@ class OfflineStoreTests(unittest.TestCase):
                 transport=httpx2.MockTransport(handler),
             )
         self.assertEqual(attempts, 0)
+
+    def test_successful_submit_once_allows_observers_and_keeps_early_receipt(self):
+        attempts = 0
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            nonlocal attempts
+            attempts += 1
+            self.assertEqual(request.method, "POST")
+            observer = PilotStore(self.db)
+            self.assertEqual(observer.get_task(self.task_id)["submission_state"], "sending")
+            with self.assertRaises(InvalidTransition):
+                observer.recover_submission(self.task_id)
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                self.assertEqual(cli_main(["list", "--db", str(self.db)]), 0)
+            self.assertEqual(json.loads(stdout.getvalue())[0]["submission_state"], "sending")
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                self.assertEqual(
+                    cli_main(["readback", "--db", str(self.db), "--task-id", self.task_id]), 0
+                )
+            self.assertEqual(json.loads(stdout.getvalue())["submission_state"], "sending")
+
+            receipt = observer.submit_report(
+                OWNER_ID, validate_report(report_for(self.task_id, self.token))
+            )
+            self.assertFalse(receipt.duplicate)
+            return httpx2.Response(200)
+
+        state = submit_once(
+            self.store,
+            self.task_id,
+            self.token,
+            "https://routine.example.invalid/hook",
+            "offline-routine-key",
+            transport=httpx2.MockTransport(handler),
+        )
+        self.assertEqual(attempts, 1)
+        self.assertEqual(state, "accepted")
+        result = PilotStore(self.db).readback(self.task_id)
+        self.assertEqual(result["submission_state"], "accepted")
+        self.assertIsNotNone(result["receipt_id"])
+        self.assertEqual(result["native_state"], "unknown")
 
     def test_early_result_survives_later_webhook_acceptance(self):
         self.store.begin_submission(self.task_id)
@@ -254,6 +322,51 @@ class OfflineStoreTests(unittest.TestCase):
                 transport=httpx2.MockTransport(handler),
             )
         self.assertEqual(attempts, 1)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX file modes are not available on Windows")
+    def test_private_sqlite_directory_database_and_sidecar_modes(self):
+        connection = self.store._connect()
+        observer = None
+        try:
+            observer = self.store._connect()
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "UPDATE tasks SET close_reason='permission-check' WHERE task_id=?", (self.task_id,)
+            )
+            self.store._secure_sqlite_artifacts()
+            self.assertEqual(stat.S_IMODE(self.db.parent.stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(self.db.stat().st_mode), 0o600)
+            for suffix in ("-wal", "-shm"):
+                sidecar = Path(f"{self.db}{suffix}")
+                self.assertTrue(sidecar.exists())
+                self.assertEqual(stat.S_IMODE(sidecar.stat().st_mode), 0o600)
+        finally:
+            connection.rollback()
+            connection.close()
+            if observer is not None:
+                observer.close()
+            self.store._secure_sqlite_artifacts()
+
+    @unittest.skipUnless(os.name == "posix", "POSIX file modes are not available on Windows")
+    def test_insecure_existing_storage_is_refused(self):
+        unsafe_parent = TEST_TMP_ROOT / f"unsafe-{uuid4().hex}"
+        unsafe_parent.mkdir(mode=0o755)
+        unsafe_parent.chmod(0o755)
+        try:
+            with self.assertRaisesRegex(StoreError, "parent must have POSIX mode 0700"):
+                PilotStore(unsafe_parent / "pilot.sqlite3")
+        finally:
+            unsafe_parent.rmdir()
+
+        unsafe_db = TEST_TMP_ROOT / f"unsafe-{uuid4().hex}.sqlite3"
+        unsafe_db.write_bytes(b"existing database placeholder")
+        unsafe_db.chmod(0o644)
+        try:
+            with self.assertRaisesRegex(StoreError, "existing SQLite database must have POSIX mode 0600"):
+                PilotStore(unsafe_db)
+            self.assertEqual(stat.S_IMODE(unsafe_db.stat().st_mode), 0o644)
+        finally:
+            unsafe_db.unlink()
 
 
 class McpGoldenPathTests(unittest.IsolatedAsyncioTestCase):
@@ -363,8 +476,18 @@ class McpGoldenPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.fixture_runs, 1)
 
     async def test_mcp_tool_errors_do_not_create_receipts(self):
-        with self.assertRaises(Exception):
-            await self._call_submit(self.report, bearer="incorrect-owner-bearer")
+        async with httpx2.AsyncClient(follow_redirects=False, trust_env=False) as client:
+            unauthorized = await client.post(
+                self.mcp_url,
+                content=b"{}",
+                headers={
+                    "Authorization": "Bearer incorrect-owner-bearer",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream",
+                },
+            )
+        self.assertEqual(unauthorized.status_code, 401)
+        self.assertIsNone(PilotStore(self.db).readback(self.task_id)["receipt_id"])
 
         malformed = {**self.report, "result_token": "incorrect-capability"}
         _, denied = await self._call_submit(malformed)

@@ -79,6 +79,7 @@ def submit_once(
     try:
         store.finish_submission(task_id, state)
     except StoreError:
-        # The durable sending marker will become acceptance_unknown on next open.
+        # Keep the durable sending marker. An operator may explicitly recover it
+        # after the recorded sender process has exited; opening a store is read-only.
         raise
     return state

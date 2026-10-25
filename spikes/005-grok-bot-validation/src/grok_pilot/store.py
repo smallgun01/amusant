@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import hmac
 import json
+import os
 import secrets
 import sqlite3
+import stat
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -37,6 +40,24 @@ class InvalidTransition(StoreError):
     pass
 
 
+def pid_is_alive(pid: int) -> bool:
+    """Return false only when the OS confirms that a local process is absent."""
+    if pid <= 0:
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError as exc:
+        if exc.errno == errno.ESRCH or getattr(exc, "winerror", None) in {87, 1168}:
+            return False
+        # Unknown errors and access restrictions fail closed: do not recover/resend.
+        return True
+    return True
+
+
 @dataclass(frozen=True)
 class Receipt:
     receipt_id: str
@@ -48,17 +69,81 @@ class Receipt:
 
 class PilotStore:
     def __init__(self, path: str | Path):
-        self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path = Path(path).expanduser().absolute()
+        self._prepare_private_storage()
         self._initialize()
+
+    def _prepare_private_storage(self) -> None:
+        try:
+            if os.name == "nt":
+                # Windows inherits the current user's ACL; deployment guidance requires
+                # a per-user LocalAppData directory and a separate ACL review for G3.
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                return
+
+            parent = self.path.parent
+            parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if parent.is_symlink() or not parent.is_dir():
+                raise StoreError("SQLite parent must be a private real directory")
+            parent_mode = stat.S_IMODE(parent.stat().st_mode)
+            if parent_mode & 0o077 or parent_mode & 0o700 != 0o700:
+                raise StoreError("SQLite parent must have POSIX mode 0700")
+
+            self._secure_existing_file(self.path, required_mode=0o600, reject_broad_mode=True)
+            for suffix in ("-wal", "-shm", "-journal"):
+                self._secure_existing_file(Path(f"{self.path}{suffix}"), required_mode=0o600)
+        except StoreError:
+            raise
+        except OSError as exc:
+            raise StoreError("could not create private SQLite storage") from exc
+
+    @staticmethod
+    def _secure_existing_file(path: Path, *, required_mode: int, reject_broad_mode: bool = False) -> None:
+        try:
+            details = path.lstat()
+        except FileNotFoundError:
+            if reject_broad_mode:
+                descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR, required_mode)
+                os.close(descriptor)
+                details = path.lstat()
+            else:
+                return
+        if stat.S_ISLNK(details.st_mode) or not stat.S_ISREG(details.st_mode):
+            raise StoreError("SQLite files and sidecars must be regular files")
+        current_mode = stat.S_IMODE(details.st_mode)
+        if reject_broad_mode and (current_mode & 0o077 or current_mode & required_mode != required_mode):
+            raise StoreError("existing SQLite database must have POSIX mode 0600")
+        if not reject_broad_mode and current_mode & 0o077:
+            os.chmod(path, required_mode)
+        final_mode = stat.S_IMODE(path.lstat().st_mode)
+        if final_mode != required_mode:
+            os.chmod(path, required_mode)
+            final_mode = stat.S_IMODE(path.lstat().st_mode)
+        if final_mode != required_mode:
+            raise StoreError("could not enforce private SQLite file mode")
+
+    def _secure_sqlite_artifacts(self) -> None:
+        if os.name == "nt":
+            return
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            self._secure_existing_file(
+                Path(f"{self.path}{suffix}"),
+                required_mode=0o600,
+                reject_broad_mode=(suffix == ""),
+            )
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=5.0)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA journal_mode = WAL")
-        connection.execute("PRAGMA synchronous = FULL")
-        return connection
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute("PRAGMA journal_mode = WAL")
+            connection.execute("PRAGMA synchronous = FULL")
+            self._secure_sqlite_artifacts()
+            return connection
+        except BaseException:
+            connection.close()
+            raise
 
     @contextmanager
     def _connection(self):
@@ -67,7 +152,10 @@ class PilotStore:
             with connection:
                 yield connection
         finally:
-            connection.close()
+            try:
+                self._secure_sqlite_artifacts()
+            finally:
+                connection.close()
 
     def _initialize(self) -> None:
         try:
@@ -83,6 +171,7 @@ class PilotStore:
                         token_revoked INTEGER NOT NULL DEFAULT 0 CHECK(token_revoked IN (0, 1)),
                         submission_state TEXT NOT NULL CHECK(submission_state IN
                             ('prepared', 'sending', 'accepted', 'rejected', 'acceptance_unknown')),
+                        sender_pid INTEGER,
                         native_state TEXT NOT NULL DEFAULT 'unknown' CHECK(native_state = 'unknown'),
                         created_at TEXT NOT NULL,
                         closed_at TEXT,
@@ -99,10 +188,9 @@ class PilotStore:
                     CREATE INDEX IF NOT EXISTS tasks_created_at_idx ON tasks(created_at);
                     """
                 )
-                # A crash after durable 'sending' is ambiguous. Never silently resend.
-                connection.execute(
-                    "UPDATE tasks SET submission_state='acceptance_unknown' WHERE submission_state='sending'"
-                )
+                columns = {row["name"] for row in connection.execute("PRAGMA table_info(tasks)")}
+                if "sender_pid" not in columns:
+                    connection.execute("ALTER TABLE tasks ADD COLUMN sender_pid INTEGER")
         except sqlite3.Error as exc:
             raise StoreError("could not initialize pilot database") from exc
 
@@ -181,7 +269,10 @@ class PilotStore:
             and hmac.compare_digest(row["result_token_sha256"], self._token_hash(token))
         )
 
-    def begin_submission(self, task_id: str) -> dict[str, Any]:
+    def begin_submission(self, task_id: str, *, sender_pid: int | None = None) -> dict[str, Any]:
+        sender_pid = os.getpid() if sender_pid is None else sender_pid
+        if sender_pid <= 0:
+            raise ValueError("sender_pid must be a positive process id")
         try:
             with self._connection() as connection:
                 connection.execute("BEGIN IMMEDIATE")
@@ -193,13 +284,45 @@ class PilotStore:
                 if row["submission_state"] != "prepared":
                     raise InvalidTransition("task is not in prepared state; no resend is allowed")
                 connection.execute(
-                    "UPDATE tasks SET submission_state='sending' WHERE task_id=?", (task_id,)
+                    "UPDATE tasks SET submission_state='sending', sender_pid=? WHERE task_id=?",
+                    (sender_pid, task_id),
                 )
                 connection.commit()
         except StoreError:
             raise
         except sqlite3.Error as exc:
             raise StoreError("could not persist sending state") from exc
+        return self.get_task(task_id)
+
+    def recover_submission(self, task_id: str) -> dict[str, Any]:
+        """Explicitly mark a crashed send unknown, only after its recorded PID is gone."""
+        try:
+            with self._connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                row = connection.execute(
+                    "SELECT submission_state, sender_pid FROM tasks WHERE task_id=?", (task_id,)
+                ).fetchone()
+                if row is None:
+                    raise NotFound("task not found")
+                if row["submission_state"] != "sending":
+                    raise InvalidTransition("task is not in sending state")
+                sender_pid = row["sender_pid"]
+                if sender_pid is None:
+                    raise InvalidTransition("sender identity is missing; recovery refused")
+                if pid_is_alive(int(sender_pid)):
+                    raise InvalidTransition("sender process is still present; recovery refused")
+                changed = connection.execute(
+                    """UPDATE tasks SET submission_state='acceptance_unknown', sender_pid=NULL
+                       WHERE task_id=? AND submission_state='sending' AND sender_pid=?""",
+                    (task_id, sender_pid),
+                ).rowcount
+                if changed != 1:
+                    raise InvalidTransition("task changed during recovery")
+                connection.commit()
+        except StoreError:
+            raise
+        except sqlite3.Error as exc:
+            raise StoreError("could not recover sending state") from exc
         return self.get_task(task_id)
 
     def finish_submission(self, task_id: str, state: str) -> None:
@@ -209,7 +332,8 @@ class PilotStore:
             with self._connection() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 changed = connection.execute(
-                    "UPDATE tasks SET submission_state=? WHERE task_id=? AND submission_state='sending'",
+                    """UPDATE tasks SET submission_state=?, sender_pid=NULL
+                       WHERE task_id=? AND submission_state='sending'""",
                     (state, task_id),
                 ).rowcount
                 if changed != 1:

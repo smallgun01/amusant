@@ -84,13 +84,20 @@ jobs:
         uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
-          cache-dependency-glob: uv.lock
+          cache-dependency-glob: |
+            uv.lock
+            spikes/005-grok-bot-validation/uv.lock
 
       - name: Install Python 3.13
         run: uv python install 3.13
 
       - name: Install locked dependencies (hardware Opus + moto)
         run: uv sync --locked --python 3.13 --extra hardware-opus --group dev
+
+      - name: Grok G2 offline regression (isolated locked dependencies)
+        run: |
+          uv sync --locked --python 3.13 --project spikes/005-grok-bot-validation
+          uv run --locked --python 3.13 --project spikes/005-grok-bot-validation python -m unittest discover -s spikes/005-grok-bot-validation/tests -v
 
       - name: Fast Voice offline tests
         run: uv run --locked --python 3.13 --extra hardware-opus --group dev python -m unittest discover -s fast_voice/tests -v
