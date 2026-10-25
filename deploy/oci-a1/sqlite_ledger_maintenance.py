@@ -13,7 +13,7 @@ import os
 import sqlite3
 import sys
 
-EXPECTED_LEDGER_SCHEMA_VERSION = 8
+EXPECTED_LEDGER_SCHEMA_VERSION = 9
 REQUIRED_LEDGER_COLUMNS = {
     "slow_tasks": {"task_id", "status", "created_at", "stop_requested_at", "manual_reconciled_at", "result_contract_version"},
     "dispatch_outbox": {"task_id", "state"},
