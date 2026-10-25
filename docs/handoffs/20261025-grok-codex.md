@@ -2,26 +2,27 @@
 
 日期：2026-10-25（Asia/Taipei）
 對象：Codex Desktop（Windows 11 開發環境）
-搭配文件：docs/project-management/grok-bot-validation-v0.2.md
-狀態：可轉交工作單；v0.2 已納入 Zongzhu／Grok Gadgets／Groki mandatory references；本文件未觸發實作、PR 或部署。
+搭配文件：docs/project-management/grok-bot-validation-v0.3.md（未變更契約沿用 v0.2）
+狀態：Grok-C0 已接受；Owner 已授權 Codex Grok-C1／G2 offline-only。G1 為 Owner-reported 4/4 PASS；G0 不再是 G1/G2/G3 隔離驗證前置。G3 live 與 G4 仍受各自 gate 限制。
 
 ## 1. 任務目標與目前可開始的工作
 
 用最小實驗驗證 Grok Bot 能否承接 Amusant 一般委派，回報短結果，並把完整成果留在原生 App 接續。Agent 能力與權限留在原生產品；不做每工具一個 Relay adapter。
 
-收到這份工作單後先完成 Grok-C0：唯讀現況核對與狹窄 file plan。維持 Owner 的先完成既有 E2E、再擴大新功能實作順序。
+本工作單保留已接受的 Grok-C0 source map；當前工作是獨立分支上的 Grok-C1／G2 offline-only spike。G1/G2 隔離驗證不等待 Hermes G0 實體閉環。
 
-Grok-C1 的 repo/offline 實作須同時具備：
+Grok-C1 的 repo/offline 實作依據：
 
-- 既有 OCI 實體閉環的 G0 PASS 證據。
-- Grok 原生產品 G1 有用、值得接線的結論。
-- Owner 已轉交並指示啟動 Grok-C1／G2 的 repo/offline 範圍。
+- G1 有用且值得接線；目前 Owner-reported G1-01…G1-04 均 PASS，overall ACCEPTED。
+- Owner 已明確授權 Grok-C1／G2 repo/offline 範圍（本次已授權）。
 
 之後在這個範圍內持續完成，不逐次要求確認。這不授權 live provider、帳號連接、公開 endpoint、OCI 操作或 merge。
 
-## 2. Grok-C0：現在先交 source map 與最小方案
+## 2. Grok-C0 accepted baseline and current source
 
-讀本地適用的 AGENTS.md／repo 指引，以及最新版：
+Grok-C0 review is **ACCEPTED**. The accepted source map, PR #120 overlap, Remote HTTPS MCP/OAuth primary, fallback boundary, external references, and risk test plan remain the baseline for C1. The list below records those C0 references; it is not a request to restart C0.
+
+Reviewed repository references:
 
 - SPEC.md、docs/adr/0004-owner-managed-hermes.md。
 - docs/handoffs/20261025-codex.md、20261025-openclaw.md、協調索引。
@@ -29,23 +30,17 @@ Grok-C1 的 repo/offline 實作須同時具備：
 - relay/application.py、slow_path.py、dispatcher.py、task_store.py、hermes_result.py。
 - .github/workflows/ci.yml。
 
-外部 mandatory references（以最新 main 讀 source，不抄 README 結論）：
+External references included in the accepted C0 source map:
 
 - `Liu-zhongxian/zongzhu-bot`：`docs/GUIDE.md`、`xiaozhi-esp32-server/main/xiaozhi-server/core/handle/grokBotHandle.py`、`grokBotReply.py`。重點：accepted/unknown、per-task callback token、atomic/write-once result、late reply、approval hint。
 - `adidshaft/grok-gadgets` + `adidshaft/grok-gadgets-gateway`：`docs/getting-started/connect-grok-bot.md`、`docs/public/support-matrix.md`、gateway `README.md`、`docs/architecture.md`。重點：Remote HTTPS MCP + OAuth、owner-run tunnel、tool/device port 分離、command status／no blind resend、evidence boundary。
 - `JosssphZhou/groki-bot`：`docs/architecture.md`、`gateway/GBOT_VOICE_VALIDATION.md`、`gateway/scripts/gbot_voice_session_bridge.mjs`。重點：async completion、stale/replay filtering、result ≠ new user authorization。其 desktop credential/internal API 路徑只做風險研究，**不得實作進 Amusant spike**。
 
-本提案 snapshot：main 73397323412e9c27c6caacc5adbbd1a2b5dd9962；#116／#118／#119 merged；#120 OPEN Draft，generic delegate_task 與 SQLite v9 已在該 PR 實作。開工時更新狀態，不重複 generic delegation、task kind 或 migration 工作。
+最新核對 source：main `33b65627175efd70b3cb8063f9d4fe091f81ff20`；#116／#118／#119 merged；#120 OPEN Draft（C2 generic delegation 與 SQLite v9 在該 PR）。不要重複 generic delegation、task kind 或 migration 工作；使用獨立 Grok branch，不覆蓋其他 worktree。
 
 既有 Hermes C2 工作與 review 不因本單自動取消。先標明已進行的分支與 overlap；不要覆蓋未提交工作，不把 Grok 改動混入 #120。
 
-Grok-C0 交付：
-
-1. source SHA、現有 PR 狀態及實作 gate 是否已有證據。
-2. 一頁 file plan／dependency plan，分清已存在檔案與擬新增檔案。
-3. **Primary 固定為 Remote HTTPS MCP/OAuth** 的 transport/security plan；列出 Zongzhu 式 per-task HTTPS callback 何種 blocker 下才啟用為 fallback。
-4. 三個 external reference 的 reusable pattern／不可照搬部分對照表，並列出五至十項核心測試對應風險。
-5. READY FOR G2 WHEN GATES PASS 或具體 BLOCKED；此階段不寫 runtime／開新 PR。
+Grok-C0 was accepted as a read-only review. Its source SHA, existing PR state, file/dependency plan, primary transport and conditional fallback, external-reference comparison, risk tests, and overlap boundary are carried forward. Current implementation authorization is only the isolated Grok-C1/G2 scope below.
 
 ## 3. Grok-C1／G2：最小離線 spike
 
@@ -61,7 +56,7 @@ spikes/005-grok-bot-validation/
   .gitignore
 ~~~
 
-路徑尚未建立；若同類 spike 已存在，沿用而非再開一份。模組數以可理解為準，不為此建立 framework。MCP 使用受維護 SDK 並鎖版；不要更新 production dependencies。
+This branch creates the spike at the planned path. If another branch has a same-purpose spike, reconcile before merging. Keep the module count understandable, use a maintained pinned MCP SDK, and do not update production dependencies.
 
 只提供：
 
@@ -73,6 +68,10 @@ spikes/005-grok-bot-validation/
 - 一份供 OpenClaw 使用的真實 CLI／設定／rollback 操作說明，優先描述 owner-run Remote MCP endpoint + OAuth；fallback HTTP callback 只描述 gate／contract，除非 primary 已證明 blocked。
 
 G2 不使用真實 endpoint／credential／模型。沒有資料庫、key 或 route 時預設不進行 network submission。所有測試狀態存暫存目錄。
+
+### 必要 Golden Path
+
+透過實際 MCP SDK 協定驗證：Prepare → Mock Webhook → `submit_result` → SQLite durable receipt → CLI readback。Mock Routine 的業務 fixture 執行一次；相同結果重播／MCP ACK 遺失重試與 CLI readback 都不得第二次 POST Webhook 或再次執行 fixture。重播相同報告須回同一 receipt；不同報告須 conflict。重新開啟 SQLite 後仍讀回同一 receipt，native state 保持 unknown。
 
 ## 3.1 v0.2 transport decision
 
@@ -172,12 +171,11 @@ PR 說明依序交代：要降低哪個整合不確定性、這個 spike 能證�
 
 ~~~text
 Verdict:
-  Grok-C0 READY FOR G2 WHEN GATES PASS / BLOCKED
-  或 Grok-C1 READY FOR REVIEW / BLOCKED
+  Grok-C1 READY FOR REVIEW / BLOCKED
 
 Source:
   main / branch / commit / PR
-  #120 狀態、G0/G1 證據參照
+  #120 狀態、v0.3 stage gate 與 Owner-reported G1 evidence 參照
 
 Scope:
   已變更路徑、明確未涉及的 production 邊界

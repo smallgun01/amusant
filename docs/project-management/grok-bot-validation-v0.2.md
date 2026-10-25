@@ -1,9 +1,11 @@
 # Amusant Grok Bot 驗證提案 v0.2
 
+> 階段依存與 Owner G1 驗收已由 [v0.3 更新](grok-bot-validation-v0.3.md) 覆蓋。v0.2 仍是未被 v0.3 明確替換之契約、傳輸、安全與測試範圍的基準。
+
 日期：2026-10-25（Asia/Taipei）
 Owner：Arthur
 用途：判斷託管 Grok Bot 是否值得成為 Amusant 主要 Agent 後端。
-狀態：設計與可轉交工作單；v0.2 已納入三個公開 Grok Bot 硬體整合案例；尚未執行 Amusant Grok 實測、實作、PR、部署或權限變更。
+狀態（v0.2 基準時）：設計與可轉交工作單；v0.2 已納入三個公開 Grok Bot 硬體整合案例；當時尚未執行 Amusant Grok 實測、實作、PR、部署或權限變更。後續狀態以 v0.3 與本 handoff 更新為準。
 
 ## 1. 決策與產品假設
 
