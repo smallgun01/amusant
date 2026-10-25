@@ -1,12 +1,12 @@
-# Grok Bot validation spike (G2 offline-only)
+# Grok Bot validation spike (G2 baseline, G3-P1 offline-only)
 
 This isolated spike validates one bounded result path without changing Relay, Facade, Hermes, production data, or PR #120. The existing offline CI job runs this spike with its own locked dependencies. The applicable stage gate and Owner-reported evidence are in [`grok-bot-validation-v0.3.md`](../../docs/project-management/grok-bot-validation-v0.3.md); unmodified contract and security requirements remain in [v0.2](../../docs/project-management/grok-bot-validation-v0.2.md).
 
-G1 is Owner-reported as four PASS cases and accepted. This code is only G2 offline evidence. It does not establish Grok account access, a real Routine run, a deployed Remote MCP/OAuth endpoint, native Run completion, or a Relay integration. G3 remains unstarted and requires its own environment, permissions, limits, and Owner review.
+G1 is Owner-reported as four PASS cases and accepted. The merged G2 spike remains the result-contract and SQLite receipt baseline. This branch adds only the G3-P1 offline callback adapter, TTL handling, and local tests. It does not establish Grok account access, a real Routine run, a deployed callback or Remote MCP/OAuth endpoint, native Run completion, or a Relay integration. G3-P2 live work remains unstarted and requires its own environment, permissions, limits, and Owner review.
 
 ## Scope and flow
 
-The spike contains a bounded report validator, an independent SQLite store, a dry-run-by-default CLI, a single MCP SDK `submit_result` tool, a one-shot HTTPS Routine Webhook client gated by `--live`, a redacted evidence summary, and focused offline tests.
+The spike contains a bounded report validator, one independent SQLite store, a dry-run-by-default CLI, a single MCP SDK `submit_result` tool, a one-shot HTTPS Routine Webhook client gated by `--live`, a single-route ASGI callback adapter, a redacted evidence summary, and focused offline tests.
 
 The Golden Path in `tests/test_offline.py` runs this sequence on ephemeral loopback ports and a temporary SQLite file:
 
@@ -18,7 +18,21 @@ The Golden Path in `tests/test_offline.py` runs this sequence on ephemeral loopb
 6. Reopen SQLite and use the actual CLI `readback` command. It returns the same receipt, while native state remains `unknown`.
 7. Restart the MCP service with a newly opened store and replay once more. The same receipt returns and the business fixture still has one execution.
 
-No test contacts xAI, Grok, Cursor, a Routine endpoint, or an external MCP server. The MCP verifier used by this local test is a fixed fake Owner token, not OAuth and not suitable for deployment. Remote HTTPS MCP/OAuth remains the G3 primary. The per-task HTTPS callback fallback is not implemented as a live route.
+No test contacts xAI, Grok, Cursor, a real Routine endpoint, or an external MCP server. The MCP verifier used by the G2 test is a fixed fake Owner token, not OAuth and not suitable for deployment.
+
+## G3-P1 callback adapter (offline only)
+
+The offline ASGI adapter accepts exactly `POST /callback/results`. It maps every accepted task to the locally configured canonical Owner, accepts a token-free JSON report plus the task-scoped capability in `Authorization: Bearer`, and uses the existing `PilotStore.submit_report` transaction and immutable receipt. It creates no second task ledger. A receipt ACK is returned only after SQLite commits.
+
+`grok-pilot prepare` has an optional `--result-token-ttl-seconds` value with no default. Callback tasks require an explicit finite TTL from 1 through 86,400 seconds; legacy G2 rows without an expiry fail closed for callback submission. Revoked or expired capabilities are checked inside the same `BEGIN IMMEDIATE` transaction before both first insert and duplicate handling. Previously committed receipts remain available to CLI readback after expiry or revocation.
+
+The adapter bounds request bodies at 16 KiB, requires JSON and one Bearer header, rejects query strings and duplicate JSON keys, checks an exact configured Host allowlist, ignores forwarded headers, and caps concurrent requests per ASGI app instance at a required 1–32 setting. The ASGI factory does not start a listener. Tests use in-process ASGI transports and temporary SQLite only. No public listener, proxy, tunnel, TLS endpoint, Routine, OAuth flow, or provider is configured or started.
+
+The Owner selected Callback-first as the **validation order**, not as a final architecture decision. Remote HTTPS MCP/OAuth remains an independent, gated candidate (conditional Plan B in this validation sequence); it is neither implemented here nor declared obsolete. This offline PR does not prove that Grok can reach a callback or that a Routine can deliver the per-task capability privately. A task-scoped capability may be visible in the Bot's execution context; an Authorization header does not make it secret from the Bot. Long-lived Owner or ingress credentials must not enter prompts or task payloads. Those delivery and exposure details require separate G3-P2 observation and approval.
+
+The callback Golden Path in `tests/test_callback.py` is **Prepare → Mock Webhook → `POST /callback/results` → SQLite durable receipt → CLI readback**. It replays only the same callback result to model a lost acknowledgement; it asserts exactly one Mock Webhook POST and one fixture execution, with `native_state=unknown`.
+
+If a future public URL differs from `/callback/results`, the separately reviewed reverse-proxy rule must map that public route explicitly to this exact path, preserve the Authorization header, enforce HTTPS and Host policy, and redact credentials from logs. No proxy mapping is selected or enabled by this PR.
 
 ## Windows setup and CLI
 
@@ -52,13 +66,13 @@ Remove-Item Env:GROK_PILOT_RESULT_TOKEN
 Remove-Variable prepared
 ```
 
-The future one-shot Routine POST is implemented behind `--live`; it requires an HTTPS URL and both private environment values. The Routine ingress credential is separate from the per-task result token. After a separately authorized G3 GO, the syntax would be:
+The future one-shot Routine POST is implemented behind `--live`; it requires an HTTPS URL and both private environment values. The Routine ingress credential is separate from the per-task result token. Only after a separately authorized G3-P2 live GO, the syntax would be:
 
 ```text
 grok-pilot submit --db <private G3 database> --task-id <new G3 task id> --routine-url https://owner-provided.example/routine --live
 ```
 
-**Do not run that `--live` command as part of G2.** It is documented for a later, separately authorized G3 only. It performs at most one POST, disables redirects, has no automatic retry, and preserves `acceptance_unknown` after timeout or redirect. If the sender process crashes while the durable state is `sending`, opening the store leaves that state unchanged. After confirming the recorded sender process has exited, an operator may explicitly run `grok-pilot recover --db <private database> --task-id <task id>`; this only changes the state to `acceptance_unknown` and never sends again. Active or unverifiable sender PIDs fail closed. A second send attempt is refused. This code has not been validated against a real Grok Routine contract or endpoint.
+**Do not run that `--live` command as part of G2 or this G3-P1 offline task.** It is documented for a later, separately authorized G3-P2 live stage. It performs at most one POST, disables redirects, has no automatic retry, and preserves `acceptance_unknown` after timeout or redirect. If the sender process crashes while the durable state is `sending`, opening the store leaves that state unchanged. After confirming the recorded sender process has exited, an operator may explicitly run `grok-pilot recover --db <private database> --task-id <task id>`; this only changes the state to `acceptance_unknown` and never sends again. Active or unverifiable sender PIDs fail closed. A second send attempt is refused. This code has not been validated against a real Grok Routine contract or endpoint.
 
 On POSIX systems, the database directory must be a real directory with mode `0700`; the database, WAL, SHM, and journal files are protected with mode `0600`. Existing databases or parent directories with broader access are refused instead of silently accepted. On Windows, use the current user's private `%LOCALAPPDATA%` directory; the database inherits its Windows ACL, which this G2 code does not inspect. Windows ACL verification remains a separate review item.
 
@@ -93,7 +107,7 @@ unset GROK_PILOT_RESULT_TOKEN
 unset prepared
 ```
 
-Only after a separate G3 GO, an operator could provide `GROK_PILOT_ROUTINE_BEARER_TOKEN` and `GROK_PILOT_RESULT_TOKEN` through a private process environment/secret manager, then use the syntax above with a new G3 task. Do not put either credential in command arguments or the database.
+Only after a separate G3-P2 live GO, an operator could provide `GROK_PILOT_ROUTINE_BEARER_TOKEN` and `GROK_PILOT_RESULT_TOKEN` through a private process environment/secret manager, then use the syntax above with a new G3 task. Do not put either credential in command arguments or the database.
 
 ## Local verification
 
@@ -112,4 +126,4 @@ The spike does not create a listener by itself and has no background process. Th
 
 ## Future handoff boundary
 
-G3 would need an independently reviewed HTTPS host reachable by the platform connector, Remote MCP/OAuth with the smallest Owner scope, explicit limits and cases, credential revocation, and rollback. The static Owner verifier in this spike is test-only. Do not expose it through a tunnel or public interface. Do not deploy this spike or call the Routine endpoint without a separate G3 authorization. G4 still requires Hermes physical G0 evidence plus relevant G3 evidence under v0.3.
+G3-P2 would need a separately selected non-production host and independently reviewed HTTPS route, capability delivery, limits, retention, revocation, and rollback. Callback reachability and Routine-context behavior are **NOT TESTED** by this offline work. Remote MCP/OAuth remains independently gated and requires its own exact Owner scope and test evidence if selected. The static Owner verifier in the MCP G2 test is test-only. Do not expose it through a tunnel or public interface. Do not deploy this spike or call the Routine endpoint without a separate G3-P2 authorization. G4 still requires Hermes physical G0 evidence plus relevant G3 evidence under v0.3.

@@ -12,12 +12,14 @@ import sqlite3
 import stat
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from .contract import SCHEMA_VERSION, ValidatedReport, validate_routine_payload
+
+MAX_RESULT_TOKEN_TTL_SECONDS = 86_400
 
 
 class StoreError(RuntimeError):
@@ -68,8 +70,9 @@ class Receipt:
 
 
 class PilotStore:
-    def __init__(self, path: str | Path):
+    def __init__(self, path: str | Path, *, clock: Callable[[], datetime] | None = None):
         self.path = Path(path).expanduser().absolute()
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._prepare_private_storage()
         self._initialize()
 
@@ -174,6 +177,7 @@ class PilotStore:
                         sender_pid INTEGER,
                         native_state TEXT NOT NULL DEFAULT 'unknown' CHECK(native_state = 'unknown'),
                         created_at TEXT NOT NULL,
+                        result_token_expires_at TEXT,
                         closed_at TEXT,
                         close_reason TEXT
                     );
@@ -191,18 +195,52 @@ class PilotStore:
                 columns = {row["name"] for row in connection.execute("PRAGMA table_info(tasks)")}
                 if "sender_pid" not in columns:
                     connection.execute("ALTER TABLE tasks ADD COLUMN sender_pid INTEGER")
+                if "result_token_expires_at" not in columns:
+                    connection.execute("ALTER TABLE tasks ADD COLUMN result_token_expires_at TEXT")
         except sqlite3.Error as exc:
             raise StoreError("could not initialize pilot database") from exc
 
+    def _now_datetime(self) -> datetime:
+        current = self._clock()
+        if current.tzinfo is None or current.utcoffset() is None:
+            raise ValueError("store clock must return a timezone-aware datetime")
+        return current.astimezone(timezone.utc).replace(microsecond=0)
+
     @staticmethod
-    def _now() -> str:
-        return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    def _format_datetime(value: datetime) -> str:
+        return value.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+    def _now(self) -> str:
+        return self._format_datetime(self._now_datetime())
+
+    @staticmethod
+    def _parse_expiry(value: str) -> datetime:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except (TypeError, ValueError) as exc:
+            raise Unauthorized("task result capability expiry is invalid") from exc
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise Unauthorized("task result capability expiry is invalid")
+        return parsed.astimezone(timezone.utc).replace(microsecond=0)
 
     @staticmethod
     def _token_hash(token: str) -> str:
         return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
-    def prepare(self, owner_id: str, label: str, instruction: str) -> tuple[str, str]:
+    def prepare(
+        self,
+        owner_id: str,
+        label: str,
+        instruction: str,
+        *,
+        result_token_ttl_seconds: int | None = None,
+    ) -> tuple[str, str]:
+        if result_token_ttl_seconds is not None and (
+            isinstance(result_token_ttl_seconds, bool)
+            or not isinstance(result_token_ttl_seconds, int)
+            or not 1 <= result_token_ttl_seconds <= MAX_RESULT_TOKEN_TTL_SECONDS
+        ):
+            raise ValueError(f"result token TTL must be 1..{MAX_RESULT_TOKEN_TTL_SECONDS} seconds")
         task_id = str(uuid4())
         token = secrets.token_urlsafe(32)
         validate_routine_payload(
@@ -214,13 +252,27 @@ class PilotStore:
                 "instruction": instruction,
             }
         )
+        created_at = self._now_datetime()
+        expires_at = (
+            self._format_datetime(created_at + timedelta(seconds=result_token_ttl_seconds))
+            if result_token_ttl_seconds is not None
+            else None
+        )
         try:
             with self._connection() as connection:
                 connection.execute(
                     """INSERT INTO tasks(task_id, owner_id, task_label, instruction,
-                       result_token_sha256, submission_state, created_at)
-                       VALUES(?, ?, ?, ?, ?, 'prepared', ?)""",
-                    (task_id, owner_id, label, instruction, self._token_hash(token), self._now()),
+                       result_token_sha256, submission_state, created_at, result_token_expires_at)
+                       VALUES(?, ?, ?, ?, ?, 'prepared', ?, ?)""",
+                    (
+                        task_id,
+                        owner_id,
+                        label,
+                        instruction,
+                        self._token_hash(token),
+                        self._format_datetime(created_at),
+                        expires_at,
+                    ),
                 )
         except sqlite3.Error as exc:
             raise StoreError("could not prepare task") from exc
@@ -231,7 +283,7 @@ class PilotStore:
             with self._connection() as connection:
                 row = connection.execute(
                     """SELECT task_id, owner_id, task_label, instruction, submission_state,
-                       native_state, created_at, closed_at, close_reason, token_revoked
+                       native_state, created_at, result_token_expires_at, closed_at, close_reason, token_revoked
                        FROM tasks WHERE task_id=?""",
                     (task_id,),
                 ).fetchone()
@@ -258,16 +310,25 @@ class PilotStore:
         try:
             with self._connection() as connection:
                 row = connection.execute(
-                    "SELECT result_token_sha256, token_revoked FROM tasks WHERE task_id=?", (task_id,)
+                    "SELECT result_token_sha256, token_revoked, result_token_expires_at FROM tasks WHERE task_id=?",
+                    (task_id,),
                 ).fetchone()
         except sqlite3.Error as exc:
             raise StoreError("could not verify task capability") from exc
-        return bool(
+        token_valid = bool(
             row
             and not row["token_revoked"]
             and row["result_token_sha256"]
             and hmac.compare_digest(row["result_token_sha256"], self._token_hash(token))
         )
+        if not token_valid:
+            return False
+        if row["result_token_expires_at"] is None:
+            return True
+        try:
+            return self._now_datetime() < self._parse_expiry(row["result_token_expires_at"])
+        except (Unauthorized, ValueError):
+            return False
 
     def begin_submission(self, task_id: str, *, sender_pid: int | None = None) -> dict[str, Any]:
         sender_pid = os.getpid() if sender_pid is None else sender_pid
@@ -347,13 +408,19 @@ class PilotStore:
     def mark_acceptance_unknown(self, task_id: str) -> None:
         self.finish_submission(task_id, "acceptance_unknown")
 
-    def submit_report(self, owner_id: str, validated: ValidatedReport) -> Receipt:
-        """Atomically commit first report and receipt before any caller can ACK."""
+    def submit_report(
+        self,
+        owner_id: str,
+        validated: ValidatedReport,
+        *,
+        require_token_expiry: bool = False,
+    ) -> Receipt:
+        """Atomically validate Owner/capability/expiry and commit one immutable receipt."""
         try:
             with self._connection() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 task = connection.execute(
-                    """SELECT owner_id, result_token_sha256, token_revoked, closed_at
+                    """SELECT owner_id, result_token_sha256, token_revoked, result_token_expires_at, closed_at
                        FROM tasks WHERE task_id=?""",
                     (validated.task_id,),
                 ).fetchone()
@@ -365,6 +432,13 @@ class PilotStore:
                     raise Unauthorized("task result capability is no longer valid")
                 if not hmac.compare_digest(task["result_token_sha256"], self._token_hash(validated.result_token)):
                     raise Unauthorized("invalid task result capability")
+
+                expires_at = task["result_token_expires_at"]
+                if require_token_expiry and expires_at is None:
+                    raise Unauthorized("task result capability has no expiry")
+                current_time = self._now_datetime()
+                if expires_at is not None and current_time >= self._parse_expiry(expires_at):
+                    raise Unauthorized("task result capability has expired")
 
                 current = connection.execute(
                     "SELECT receipt_id, digest, received_at, late FROM receipts WHERE task_id=?",
@@ -379,7 +453,7 @@ class PilotStore:
                     )
 
                 receipt_id = f"rcpt_{uuid4().hex}"
-                received_at = self._now()
+                received_at = self._format_datetime(current_time)
                 late = task["closed_at"] is not None
                 connection.execute(
                     """INSERT INTO receipts(task_id, receipt_id, digest, report_json, received_at, late)
@@ -398,7 +472,7 @@ class PilotStore:
             with self._connection() as connection:
                 row = connection.execute(
                     """SELECT t.task_id, t.task_label, t.submission_state, t.native_state,
-                       t.created_at, t.closed_at, t.close_reason,
+                       t.created_at, t.result_token_expires_at, t.closed_at, t.close_reason,
                        r.receipt_id, r.received_at, r.late, r.report_json
                        FROM tasks AS t LEFT JOIN receipts AS r USING(task_id) WHERE t.task_id=?""",
                     (task_id,),

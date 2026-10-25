@@ -14,12 +14,14 @@ source = { editable = "." }
 dependencies = [
     { name = "httpx2" },
     { name = "mcp" },
+    { name = "starlette" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "httpx2", specifier = ">=2.10.0,<3" },
     { name = "mcp", specifier = "==2.3.0" },
+    { name = "starlette", specifier = "==1.10.0" },
 ]
 
 [[package]]

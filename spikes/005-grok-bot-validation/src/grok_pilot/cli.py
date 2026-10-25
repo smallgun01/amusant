@@ -10,7 +10,7 @@ from typing import Sequence
 
 from .contract import MAX_INSTRUCTION_CHARS, MAX_LABEL_CHARS
 from .routine import RoutineSendError, submit_once
-from .store import PilotStore, StoreError
+from .store import MAX_RESULT_TOKEN_TTL_SECONDS, PilotStore, StoreError
 
 DEFAULT_OWNER_ID = "offline-owner"
 
@@ -32,6 +32,11 @@ def _parser() -> argparse.ArgumentParser:
     prepare.add_argument("--label", required=True)
     prepare.add_argument("--instruction", required=True)
     prepare.add_argument("--owner-id", default=DEFAULT_OWNER_ID)
+    prepare.add_argument(
+        "--result-token-ttl-seconds",
+        type=int,
+        help=f"optional finite result capability TTL (1..{MAX_RESULT_TOKEN_TTL_SECONDS}); no default",
+    )
 
     submit = commands.add_parser("submit", help="preview by default; POST only with explicit --live")
     _add_db(submit)
@@ -75,16 +80,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise ValueError("label length must be 1..80 characters")
             if not 1 <= len(args.instruction) <= MAX_INSTRUCTION_CHARS:
                 raise ValueError("instruction length must be 1..4096 characters")
-            task_id, result_token = store.prepare(args.owner_id, args.label, args.instruction)
+            task_id, result_token = store.prepare(
+                args.owner_id,
+                args.label,
+                args.instruction,
+                result_token_ttl_seconds=args.result_token_ttl_seconds,
+            )
             # The capability is printed once for the operator to place in a private environment.
-            _emit({
+            prepared = {
                 "task_id": task_id,
                 "task_label": args.label,
                 "submission_state": "prepared",
                 "result_token": result_token,
                 "token_storage": "sha256 only in SQLite",
                 "native_state": "unknown",
-            })
+            }
+            if args.result_token_ttl_seconds is not None:
+                prepared["result_token_expires_at"] = store.get_task(task_id)["result_token_expires_at"]
+            _emit(prepared)
         elif args.command == "submit":
             task = store.get_task(args.task_id)
             if not args.live:
