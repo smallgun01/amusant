@@ -34,6 +34,7 @@ def submit_once(
     routine_url: str,
     routine_bearer_token: str,
     *,
+    callback_mode: bool = False,
     transport: httpx2.BaseTransport | None = None,
 ) -> str:
     """Persist sending, make one POST with redirects disabled, and record uncertainty."""
@@ -43,6 +44,8 @@ def submit_once(
     task = store.get_task(task_id)
     if task["submission_state"] != "prepared":
         raise InvalidTransition("task is not in prepared state; no resend is allowed")
+    if callback_mode and task["result_token_expires_at"] is None:
+        raise RoutineSendError("callback mode requires an explicit finite result-token TTL")
     if not store.has_task_token(task_id, result_token):
         raise Unauthorized("invalid task result capability")
     payload = {
@@ -54,7 +57,11 @@ def submit_once(
     }
     if len(task["instruction"]) > MAX_INSTRUCTION_CHARS or len(task["task_label"]) > MAX_LABEL_CHARS:
         raise RoutineSendError("prepared task exceeds the Routine payload limits")
-    store.begin_submission(task_id)
+    store.begin_submission(
+        task_id,
+        result_token=result_token if callback_mode else None,
+        require_result_token_expiry=callback_mode,
+    )
     try:
         # httpx2 has no implicit POST retries; follow_redirects=False prevents 307/308 replay.
         with httpx2.Client(
