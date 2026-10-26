@@ -60,3 +60,9 @@ PR #117's implementation direction and earlier review GO are superseded by this 
 #105 retains universal bounded results and separate authenticated content retrieval, but not its old trusted-document-intent admission requirement. #101 retains reproducible bootstrap and preserve-on-update, but must not establish Amusant as Owner of an exhaustive Agent tool profile. Follow [PLAN](../../PLAN.md) and the [handoff index](../handoffs/20261025-owner-managed-hermes.md).
 
 The Owner has settled this responsibility decision. Agents need not reopen it before every change; they must identify genuine implementation gaps and preserve explicit live-operation authorization.
+
+## 2026-10-27 candidate replacement evaluation — not an ADR reversal
+
+The Owner is separately evaluating Grok Bot as a **managed replacement** for Hermes's SLOW Agent role, not as a Hermes tool. G3 product/callback evidence is recorded at [#123](https://github.com/smallgun01/amusant/issues/123#issuecomment-6419151666); [G4 #127](https://github.com/smallgun01/amusant/issues/127) presently authorizes design and existing-access read-only planning. The Hermes-selected design in this ADR and SPEC v0.6 remains controlling for active/deployed work until a **separate accepted backend-selection/cutover ADR or equivalent explicit Owner decision**. No automatic two-Agent chain, permanent double stack, OAuth/Ingress rollout, new schema or runtime switch is approved by this note.
+
+Retain the general responsibility boundary (Amusant owns device, FAST, authenticated admission/delivery; selected native Agent product owns tools, credentials, approvals and full artifacts). Future Grok design must separately resolve Callback receipt versus native Run termination, absent verified native Stop, Single-flight/Owner abandon, historical TaskStore data and rollback. G0 physical Hermes baseline still gates G4 live/device acceptance. See [G4 agent handoff](../handoffs/20261027-grok-g4-agents.md).
