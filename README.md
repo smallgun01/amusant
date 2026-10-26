@@ -23,14 +23,15 @@ The selected hosting remains one OCI A1 host with four isolated services: Relay,
 
 ## Current implementation and evidence
 
-Runtime source baseline: `685db3bf5a48017b0a535354ec4efc64e89dc972`, after [#116](https://github.com/smallgun01/amusant/pull/116). **New Hermes Runs are v2-only; Artifacts are optional.** A merged source revision does not identify the deployed OCI bundle.
+Source snapshot (2026-10-26): [`main@a74cfb5`](https://github.com/smallgun01/amusant/commit/a74cfb5b90a2116df624b6d5445d571c2118768d), including merged reliability [#118](https://github.com/smallgun01/amusant/pull/118), generic delegation [#120](https://github.com/smallgun01/amusant/pull/120) and isolated Grok spike [#125](https://github.com/smallgun01/amusant/pull/125). **New Hermes Runs are v2-only; Artifacts are optional.** This source snapshot does not identify the deployed OCI bundle, database version or physical acceptance.
 
 | Area | Recorded evidence | Remaining boundary |
 | --- | --- | --- |
 | Device / FAST | Local FAST and BLE/QR owner tests; OCI tunneled FAST functional evidence | Formal latency/battery, W2a and permanent ingress remain separate gates |
 | Backend pipeline | Native Runs, Task Ledger/Inbox, private Facade, bounded v2, offline integration; dated GO 2 backend functional evidence | Latest deployed images/plugin/config and full physical Slow result readback require matching evidence |
-| General Agent integration | Owner-managed architecture accepted | Research-oriented delegation interface still needs neutralization; native management access is not yet accepted |
-| Reliability | Existing recovery/single-flight code; [#118](https://github.com/smallgun01/amusant/pull/118) is a separate unmerged candidate at this snapshot | Its review findings and execution-versus-delivery semantics must be resolved |
+| General Agent integration | Tool-agnostic `delegate_task` source merged in #120 (SQLite v9 and compatibility tests) | Actual OCI bundle, Hermes-native Owner access and real authorized tool use still require separate acceptance |
+| Reliability | [#118](https://github.com/smallgun01/amusant/pull/118) merged after deadline/Cancel recovery review and offline regressions | No new deployed/physical STOP, billing, restart or E4 PASS is inferred |
+| Isolated Grok candidate | G1 Owner-reported 4/4 accepted; G2 [#122](https://github.com/smallgun01/amusant/pull/122) offline CI accepted; G3-P1 [#125](https://github.com/smallgun01/amusant/pull/125) source merged | [#123](https://github.com/smallgun01/amusant/issues/123) G3-P2 setup/live gates remain open; this is not a replacement for the Hermes product path |
 
 [STATUS.md](STATUS.md) separates source, offline tests, deployment, physical acceptance, and native management. Preserve the [2026-10-22/23 live record](docs/oci-go2-go3-live-evidence-20261022.md); do not erase earlier functional evidence or invent a new PASS.
 
@@ -46,8 +47,8 @@ Runtime source baseline: `685db3bf5a48017b0a535354ec4efc64e89dc972`, after [#116
 
 Read [SPEC](SPEC.md) for requirements, [ADR-0004](docs/adr/0004-owner-managed-hermes.md) for the responsibility decision, [ADR-0003](docs/adr/0003-oci-a1-hermes-sqlite.md) for hosting/isolation, [PLAN](PLAN.md) and [WS index](docs/project-management/workstreams.md) for sequence, and [STATUS](STATUS.md) for evidence.
 
-The [handoff index](docs/handoffs/20261025-owner-managed-hermes.md) contains separate **Codex** and **OpenClaw** work orders for the Owner to forward. This documentation PR does not execute those orders, merge runtime PRs, change OCI, or authorize paid calls.
+The [2026-10-25 handoff index](docs/handoffs/20261025-owner-managed-hermes.md) preserves the original Codex/OpenClaw work orders; C1/C2 in those dated orders have since merged. Use [PLAN](PLAN.md) for the current queue, including [#124](https://github.com/smallgun01/amusant/pull/124) release readiness and [#123](https://github.com/smallgun01/amusant/issues/123) isolated G3. Documentation changes do not deploy, alter host privileges or authorize paid/live tests.
 
-[#117](https://github.com/smallgun01/amusant/pull/117)'s transcript-derived Artifact admission policy is **superseded by the Owner decision and must not be implemented or merged**. The GitHub PR lifecycle is tracked separately; a document is not evidence that a PR was closed.
+[#117](https://github.com/smallgun01/amusant/pull/117)'s transcript-derived Artifact admission policy is **superseded**; the PR was **closed without merge** on 2026-10-25. Its historical discussion is retained; do not revive its classifier or mandatory-Artifact policy.
 
 Kai is a pinned interoperability reference (`1681fb3c11acd28525d8987bba4b9bf4bc2a288f`); Muse Charm is a category/UX benchmark, not a compatibility promise. [FAST](fast_voice/README.md) · [Relay](relay/README.md) · [OCI package](deploy/oci-a1/README.md) · [Historical evidence index](docs/history/20261025-documentation-baseline.md).

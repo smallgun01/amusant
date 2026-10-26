@@ -1,20 +1,21 @@
 # Amusant — Execution plan after the Owner-managed Hermes decision
 
-Updated 2026-10-25. [SPEC](SPEC.md) and [ADR-0004](docs/adr/0004-owner-managed-hermes.md) govern scope. This plan assigns follow-up work; it is not evidence that the work ran or permission to deploy. Runtime source baseline is #116 at `685db3b`.
+Reconciled 2026-10-26. [SPEC](SPEC.md) and [ADR-0004](docs/adr/0004-owner-managed-hermes.md) govern scope. This plan assigns follow-up work; it is not evidence that the work ran or permission to deploy. Source baseline is `main@a74cfb5` after merged #118/#120/#122/#125; deployed OCI is not inferred.
 
 ## Work sequence and owners
 
 | Order | Owner / lane | Deliverable | Gate / handoff |
 | --- | --- | --- | --- |
 | D0 | Documentation / Owner review | Align SPEC, architecture, README, status and agent work orders | Documentation-only PR; no runtime changes |
-| C1 | Codex, WS2 + WS4 | Finish existing #118: deadline bypass, Cancel race, execution-versus-delivery preservation | Deterministic both-store regressions; corrected PR review; required CI on Ready |
+| C1 — merged #118 | Codex, WS2 + WS4 | Recovery/deadline/Cancel fixes merged | Offline evidence; live recovery and STOP remain unaccepted |
 | O1, parallel with C1 | OpenClaw, WS3 + WS4 | Reconcile existing evidence and prepare native Hermes access/change plan | Read-only only within existing explicit access authorization; blocked permissions are reported, not bypassed |
-| C2, after C1 review/landing | Codex, WS2 | One small Draft PR for generic Agent delegation and compatible persistence | No classifier, per-tool routing or implicit permissions; migrations/replay/ACP tests |
+| C2 — merged #120 | Codex, WS2 | Generic delegation and SQLite v9 source merged | Host schema and real tool behavior not yet accepted |
+| Release readiness — #124 open | Codex / Operator | Review SQLite v8→v9 backup, isolated restore and rollback | Ready CI passed; not merged or deployed |
 | O2 | OpenClaw + Owner | Apply an approved native-access/configuration change set using Hermes mechanisms | Separate explicit approval for exact host/config/secrets/restart/network changes |
 | V1 | OpenClaw operates, Owner tests device, Codex fixes proven defects | Verify selected v2 bundle and physical Slow -> Inbox -> spoken loop; native Owner access and one tool-agnostic case | Separate live-test authorization and bounded provider budget; keep evidence categories distinct |
 | Later, only on demonstrated need | Scoped owner | Facade retrieval/export, partial-success presentation or cross-channel continuation | Separate small design/PR; not prerequisites bundled into C1/C2 |
 
-C2 must not edit the same store/executor branch in parallel with C1. Analysis and test design may start earlier; implementation rebases onto the reviewed dependency. O1 may prepare in parallel without deploying an unmerged branch or changing live configuration.
+C1/C2 dependency ordering is now historical: #118 and #120 merged. O1/O2 still require active bundle/schema evidence and separate Owner authorization.
 
 ## Forwardable work orders
 
@@ -28,13 +29,15 @@ The Owner forwards these documents. Creating them does not automatically dispatc
 
 | Tracker | Direction |
 | --- | --- |
-| #117 | Superseded; do not implement/merge its transcript-derived Artifact requirement. Earlier implementation GO no longer applies. Preserve history; PR closure is a separate GitHub action. |
-| #118 / #58 | Continue the existing reliability fix, not a new architecture branch. Resolve both review P1s and preserve trusted execution/result facts. |
-| #105 | Hermes-led generic results remain valid. Do not implement the old trusted-intent classifier. Real capabilities are Hermes-managed; Facade readback remains a separate delivery gap. |
+| #117 | Closed without merge; its Artifact-intent classifier remains superseded. |
+| #118 / #58 | #118 merged; #58 remains open for real recovery/STOP and acceptance, not another offline implementation. |
+| #105 / #120 | Generic delegation merged; #105 remains open for physical delivery, Owner tool-policy validation and separate Facade readback. |
 | #101 | Bootstrap preserves Owner settings and supports native management. Git owns adapter requirements/examples, not an exhaustive Agent tool allowlist. Do not revive a large Doctor/Admin subsystem. |
 | #46 / #62 | Reconcile source/deployed/accepted evidence, then finish the bounded voice loop; no invented or repeated PASS. |
 | #27 | Ingress remains independently reviewed; Telegram long polling does not authorize public Hermes endpoints. |
 | #43 / WS1 | Capability/device backlog remains distinct from the Agent-management baseline; no broad parity mandate. |
+| #121 / #122 / #125 / #123 | Isolated Grok candidate: proposal, G2 offline spike and G3-P1 callback source merged. G3-P2 N100 setup/live remains incomplete; G4 requires Hermes G0 plus G3 evidence. |
+| #124 / #102 | #124 open Ready for SQLite release readiness; #102 open Draft/on hold. Neither is a deployed release. |
 
 Tracker bodies can contain historical requirements. The 2026-10-25 Owner decision governs conflicting scope; agents should link this plan in their follow-up rather than silently claim those trackers were edited or closed.
 
