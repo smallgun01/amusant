@@ -65,3 +65,18 @@ G4 Relay／StickS3 接入仍依賴 G0 與 G3 的相關證據。Grok 原生 App �
 - [v0.2 完整契約與安全範圍](grok-bot-validation-v0.2.md)
 - [Codex handoff](../handoffs/20261025-grok-codex.md)
 - [OpenClaw handoff](../handoffs/20261025-grok-openclaw.md)
+
+## 2026-10-27 Owner acceptance addendum — G3 core pilot evidence and G4 design gate
+
+This dated addendum **supersedes the older 'G3-P2 not started' progress statements above**, but retains v0.2 contract, v0.3 sequencing, credential security, G0-to-G4 physical gate and distinct runtime/approval authority. Owner authorized [G4 design tracker #127](https://github.com/smallgun01/amusant/issues/127) read-only review/planning only. **Grok is a Hermes replacement candidate, never a Hermes tool.**
+
+| Case | Evidence | Verdict and boundary |
+| --- | --- | --- |
+| G3-P2 fixed synthetic | Native Webhook Routine reportedly posted HTTPS result; N100 matched receipt, 23s prepare→receipt | Native synthetic callback PASS; not useful dynamic work |
+| G3-Q1 issue search | 15 open Issues excluding 2 PRs, #123/#105 accurate; 50s; matched durable receipt | Dynamic read-only query PASS; GitHub answer independently checked |
+| G3-Q2 WS2 query | Four open WS2 Issues (#105/#58/#56/#48), same Routine unchanged, 67s; durable receipt | Repeatable different query PASS; independently checked |
+| G3-D1 file + revision | Native Markdown Owner-confirmed; 14-day France itinerary; original short report matched N100 receipt at 104s; same native App file revised and attachment delivered | Document/callback/native continuation PASS by Owner observation; original receipt deliberately immutable |
+
+Four live Webhook POSTs including the fixed synthetic are **reported**. Durations are prepare-to-receipt, **not** pure model execution or statistical reliability. Valid `reported_outcome` and committed callback are not independently verified native Run termination; `native_state=unknown` is correct. Native `box:` workspace locator is only a native reference, **not** an Owner-authenticated download URL or Facade artifact. Actual complete Markdown byte-diff was not independently reviewed. No real device/G4 production flow, native Stop, long-term uptime, callback failure injection, explicit approval case, cost or quota trend has passed.
+
+**Stage verdict:** G1 accepted; G2 accepted; G3 **core product feasibility** met for two factual query cases and native full document with same-work edit. **Conditional GO for G4-D0 read-only architecture**, not permission for G4 runtime edits, OCI public ingress, live tests or G5 Hermes retirement. v0.2 originally proposed Remote HTTPS MCP/OAuth primary; callback-first was a validation order and did not formally retire MCP. G4-D0 must compare routes and ask Owner to choose exactly one managed return transport. Existing Hermes G0 physical Slow→Inbox→spoken still gates G4 live/device acceptance. [#123 evidence](https://github.com/smallgun01/amusant/issues/123#issuecomment-6419151666) · [G4 agent work order](../handoffs/20261027-grok-g4-agents.md).

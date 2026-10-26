@@ -52,3 +52,12 @@ The [2026-10-25 handoff index](docs/handoffs/20261025-owner-managed-hermes.md) p
 [#117](https://github.com/smallgun01/amusant/pull/117)'s transcript-derived Artifact admission policy is **superseded**; the PR was **closed without merge** on 2026-10-25. Its historical discussion is retained; do not revive its classifier or mandatory-Artifact policy.
 
 Kai is a pinned interoperability reference (`1681fb3c11acd28525d8987bba4b9bf4bc2a288f`); Muse Charm is a category/UX benchmark, not a compatibility promise. [FAST](fast_voice/README.md) · [Relay](relay/README.md) · [OCI package](deploy/oci-a1/README.md) · [Historical evidence index](docs/history/20261025-documentation-baseline.md).
+
+## Grok Bot as a candidate **replacement** SLOW backend (G4, 2026-10-27)
+
+The Hermes architecture above remains the **selected/deployed-baseline target**, not a permanent product requirement. The Owner is evaluating **managed Grok Bot as an alternative to Hermes**, not Grok-as-a-Hermes tool. Neither backend is switched in this documentation change.
+
+- [G3 validation #123](https://github.com/smallgun01/amusant/issues/123#issuecomment-6419151666): G1 native 4/4 Owner-accepted; G2 isolated offline spike; one synthetic and three substantive Grok Routine → authenticated HTTPS Callback → durable N100 SQLite receipts. Q1/Q2 independent GitHub answer verification; D1 Markdown file delivered and later revised in the same Grok App work. The original callback remains immutable after native file edits.
+- **Limits:** Grok `reported_outcome` is the Agent's claim, not proven native Run termination; native Run state remains unknown. The native `box:` workspace locator is not an authenticated Amusant download URL. Native Stop, approval, callback failure recovery, production ingress hardening, quotas and G4 device loop are not accepted.
+- [G4 #127](https://github.com/smallgun01/amusant/issues/127) starts **read-only design/evidence work**; proposed path: StickS3 → Gemini Live → Relay generic delegation → **selected Grok backend** → Routine → authenticated result → Relay Inbox → later explicit PTT spoken retrieval. **Do not route through Hermes, auto-fallback, add a second Agent platform or retire Hermes now.**
+- [Grok v0.2](docs/project-management/grok-bot-validation-v0.2.md) remains the product/contract baseline; [v0.3](docs/project-management/grok-bot-validation-v0.3.md) maintains G0 as a G4 live/device gate. [G4 agent handoff](docs/handoffs/20261027-grok-g4-agents.md) captures Codex/OpenClaw boundaries. See [STATUS](STATUS.md) for observed vs unverified evidence.

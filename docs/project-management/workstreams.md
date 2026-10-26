@@ -39,3 +39,9 @@ Keep one major build per affected lane plus scoped reliability remediation. Docu
 ## History
 
 [#87/#90](https://github.com/smallgun01/amusant/pull/90) remain offline integration evidence; [GO 2/3](../oci-go2-go3-live-evidence-20261022.md) remains dated live functional evidence. Legacy WS and AWS snapshots are available through the [immutable history index](../history/20261025-documentation-baseline.md), not competing current requirements.
+
+## 2026-10-27 G4 alternative backend coordination
+
+[Issue #127](https://github.com/smallgun01/amusant/issues/127) is the active G4 **Grok-as-Hermes-replacement** design tracker. WS2/Codex owns a read-only source/lifecycle design and (after independent code GO) a narrow offline adapter. WS3/OpenClaw owns authorized read-only G0 runtime evidence, ingress and operational plan; WS1/Owner owns the eventual physical PTT acceptance; WS4 reviews secret/auth/duplicate/late/backup/rollback semantics. This does **not** turn Grok into a Hermes Skill or require per-tool Relay adapters.
+
+G3 [#123](https://github.com/smallgun01/amusant/issues/123#issuecomment-6419151666) Q1/Q2/D1 and fixed synthetic callback all have Owner-supplied native/SQLite matching evidence; G3-R/A and native Run terminal remain NOT TESTED. The 'G3-P2 incomplete' text in the dated workstream sequence above is superseded for pilot feasibility only. G4 **design GO** is not production/device GO. Hermes G0 physical v2 Slow→Inbox→spoken remains a gating item. Keep source, deployment and physical evidence distinct; do not run expensive CI on a docs-only change. [Agent handoff](../handoffs/20261027-grok-g4-agents.md).
