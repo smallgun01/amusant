@@ -1,29 +1,29 @@
 # Amusant WS1-WS4 — Owner-managed Agent integration
 
-Aligned 2026-10-25 to [SPEC](../../SPEC.md), [ADR-0004](../adr/0004-owner-managed-hermes.md) and retained [OCI architecture](../adr/0003-oci-a1-hermes-sqlite.md). [STATUS](../../STATUS.md) owns evidence. This index assigns work; it does not grant deployment authority.
+Reconciled 2026-10-26 to [SPEC](../../SPEC.md), [ADR-0004](../adr/0004-owner-managed-hermes.md) and retained [OCI architecture](../adr/0003-oci-a1-hermes-sqlite.md). [STATUS](../../STATUS.md) owns evidence. This index assigns work; it does not grant deployment authority.
 
 ## Workstreams
 
 | Lane / tracker | Responsibility | Next scoped work |
 | --- | --- | --- |
 | WS1 / #47 | StickS3, provisioning, FAST speech/display and physical UX | Preserve working FAST/BLE/QR; separate W2a, CJK, latency/battery and ingress acceptance |
-| WS2 / #48 | Generic Hermes task/result integration, not Agent administration | Codex C1 #118, then C2 generic delegation; channel-scoped plugin and truthful outcomes |
-| WS3 / #49 | Deployment compatibility and voice/native access integration | OpenClaw O1 release/evidence inventory, native Owner path proposal; approved O2/V1 only |
-| WS4 / #50 | Persistence, secrets, resources, backup/restore, CI discipline | Both-store recovery regressions; preserve Owner profile; gated host evidence and restore/load work |
+| WS2 / #48 | Generic Hermes task/result integration, not Agent administration | #118 and #120 merged; real Owner-policy, v2 delivery and native tool acceptance remain |
+| WS3 / #49 | Deployment compatibility and voice/native access integration | Active OCI bundle/schema, #124 readiness, #46/#62 physical loop; separate Grok #123 G3 pilot |
+| WS4 / #50 | Persistence, secrets, resources, backup/restore, CI discipline | #118 offline recovery merged; #124 v8→v9 readiness open; live recovery, restore/load and security pending |
 
 ## Coordination
 
 Codex owns repository runtime edits/tests. OpenClaw owns permitted host inspection, change planning and separately authorized operations. Owner supplies credentials through secure native mechanisms, approves merges/live changes and performs device interaction. Review checks scope and evidence; it does not substitute for those approvals.
 
-Use [the handoff index](../handoffs/20261025-owner-managed-hermes.md). C1 and O1 can proceed in parallel. C2 store/executor edits wait for C1 review/landing; do not maintain competing branches that each alter lifecycle or migrations. OpenClaw reports a repo defect to Codex rather than hot-patching the live container.
+Use [the handoff index](../handoffs/20261025-owner-managed-hermes.md). C1 (#118) and C2 (#120) have merged; the earlier sequence is historical. O1/O2 still require active runtime evidence and separate Owner authority. OpenClaw reports a repo defect to Codex rather than hot-patching the live container.
 
 ## Required sequence and limits
 
-1. Land the documentation baseline; do not implement superseded #117.
-2. Resolve #118 review P1s and completed-versus-delivery semantics; keep required CI honest.
-3. Reconcile existing OCI/device evidence and prepare native Hermes access without mutation under O1.
-4. Implement generic delegation offline and prepare a reviewed, compatible release bundle.
-5. With separate Owner authority, verify deployed v2 voice delivery and independent native access; reuse existing evidence where valid.
+1. Preserve merged #118/#120 as source milestones; #117 closed without merge.
+2. Review #124 v8→v9 release readiness and verify the active OCI bundle/schema before any authorized upgrade.
+3. Reconcile existing OCI/device evidence and prepare native Hermes access under O1 read-only limits.
+4. With separate Owner authority, verify deployed v2 Slow→Inbox→new-PTT spoken and independent native access.
+5. Track Grok independently: G1 Owner-reported and G2 offline accepted, #125 G3-P1 merged; #123 G3-P2 setup/live incomplete. G4 still requires Hermes G0.
 
 Do not wait for a catalog of Calendar/Cron/booking adapters. Those capabilities belong to Hermes. Native scheduling/notifications are not new Relay features. Native management is required integration work, not a mandate to implement every upstream capability before the current voice loop can be tested.
 
