@@ -8,11 +8,17 @@ import os
 import sys
 from typing import Sequence
 
+import uvicorn
+
+from .callback import create_callback_app
 from .contract import MAX_INSTRUCTION_CHARS, MAX_LABEL_CHARS
 from .routine import RoutineSendError, submit_once
 from .store import MAX_RESULT_TOKEN_TTL_SECONDS, PilotStore, StoreError
 
 DEFAULT_OWNER_ID = "offline-owner"
+CALLBACK_BIND_HOST = "127.0.0.1"
+MIN_CALLBACK_PORT = 1_024
+MAX_CALLBACK_PORT = 65_535
 
 
 def _emit(value: object) -> None:
@@ -43,6 +49,29 @@ def _parser() -> argparse.ArgumentParser:
     submit.add_argument("--task-id", required=True)
     submit.add_argument("--routine-url", help="Owner-provided HTTPS Routine Webhook URL")
     submit.add_argument("--live", action="store_true", help="make exactly one Routine POST")
+    submit.add_argument(
+        "--callback-mode",
+        action="store_true",
+        help="require a live, finite task result-token TTL before a Routine POST",
+    )
+
+    serve_callback = commands.add_parser(
+        "serve-callback", help="explicitly serve callbacks in the foreground on loopback only"
+    )
+    _add_db(serve_callback)
+    serve_callback.add_argument("--owner-id", required=True, help="fixed canonical Owner mapping")
+    serve_callback.add_argument(
+        "--allowed-host",
+        action="append",
+        required=True,
+        help="exact trusted Hostname or IPv4 literal; repeat for multiple values",
+    )
+    serve_callback.add_argument(
+        "--port", type=int, required=True, help=f"loopback TCP port ({MIN_CALLBACK_PORT}..{MAX_CALLBACK_PORT})"
+    )
+    serve_callback.add_argument(
+        "--max-inflight", type=int, required=True, help="callback concurrency cap (1..32)"
+    )
 
     list_command = commands.add_parser("list", help="list pilot task states without private instructions")
     _add_db(list_command)
@@ -109,6 +138,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "routine_url_set": bool(args.routine_url),
                     "result_token_configured": bool(os.environ.get("GROK_PILOT_RESULT_TOKEN")),
                     "routine_credential_configured": bool(os.environ.get("GROK_PILOT_ROUTINE_BEARER_TOKEN")),
+                    "callback_mode": bool(args.callback_mode),
                     "native_state": task["native_state"],
                 })
             else:
@@ -116,7 +146,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                     raise RoutineSendError("--routine-url is required with --live")
                 result_token = os.environ.get("GROK_PILOT_RESULT_TOKEN", "")
                 routine_token = os.environ.get("GROK_PILOT_ROUTINE_BEARER_TOKEN", "")
-                state = submit_once(store, args.task_id, result_token, args.routine_url, routine_token)
+                state = submit_once(
+                    store,
+                    args.task_id,
+                    result_token,
+                    args.routine_url,
+                    routine_token,
+                    callback_mode=args.callback_mode,
+                )
                 _emit({
                     "task_id": args.task_id,
                     "submission_state": state,
@@ -124,6 +161,35 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "note": "one POST attempted; this command will not retry",
                 })
                 return 0 if state == "accepted" else 3
+        elif args.command == "serve-callback":
+            if not MIN_CALLBACK_PORT <= args.port <= MAX_CALLBACK_PORT:
+                raise ValueError(
+                    f"callback port must be {MIN_CALLBACK_PORT}..{MAX_CALLBACK_PORT}"
+                )
+            app = create_callback_app(
+                store,
+                args.owner_id,
+                trusted_hosts=args.allowed_host,
+                max_inflight=args.max_inflight,
+                expected_port=args.port,
+            )
+            # This explicit command is the only listener entrypoint. It cannot bind
+            # a public interface, follows no forwarded headers, and stays foreground.
+            uvicorn.run(
+                app,
+                host=CALLBACK_BIND_HOST,
+                port=args.port,
+                workers=1,
+                reload=False,
+                access_log=False,
+                proxy_headers=False,
+                server_header=False,
+                date_header=False,
+                timeout_keep_alive=5,
+                # Leave one slot for the app-level limiter to emit its bounded 429.
+                limit_concurrency=args.max_inflight + 1,
+                log_level="warning",
+            )
         elif args.command == "list":
             _emit(store.list_tasks())
         elif args.command == "readback":

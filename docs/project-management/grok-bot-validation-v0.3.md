@@ -26,7 +26,7 @@ Owner 亦接受 OpenClaw Grok-O0。G2 spike 已合併，G2 acceptance 裁決仍�
 | G0 — Hermes 實體 E2E 基線 | 繼續記錄實際 bundle、Slow 結果、Inbox、新 PTT 回讀與通道清空狀態。G0 不再是 G1、G2 或 G3 隔離驗證的必要前置。 |
 | G1 — Grok 原生產品驗證 | Owner-reported 四項 PASS，已接受。 |
 | G2 — 隔離程式與離線驗證 | G2 spike 已合併，作為 G3-P1 的 validator／SQLite receipt baseline；其 acceptance 記錄沿用原 review，不由後續工作重新推定。G2 隔離驗證不等待 Hermes G0。 |
-| G3 — Grok 雙向驗證 | P1 隔離驗證不以 G0 PASS 為前置；目前只授權離線 Callback Adapter、TTL、SQLite 原子驗證與 mock tests。P2 live deployment 仍須另行審查獨立環境、入口、Owner 權限、案例、用量與 rollback，並取得明確啟動授權。 |
+| G3 — Grok 雙向驗證 | P1 隔離驗證不以 G0 PASS 為前置；目前授權離線 Callback Adapter、明確 TTL、SQLite 原子驗證、loopback-only foreground serve-callback entrypoint 與 mock tests。serve command 僅由明確 CLI invocation 啟動，並未在本階段執行。P2 live deployment 仍須另行審查獨立環境、HTTPS proxy／入口、Owner 權限、案例、限流、用量與 rollback，並取得明確啟動授權。 |
 | G4 — Relay／StickS3 接入 | 仍要求既有 G0 實體基線 PASS、相關 G3 成果證據，以及先行核准的 backend identity、通道完成、取消、Single-flight、migration 與 rollback 決策。 |
 | G5 — 路線決策 | Owner 根據產品效益、成本、設定與救援負擔決定。 |
 
@@ -42,15 +42,15 @@ G2 僅使用 loopback、mock transport、假 Owner token 與暫存資料庫。�
 
 ## G3-P1 Callback-first offline scope（2026-10-26）
 
-Owner 已接受 Callback Adapter 設計並明確給予 G3-P1 offline coding GO。此工作以合併的 G2 Spike 為基礎，只修改 `spikes/005-grok-bot-validation/` 與必要設計文件，不修改 production Relay／Facade／Hermes，也不啟動 Routine、公開 listener、Tunnel、OAuth 或真實 Provider。
+Owner 已接受 Callback Adapter 設計並明確給予 G3-P1 offline coding GO。此工作以合併的 G2 Spike 為基礎，只修改 `spikes/005-grok-bot-validation/` 與必要設計文件，不修改 production Relay／Facade／Hermes，也不啟動 Routine、任何 listener、Tunnel、OAuth 或真實 Provider。Spike 提供明確的 `serve-callback` foreground command，但只能 bind `127.0.0.1`；離線測試以 mock runner 驗證設定，沒有執行此 command。
 
-驗證順序先測 callback，是 **feasibility/test order**，不代表最終架構已選定，也不表示 Remote MCP/OAuth 已淘汰。Remote HTTPS MCP/OAuth 保留為獨立 gated candidate／conditional Plan B；後續是否採用須按其本身的 Owner scope 與驗收證據審查。
+先測 callback 是 **validation test order only**，不代表最終產品 route／架構已選定，也不表示 Remote MCP/OAuth 已淘汰。Remote HTTPS MCP/OAuth 保留為獨立 gated candidate／conditional Plan B；後續是否採用須按其本身的 Owner scope 與驗收證據審查。
 
-離線 callback contract 固定為 `POST /callback/results`、token-free JSON body 加 task-scoped `Authorization: Bearer`、固定可信設定的 canonical Owner mapping，並重用 G2 的 `PilotStore`、validator 與不可變 receipt。不得建立第二套 Task Ledger。token TTL 必須由 prepare 明確提供，無預設值，限定 1–86,400 秒；對舊 G2 row 的 NULL expiry，callback fail closed。Owner／hash／revocation／expiry 檢查與首次 insert／duplicate 分支都在同一 SQLite `BEGIN IMMEDIATE` transaction 內。已提交 receipt 在過期或撤銷後仍可 CLI readback。
+離線 callback contract 固定為 `POST /callback/results`、token-free JSON body 加 task-scoped `Authorization: Bearer`、固定可信設定的 canonical Owner mapping，並重用 G2 的 `PilotStore`、validator 與不可變 receipt。不得建立第二套 Task Ledger。token TTL 必須由 prepare 明確提供，無預設值，限定 1–86,400 秒；對舊 G2 row 的 NULL expiry，callback fail closed。Owner／hash／revocation／expiry 檢查與首次 insert／duplicate 分支都在同一 SQLite `BEGIN IMMEDIATE` transaction 內。顯式 `submit --live --callback-mode` 會在 `sending` transition 中再次原子檢查 token、revocation 與未過期 TTL；NULL／過期／撤銷／無效 token 在 HTTP POST 前失敗，原有 G2 live syntax 未指定此 flag 時保持既有相容行為。已提交 receipt 在過期或撤銷後仍可 CLI readback。
 
 Offline Golden Path：**Prepare → Mock Webhook → `POST /callback/results` → SQLite durable receipt → CLI readback**。Mock business fixture 與 Mock Webhook 各執行一次；同報告 callback 重播必須回相同 receipt，不能觸發第二次 webhook 或業務執行。測試使用 ASGI transport、暫存 SQLite 與固定 fixture，不代表公開入口或 Routine reachability 已驗證。
 
-callback app 只接受精確 Host allowlist、POST 路徑、最多 16 KiB JSON body、單一 Bearer header，並使用必填且每個 ASGI app instance 有界的 in-flight cap；ASGI factory 本身不啟動 listener。若未來 public URL 與 `/callback/results` 不同，經審查的 Proxy 規則必須明確映射至此 canonical path，保留 Authorization 並遮蔽 proxy/app logs 中的秘密。現階段未選定 host、route rewrite、TLS、proxy 或 secret-delivery 機制；task-scoped capability 可能可見於 Bot execution context，header 不代表 Bot 看不到。長期 Owner／ingress credentials 不得放入 prompt/task body。這些仍須 G3-P2 Owner review 與 live evidence。
+callback app 只接受精確 Host allowlist 與設定的 service port、POST 路徑、最多 16 KiB JSON body、單一 Bearer header，拒絕 report 中回聲 task capability 的值，並使用必填且每個 ASGI app instance 有界的 in-flight cap；此 cap 是 concurrency bound，不是 request-rate limit。ASGI factory 本身不啟動 listener。HTTP status contract：`200` 表示 SQLite 已提交首次 receipt 或相同內容 replay；`400` request／Host／JSON 錯誤；`401` capability、Owner、expiry 或 revoke 驗證失敗且不區分原因；`404` route 不存在；`405` method 不符；`409` 已有不同 report；`413` body 超過 16 KiB；`415` media type／encoding 不支援；`429` app in-flight capacity 已滿；`503` receipt storage 或 server capacity 暫不可用。Uvicorn access log 與 forwarded-header processing 關閉，serve command 固定 loopback、單 worker、foreground。若未來 public URL 與 `/callback/results` 不同，經獨立審查的 HTTPS reverse proxy 必須明確映射至此 canonical path，將 upstream Host 設為 allowlist 內的值、加入 request-rate limit 與 connect/read/write timeout、剝除不可信 `Forwarded`／`X-Forwarded-*` headers，並端到端保留 Authorization 但不得記錄 credential 或 request body。現階段未選定或啟用公開 host、route rewrite、TLS、proxy 或 secret-delivery 機制；task-scoped capability 可能可見於 Bot execution context，header 不代表 Bot 看不到；exact echo rejection 只是資料衛生，不保證秘密。Routine ability、approval、egress、delivery 與 capability exposure 仍是 NOT TESTED，須 G3-P2 Owner review 與 live evidence。長期 Owner／ingress credentials 不得放入 prompt/task body。
 
 G2 不修改 production Relay、Facade、Hermes、Compose、既有資料庫或 CI live workflow；不重做 PR #120 generic delegation／SQLite v9；不使用 Grok Desktop credential、Keychain 或 private API。Draft CI 若跳過 heavy jobs，不作為測試 PASS 證據。
 

@@ -50,6 +50,42 @@ def _normalize_host(value: str) -> str:
     return ascii_host
 
 
+def _parse_request_host(value: str) -> tuple[str, int | None]:
+    """Normalize a Host header, retaining an optional explicit TCP port."""
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise ValueError("invalid callback Host header")
+    if value.count(":") > 1:
+        # This adapter deliberately supports only DNS names and IPv4 literals.
+        raise ValueError("IPv6 callback hosts are not supported")
+    host = value
+    port: int | None = None
+    if ":" in value:
+        host, raw_port = value.rsplit(":", 1)
+        if not raw_port.isascii() or not raw_port.isdigit():
+            raise ValueError("invalid callback Host port")
+        port = int(raw_port)
+        if not 1 <= port <= 65_535:
+            raise ValueError("invalid callback Host port")
+    return _normalize_host(host), port
+
+
+def _contains_capability(value: Any, secret: str) -> bool:
+    pending = [value]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, str):
+            if secret in current:
+                return True
+        elif isinstance(current, list):
+            pending.extend(current)
+        elif isinstance(current, dict):
+            for key, item in current.items():
+                if secret in key:
+                    return True
+                pending.append(item)
+    return False
+
+
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
@@ -134,6 +170,7 @@ def create_callback_app(
     *,
     trusted_hosts: Sequence[str],
     max_inflight: int,
+    expected_port: int | None = None,
 ) -> Any:
     """Build the one-route ASGI adapter; this function does not start a listener.
 
@@ -145,6 +182,12 @@ def create_callback_app(
         raise ValueError("owner_id must be a non-empty canonical value")
     if not isinstance(max_inflight, int) or isinstance(max_inflight, bool) or not 1 <= max_inflight <= MAX_CALLBACK_INFLIGHT:
         raise ValueError(f"max_inflight must be 1..{MAX_CALLBACK_INFLIGHT}")
+    if expected_port is not None and (
+        not isinstance(expected_port, int)
+        or isinstance(expected_port, bool)
+        or not 1 <= expected_port <= 65_535
+    ):
+        raise ValueError("expected_port must be 1..65535")
     hosts = sorted({_normalize_host(host) for host in trusted_hosts})
     if not hosts:
         raise ValueError("at least one exact trusted callback host is required")
@@ -156,7 +199,17 @@ def create_callback_app(
             return _error(429, "callback capacity is full")
         try:
             incoming_hosts = request.headers.getlist("host")
-            if len(incoming_hosts) != 1 or incoming_hosts[0].lower() not in hosts:
+            if len(incoming_hosts) != 1:
+                return _error(400, "Host is not allowlisted")
+            try:
+                incoming_host, incoming_port = _parse_request_host(incoming_hosts[0])
+            except ValueError:
+                return _error(400, "Host is not allowlisted")
+            if incoming_host not in hosts or (
+                incoming_port is not None
+                and expected_port is not None
+                and incoming_port != expected_port
+            ):
                 return _error(400, "Host is not allowlisted")
             if request.scope.get("query_string", b""):
                 return _error(400, "query parameters are not accepted")
@@ -173,12 +226,14 @@ def create_callback_app(
             try:
                 decoded = body_bytes.decode("utf-8", errors="strict")
                 payload = json.loads(decoded, object_pairs_hook=_reject_duplicate_keys)
-            except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError):
                 return _error(400, "invalid JSON body")
             if not isinstance(payload, dict):
                 return _error(400, "JSON body must be an object")
             if "result_token" in payload:
                 return _error(400, "result_token must be sent in the Authorization header")
+            if _contains_capability(payload, result_token):
+                return _error(400, "result capability must not be echoed in the report")
 
             try:
                 validated = validate_report({**payload, "result_token": result_token})

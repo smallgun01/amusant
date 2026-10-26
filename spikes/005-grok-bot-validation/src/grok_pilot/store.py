@@ -330,7 +330,14 @@ class PilotStore:
         except (Unauthorized, ValueError):
             return False
 
-    def begin_submission(self, task_id: str, *, sender_pid: int | None = None) -> dict[str, Any]:
+    def begin_submission(
+        self,
+        task_id: str,
+        *,
+        sender_pid: int | None = None,
+        result_token: str | None = None,
+        require_result_token_expiry: bool = False,
+    ) -> dict[str, Any]:
         sender_pid = os.getpid() if sender_pid is None else sender_pid
         if sender_pid <= 0:
             raise ValueError("sender_pid must be a positive process id")
@@ -338,12 +345,30 @@ class PilotStore:
             with self._connection() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 row = connection.execute(
-                    "SELECT submission_state FROM tasks WHERE task_id=?", (task_id,)
+                    """SELECT submission_state, result_token_sha256, token_revoked,
+                       result_token_expires_at FROM tasks WHERE task_id=?""",
+                    (task_id,),
                 ).fetchone()
                 if row is None:
                     raise NotFound("task not found")
                 if row["submission_state"] != "prepared":
                     raise InvalidTransition("task is not in prepared state; no resend is allowed")
+                if require_result_token_expiry:
+                    expiry = row["result_token_expires_at"]
+                    token_matches = bool(
+                        result_token
+                        and row["result_token_sha256"]
+                        and hmac.compare_digest(
+                            row["result_token_sha256"], self._token_hash(result_token)
+                        )
+                    )
+                    if expiry is None or row["token_revoked"] or not token_matches:
+                        raise Unauthorized("callback task capability is not valid")
+                    try:
+                        if self._now_datetime() >= self._parse_expiry(expiry):
+                            raise Unauthorized("callback task capability is not valid")
+                    except (ValueError, Unauthorized) as exc:
+                        raise Unauthorized("callback task capability is not valid") from exc
                 connection.execute(
                     "UPDATE tasks SET submission_state='sending', sender_pid=? WHERE task_id=?",
                     (sender_pid, task_id),

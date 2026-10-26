@@ -11,6 +11,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 from uuid import uuid4
 
 import httpx2
@@ -76,7 +77,11 @@ class CallbackAdapterTests(unittest.IsolatedAsyncioTestCase):
             OWNER_ID, "G3-P1-offline", "Run the one fixed mock fixture.", result_token_ttl_seconds=60
         )
         self.app = create_callback_app(
-            self.store, OWNER_ID, trusted_hosts=[TRUSTED_HOST], max_inflight=4
+            self.store,
+            OWNER_ID,
+            trusted_hosts=[TRUSTED_HOST],
+            max_inflight=4,
+            expected_port=8_765,
         )
 
     def tearDown(self):
@@ -224,6 +229,40 @@ class CallbackAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(forwarded_spoof.status_code, 200)
         self.assertEqual(self.store.get_task(self.task_id)["owner_id"], OWNER_ID)
 
+        async with self.client() as client:
+            allowed_host_port = await client.post(
+                CALLBACK_PATH,
+                json=self.payload(),
+                headers={**self.auth_headers(), "Host": f"{TRUSTED_HOST}:8765"},
+            )
+        self.assertEqual(allowed_host_port.status_code, 200)
+        self.assertTrue(allowed_host_port.json()["duplicate"])
+
+    async def test_rejects_capability_echo_in_top_level_and_nested_report_text(self):
+        reports = []
+        top_level = self.payload()
+        top_level["speak"] = f"Result token: {self.token}"
+        reports.append(top_level)
+
+        title = self.payload()
+        title["card"]["title"] = self.token
+        reports.append(title)
+
+        line = self.payload()
+        line["card"]["lines"][0] = self.token
+        reports.append(line)
+
+        locator = self.payload()
+        locator["native_result_locator"] = self.token
+        reports.append(locator)
+
+        async with self.client() as client:
+            for report in reports:
+                response = await self.post_report(client, report)
+                self.assertEqual(response.status_code, 400)
+                self.assertNotIn(self.token, response.text)
+                self.assertIsNone(self.store.readback(self.task_id)["receipt_id"])
+
     async def test_body_auth_and_json_are_strict_and_bounded(self):
         body = json.dumps(self.payload()).encode()
         async with self.client() as client:
@@ -241,6 +280,11 @@ class CallbackAdapterTests(unittest.IsolatedAsyncioTestCase):
             )
             malformed = await client.post(CALLBACK_PATH, content=b"{", headers={"Content-Type": "application/json", **self.auth_headers()})
             invalid_utf8 = await client.post(CALLBACK_PATH, content=b"\xff", headers={"Content-Type": "application/json", **self.auth_headers()})
+            deep_json = await client.post(
+                CALLBACK_PATH,
+                content=b"[" * 1_200 + b"0" + b"]" * 1_200,
+                headers={"Content-Type": "application/json", **self.auth_headers()},
+            )
             duplicate_key = await client.post(
                 CALLBACK_PATH,
                 content=b'{"schema_version":"amusant-grok-pilot-0","schema_version":"amusant-grok-pilot-0"}',
@@ -272,6 +316,7 @@ class CallbackAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(owner_in_body.status_code, 400)
         self.assertEqual(malformed.status_code, 400)
         self.assertEqual(invalid_utf8.status_code, 400)
+        self.assertEqual(deep_json.status_code, 400)
         self.assertEqual(duplicate_key.status_code, 400)
         self.assertEqual(mismatched_length.status_code, 400)
         self.assertEqual(oversized.status_code, 413)
@@ -352,6 +397,78 @@ class CallbackConfigurationTests(unittest.TestCase):
                 with self.subTest(hosts=hosts, owner=owner, limit=limit):
                     with self.assertRaises(ValueError):
                         create_callback_app(store, owner, trusted_hosts=hosts, max_inflight=limit)
+            with self.assertRaises(ValueError):
+                create_callback_app(
+                    store,
+                    OWNER_ID,
+                    trusted_hosts=[TRUSTED_HOST],
+                    max_inflight=1,
+                    expected_port=65_536,
+                )
+        finally:
+            cleanup_database(db)
+
+
+class CallbackServeCliTests(unittest.TestCase):
+    def test_serve_callback_configures_only_foreground_loopback_without_starting_it(self):
+        db = temporary_database_path()
+        try:
+            with patch("grok_pilot.cli.uvicorn.run") as runner, contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                result = cli_main(
+                    [
+                        "serve-callback",
+                        "--db",
+                        str(db),
+                        "--owner-id",
+                        OWNER_ID,
+                        "--allowed-host",
+                        TRUSTED_HOST,
+                        "--port",
+                        "8765",
+                        "--max-inflight",
+                        "3",
+                    ]
+                )
+
+            self.assertEqual(result, 0)
+            runner.assert_called_once()
+            app = runner.call_args.args[0]
+            self.assertEqual(runner.call_args.kwargs["host"], "127.0.0.1")
+            self.assertEqual(runner.call_args.kwargs["port"], 8765)
+            self.assertEqual(runner.call_args.kwargs["workers"], 1)
+            self.assertFalse(runner.call_args.kwargs["reload"])
+            self.assertFalse(runner.call_args.kwargs["access_log"])
+            self.assertFalse(runner.call_args.kwargs["proxy_headers"])
+            self.assertEqual(runner.call_args.kwargs["limit_concurrency"], 4)
+            self.assertEqual(app.routes[0].path, CALLBACK_PATH)
+        finally:
+            cleanup_database(db)
+
+    def test_invalid_callback_port_fails_closed_before_runner(self):
+        db = temporary_database_path()
+        try:
+            with patch("grok_pilot.cli.uvicorn.run") as runner, contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                result = cli_main(
+                    [
+                        "serve-callback",
+                        "--db",
+                        str(db),
+                        "--owner-id",
+                        OWNER_ID,
+                        "--allowed-host",
+                        TRUSTED_HOST,
+                        "--port",
+                        "80",
+                        "--max-inflight",
+                        "1",
+                    ]
+                )
+            self.assertEqual(result, 2)
+            runner.assert_not_called()
         finally:
             cleanup_database(db)
 

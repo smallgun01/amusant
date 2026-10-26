@@ -15,6 +15,7 @@ dependencies = [
     { name = "httpx2" },
     { name = "mcp" },
     { name = "starlette" },
+    { name = "uvicorn" },
 ]
 
 [package.metadata]
@@ -22,6 +23,7 @@ requires-dist = [
     { name = "httpx2", specifier = ">=2.10.0,<3" },
     { name = "mcp", specifier = "==2.3.0" },
     { name = "starlette", specifier = "==1.10.0" },
+    { name = "uvicorn", specifier = "==0.54.0" },
 ]
 
 [[package]]

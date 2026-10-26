@@ -30,7 +30,7 @@ from grok_pilot.cli import main as cli_main
 from grok_pilot.contract import ContractError, validate_report, validate_routine_payload
 from grok_pilot.mcp_server import MCP_BODY_LIMIT, create_mcp_app
 from grok_pilot.routine import submit_once
-from grok_pilot.store import Conflict, InvalidTransition, PilotStore, StoreError
+from grok_pilot.store import Conflict, InvalidTransition, PilotStore, StoreError, Unauthorized
 
 OWNER_ID = "offline-owner"
 OWNER_BEARER = "test-only-owner-bearer"
@@ -190,6 +190,93 @@ class OfflineStoreTests(unittest.TestCase):
         live_post.assert_not_called()
         self.assertEqual(json.loads(stdout.getvalue())["mode"], "dry-run")
         self.assertEqual(self.store.get_task(self.task_id)["submission_state"], "prepared")
+
+    def test_callback_mode_rejects_missing_or_expired_ttl_before_mock_post(self):
+        mock_calls = []
+
+        def mock_webhook(request: httpx2.Request) -> httpx2.Response:
+            mock_calls.append(request)
+            return httpx2.Response(200)
+
+        def mocked_submit(store, task_id, result_token, routine_url, routine_token, *, callback_mode=False):
+            return submit_once(
+                store,
+                task_id,
+                result_token,
+                routine_url,
+                routine_token,
+                callback_mode=callback_mode,
+                transport=httpx2.MockTransport(mock_webhook),
+            )
+
+        def run_live(task_id: str, token: str) -> tuple[int, str]:
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with patch.dict(
+                os.environ,
+                {
+                    "GROK_PILOT_RESULT_TOKEN": token,
+                    "GROK_PILOT_ROUTINE_BEARER_TOKEN": "offline-mock-routine-key",
+                },
+            ), patch("grok_pilot.cli.submit_once", side_effect=mocked_submit):
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    result = cli_main(
+                        [
+                            "submit",
+                            "--db",
+                            str(self.db),
+                            "--task-id",
+                            task_id,
+                            "--routine-url",
+                            "https://routine.example.invalid/hook",
+                            "--live",
+                            "--callback-mode",
+                        ]
+                    )
+            return result, stdout.getvalue() + stderr.getvalue()
+
+        result, output = run_live(self.task_id, self.token)
+        self.assertEqual(result, 2)
+        self.assertIn("finite result-token TTL", output)
+        self.assertEqual(mock_calls, [])
+        self.assertEqual(self.store.get_task(self.task_id)["submission_state"], "prepared")
+
+        with self.store._connection() as connection:
+            connection.execute(
+                "UPDATE tasks SET result_token_expires_at=? WHERE task_id=?",
+                ("2000-01-01T00:00:00Z", self.task_id),
+            )
+        result, _ = run_live(self.task_id, self.token)
+        self.assertEqual(result, 2)
+        self.assertEqual(mock_calls, [])
+        self.assertEqual(self.store.get_task(self.task_id)["submission_state"], "prepared")
+
+        finite_task, finite_token = self.store.prepare(
+            OWNER_ID, "callback-mode-live-mock", "Finite TTL mock send.", result_token_ttl_seconds=300
+        )
+        result, _ = run_live(finite_task, finite_token)
+        self.assertEqual(result, 0)
+        self.assertEqual(len(mock_calls), 1)
+        self.assertEqual(mock_calls[0].method, "POST")
+        self.assertEqual(self.store.get_task(finite_task)["submission_state"], "accepted")
+
+    def test_callback_mode_atomic_send_transition_rechecks_ttl(self):
+        task_id, token = self.store.prepare(
+            OWNER_ID, "callback-mode-expiry-race", "Must remain prepared.", result_token_ttl_seconds=300
+        )
+        with self.store._connection() as connection:
+            connection.execute(
+                "UPDATE tasks SET result_token_expires_at=? WHERE task_id=?",
+                ("2000-01-01T00:00:00Z", task_id),
+            )
+
+        with self.assertRaises(Unauthorized):
+            self.store.begin_submission(
+                task_id,
+                result_token=token,
+                require_result_token_expiry=True,
+            )
+        self.assertEqual(self.store.get_task(task_id)["submission_state"], "prepared")
 
     def test_storage_error_does_not_leave_a_receipt(self):
         with self.store._connection() as connection:
