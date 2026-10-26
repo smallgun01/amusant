@@ -1,7 +1,7 @@
 # ADR-0004 — Owner-managed Hermes, tool-agnostic Amusant
 
-- **Status:** Accepted Owner decision, 2026-10-25; repository documentation and subsequent implementation have separate reviews.
-- **Scope:** Product responsibility and integration boundary. Does not authorize live operations or imply generic delegation/native access is already implemented.
+- **Status:** Accepted Owner decision, 2026-10-25; source implementation progress reconciled 2026-10-26. This ADR records the decision, not deployment acceptance.
+- **Scope:** Product responsibility and integration boundary. Generic delegation was subsequently implemented in merged #120; native Owner access and live operations remain separate unaccepted gates.
 - **Related:** [SPEC v0.6](../../SPEC.md), [ADR-0003](0003-oci-a1-hermes-sqlite.md), issues #48/#55/#56/#101/#105; PRs #116/#117/#118.
 
 ## Context
@@ -47,7 +47,7 @@ Use Hermes-native Telegram as the initial direct conversational access path alon
 
 ## Consequences and implementation boundary
 
-Keep the current v2 runtime while correcting the generic delegation interface and its storage compatibility in a small follow-up. Existing research kinds are not a permission firewall. Do not rewrite old fingerprints or reinterpret historical v1/ACP rows.
+The v2 runtime remains the source target; generic delegation and SQLite v9 compatibility were implemented in merged #120. Release/rollback compatibility still requires the active OCI schema and deployed bundle to be verified; #124 is an open release-readiness PR. Existing research kinds are not a permission firewall. Do not rewrite old fingerprints or reinterpret historical v1/ACP rows.
 
 Provide a usable native-management/configuration path without disabling container security. Initially a read-only runtime config with an Owner/Operator-controlled backing-file update can remain valid; any writable native config workflow needs its own reviewed minimal change.
 
@@ -55,7 +55,7 @@ Capabilities remain dependent on Hermes configuration, credentials, dependencies
 
 ## Superseded work and authority
 
-PR #117's implementation direction and earlier review GO are superseded by this Owner decision. Do not merge or implement it. Preserve its discussion as history; closing the GitHub PR is a distinct action, not something this ADR claims happened.
+PR #117's implementation direction and earlier review GO are superseded by this Owner decision. Do not merge or implement it. Preserve its discussion as history. PR #117 was closed without merge on 2026-10-25.
 
 #105 retains universal bounded results and separate authenticated content retrieval, but not its old trusted-document-intent admission requirement. #101 retains reproducible bootstrap and preserve-on-update, but must not establish Amusant as Owner of an exhaustive Agent tool profile. Follow [PLAN](../../PLAN.md) and the [handoff index](../handoffs/20261025-owner-managed-hermes.md).
 
