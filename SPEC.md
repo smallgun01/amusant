@@ -1,6 +1,6 @@
 # Project Amusant — Voice Companion Specification v0.7
 
-**Current source decision (Owner, 2026-10-27): Grok-first SLOW profile.** This specifies the selected source target; it does not claim OCI installation or acceptance. [#132](https://github.com/smallgun01/amusant/issues/132) owns staging evidence and cutover. [#127](https://github.com/smallgun01/amusant/issues/127), [#130](https://github.com/smallgun01/amusant/issues/130) and [#134](https://github.com/smallgun01/amusant/issues/134) preserve design and review decisions. Previous SPECs are pinned in the [history index](docs/history/20261025-documentation-baseline.md).
+**Current source decision (Owner, 2026-10-27): Grok-first SLOW profile.** Source and installed state are separately evidenced: [#132 second cutover](https://github.com/smallgun01/amusant/issues/132#issuecomment-6444738695) reports OCI Grok Relay + Proxy 2/2 Healthy with SQLite v10; public Callback/device ingress and real physical/provider E2E remain unaccepted. [#132](https://github.com/smallgun01/amusant/issues/132) owns staging evidence and cutover. [#127](https://github.com/smallgun01/amusant/issues/127), [#130](https://github.com/smallgun01/amusant/issues/130) and [#134](https://github.com/smallgun01/amusant/issues/134) preserve design and review decisions. Previous SPECs are pinned in the [history index](docs/history/20261025-documentation-baseline.md).
 
 ## A. Product contract
 
@@ -14,7 +14,7 @@ The selected SLOW profile uses Grok Bot through one Routine submission and a tas
 
 The Python fallback remains `hermes_runs`; Compose explicitly overrides it to `grok_callback`. Hermes is a separately selectable alternative/rollback source path. OpenAB ACP and DynamoDB are legacy compatibility paths, not part of the Grok profile.
 
-The [first Owner Stop-and-Replace attempt](https://github.com/smallgun01/amusant/issues/132#issuecomment-6439306188) failed when Grok `egress_proxy` became unhealthy and Relay remained `Created`; automatic rollback restored the legacy Relay/Facade/Hermes/Egress stack, all four healthy. An [isolated proxy diagnostic](https://github.com/smallgun01/amusant/issues/132#issuecomment-6439495767) passed after a local-only CPU-limit increase from 0.1 to 0.5; throttling is suspected, not confirmed. [#132 records revised retry readiness](https://github.com/smallgun01/amusant/issues/132#issuecomment-6439563486), but no later cutover. The legacy stack remains installed; no successful Grok deployment, public ingress, live task or device E2E PASS is recorded.
+The first Owner cutover failed and automatically rolled back. The [second cutover](https://github.com/smallgun01/amusant/issues/132#issuecomment-6444738695) succeeded: Grok 2/2 Healthy, old containers removed without volumes and old v8 data preserved. Installed images remain from `e615c06`; [#138](https://github.com/smallgun01/amusant/pull/138) optional-import isolation is merged source, not automatically deployed. Static mount/restart posture PASS but `REBOOT_RECOVERY=NOT_TESTED`. The live environment depends on Owner-local `compose.grok.local.yaml` alongside `compose.grok.yaml`; historical single-file restart examples are unsafe for this runtime. Do not infer root cause solely from the 0.1→0.5 CPU proxy override. Public Callback and device ingress, real Grok Routine, physical readback and native terminal state remain NOT TESTED.
 
 ## C. Delegation and result lifecycle
 
@@ -45,8 +45,8 @@ The Grok profile uses the existing SQLite v10 TaskStore. Do not migrate or rewri
 | Evidence | Establishes | Does not establish |
 | --- | --- | --- |
 | PR #131 Linux/ARM64 CI | Grok source tests and two Grok-profile services healthy on a runner | OCI deployment, ingress, native Run state or device E2E |
-| PR #133 and #132 Owner reports | Images published/pulled; static staging settings checked | Grok Compose running or public ingress |
-| #132 host inventory | Legacy stack and preparation facts reported | Grok cutover or live task acceptance |
+| PR #133 and #132 Owner reports | Images published/pulled, second OCI cutover 2/2 Healthy, SQLite v10, static mount/restart PASS | Public ingress, reboot recovery or device E2E |
+| #132 host inventory and second cutover | Old four containers removed without volumes; v8 retained, Grok v10 active | Live provider task or spoken acceptance |
 | Callback receipt | Durable receipt for one task | Native Run terminal state, remote Stop or document download |
 
 Review H1 as a docs-only PR and H2 separately for optional-import isolation, explicit executor selections and offline regressions. No docs/code PR authorizes OCI, DNS, network, secret, paid-provider, firmware or data-reset actions. Keep those operations under #132 Owner gates.
