@@ -136,6 +136,12 @@ class CallbackListenerTests(unittest.IsolatedAsyncioTestCase):
                 async with serve_callback(self.app, "127.0.0.1", occupied.getsockname()[1]):
                     self.fail("listener must not start on an occupied port")
 
+    async def test_server_itself_rejects_public_or_wildcard_binds(self):
+        for host in ("0.0.0.0", "8.8.8.8", "::", "localhost"):
+            with self.subTest(host=host), self.assertRaises(ValueError):
+                async with serve_callback(self.app, host, 8645):
+                    self.fail("unsafe listener must not start")
+
     async def test_callback_bind_failure_stops_wss_before_dispatch(self):
         class Dispatcher:
             started = False

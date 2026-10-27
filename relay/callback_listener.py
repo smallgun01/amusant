@@ -45,6 +45,14 @@ def callback_listener_config(environ, *, device_host: str) -> tuple[str, int]:
 @asynccontextmanager
 async def serve_callback(app, host: str, port: int):
     """Run one Uvicorn server within the Relay event loop, without signal ownership."""
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        raise ValueError("Callback listener requires a private IPv4 address") from None
+    if (not isinstance(address, ipaddress.IPv4Address)
+            or not (address.is_loopback or any(address in net for net in _PRIVATE_NETWORKS))
+            or isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535):
+        raise ValueError("Callback listener requires a private IPv4 address and valid port")
     import uvicorn
 
     class EmbeddedServer(uvicorn.Server):
