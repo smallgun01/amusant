@@ -76,6 +76,8 @@ jobs:
           set -euo pipefail
           smoke_dir="$RUNNER_TEMP/grok-d2a-arm64-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           mkdir -p "$smoke_dir/data/relay" "$smoke_dir/secrets"
+          sudo chown "10001:$(id -g)" "$smoke_dir/data/relay"
+          sudo chmod 0770 "$smoke_dir/data/relay"
           python3 - "$smoke_dir" <<'PY'
           from pathlib import Path
           import sys
