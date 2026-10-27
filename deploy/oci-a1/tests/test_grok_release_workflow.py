@@ -8,6 +8,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = ROOT / ".github" / "workflows" / "grok-arm64-image-release.yml"
+TEST_WORKFLOW = ROOT / ".github" / "workflows" / "grok-release-workflow-tests.yml"
 STAGING_ENV = ROOT / "deploy" / "oci-a1" / "grok-staging.env.example"
 
 
@@ -15,6 +16,7 @@ class GrokImageReleaseWorkflowTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+        cls.test_workflow = yaml.load(TEST_WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
 
     def test_release_is_manual_and_off_by_default(self):
         self.assertEqual(set(self.workflow["on"]), {"workflow_dispatch"})
@@ -28,11 +30,21 @@ class GrokImageReleaseWorkflowTests(unittest.TestCase):
         jobs = self.workflow["jobs"]
         self.assertEqual(jobs["guard"]["permissions"], {})
         self.assertEqual(jobs["publish"]["permissions"], {"contents": "read", "packages": "write"})
-        guard_script = jobs["guard"]["steps"][0]["run"]
+        guard = jobs["guard"]["steps"][0]
+        guard_script = guard["run"]
+        self.assertEqual(guard["env"]["DISPATCH_ACTOR"], "${{ github.actor }}")
+        self.assertEqual(guard["env"]["DISPATCH_TRIGGERING_ACTOR"], "${{ github.triggering_actor }}")
         self.assertIn('"$DISPATCH_ACTOR" != "smallgun01"', guard_script)
+        self.assertIn('"$DISPATCH_TRIGGERING_ACTOR" != "smallgun01"', guard_script)
         self.assertIn('"$DISPATCH_REF" != "refs/heads/main"', guard_script)
         self.assertIn('"$PUBLISH_CONFIRMATION" != "PUBLISH"', guard_script)
-        self.assertIn("needs.guard.outputs.publish == 'true'", jobs["publish"]["if"])
+        publish_if = jobs["publish"]["if"]
+        self.assertIn("needs.guard.outputs.publish == 'true'", publish_if)
+        self.assertIn("github.actor == 'smallgun01'", publish_if)
+        self.assertIn("github.triggering_actor == 'smallgun01'", publish_if)
+        self.assertIn("github.ref == 'refs/heads/main'", publish_if)
+        self.assertIn("inputs.publish_images", publish_if)
+        self.assertIn("inputs.publish_confirmation == 'PUBLISH'", publish_if)
 
     def test_only_the_two_grok_images_are_built_for_arm64(self):
         steps = self.workflow["jobs"]["publish"]["steps"]
@@ -56,6 +68,18 @@ class GrokImageReleaseWorkflowTests(unittest.TestCase):
             set(jobs["publish"]["outputs"]),
             {"relay_image", "egress_proxy_image"},
         )
+
+    def test_focused_safety_test_runs_in_lightweight_pull_request_ci(self):
+        workflow = self.test_workflow
+        self.assertEqual(set(workflow["on"]), {"pull_request"})
+        self.assertEqual(workflow["permissions"], {"contents": "read"})
+        self.assertEqual(set(workflow["jobs"]), {"static-release-safety"})
+        job = workflow["jobs"]["static-release-safety"]
+        self.assertEqual(job["runs-on"], "ubuntu-24.04")
+        self.assertNotIn("packages", job.get("permissions", {}))
+        commands = "\n".join(step.get("run", "") for step in job["steps"])
+        self.assertIn("test_grok_release_workflow.py", commands)
+        self.assertNotIn("docker/build-push-action", "\n".join(str(step) for step in job["steps"]))
 
     def test_no_cloud_or_provider_secret_is_referenced(self):
         source = WORKFLOW.read_text(encoding="utf-8")

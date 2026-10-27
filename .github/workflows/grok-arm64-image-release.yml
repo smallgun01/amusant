@@ -40,6 +40,7 @@ jobs:
           PUBLISH_IMAGES: ${{ inputs.publish_images }}
           PUBLISH_CONFIRMATION: ${{ inputs.publish_confirmation }}
           DISPATCH_ACTOR: ${{ github.actor }}
+          DISPATCH_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
           DISPATCH_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
@@ -48,8 +49,8 @@ jobs:
             echo "Image publication is disabled; no images will be built or pushed."
             exit 0
           fi
-          if [[ "$DISPATCH_ACTOR" != "smallgun01" ]]; then
-            echo "Only the repository Owner account may publish these images." >&2
+          if [[ "$DISPATCH_ACTOR" != "smallgun01" || "$DISPATCH_TRIGGERING_ACTOR" != "smallgun01" ]]; then
+            echo "Both the original dispatch actor and the run initiator must be the repository Owner." >&2
             exit 1
           fi
           if [[ "$DISPATCH_REF" != "refs/heads/main" ]]; then
@@ -65,7 +66,13 @@ jobs:
   publish:
     name: Build and publish Grok-only ARM64 images
     needs: guard
-    if: needs.guard.outputs.publish == 'true'
+    if: >-
+      needs.guard.outputs.publish == 'true' &&
+      github.actor == 'smallgun01' &&
+      github.triggering_actor == 'smallgun01' &&
+      github.ref == 'refs/heads/main' &&
+      inputs.publish_images &&
+      inputs.publish_confirmation == 'PUBLISH'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
     permissions:
