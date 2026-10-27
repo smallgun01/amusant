@@ -53,17 +53,15 @@ jobs:
 
   grok-arm64-runtime-smoke:
     if: github.event.pull_request.draft && github.head_ref == 'codex/grok-g4-d2a-source'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
-      - name: Set up ARM64 emulation
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
+      - name: Verify native ARM64 runner
+        run: test "$(uname -m)" = aarch64
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
       - name: Build Grok Relay image for ARM64
@@ -108,9 +106,9 @@ jobs:
               "OCI_DATA_DIR": str(root / "data"),
               "RELAY_STOP_GRACE_PERIOD": "30s",
               "AMUSANT_RELAY_SHUTDOWN_GRACE_SECONDS": "10",
-              "RELAY_CPU_LIMIT": "1.0",
+              "RELAY_CPU_LIMIT": "0.5",
               "RELAY_MEMORY_LIMIT": "512m",
-              "PROXY_CPU_LIMIT": "1.0",
+              "PROXY_CPU_LIMIT": "0.1",
               "PROXY_MEMORY_LIMIT": "128m",
           }
           for variable, (filename, content) in secret_values.items():
