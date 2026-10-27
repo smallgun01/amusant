@@ -106,9 +106,9 @@ jobs:
               "OCI_DATA_DIR": str(root / "data"),
               "RELAY_STOP_GRACE_PERIOD": "30s",
               "AMUSANT_RELAY_SHUTDOWN_GRACE_SECONDS": "10",
-              "RELAY_CPU_LIMIT": "0.5",
+              "RELAY_CPU_LIMIT": "1.0",
               "RELAY_MEMORY_LIMIT": "512m",
-              "PROXY_CPU_LIMIT": "0.1",
+              "PROXY_CPU_LIMIT": "1.0",
               "PROXY_MEMORY_LIMIT": "128m",
           }
           for variable, (filename, content) in secret_values.items():
