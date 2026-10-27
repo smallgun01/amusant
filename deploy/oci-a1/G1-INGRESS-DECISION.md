@@ -98,6 +98,14 @@ validates the same offline Compose inputs and writes the socket/service units;
 rendered files contain the selected IPs, so keep them owner-readable and out of
 logs or artifacts.
 
+The Grok-first Compose profile uses the same fixed TCP/443 ingress and Relay
+`RELAY_BIND_IP:8443` target. Select it explicitly with
+`render_device_ingress.py --profile grok`; this invokes the existing
+`validate_grok()` contract and does not require legacy Facade/Hermes inputs.
+The default remains `--profile legacy`. The Grok fixture test checks the
+selected private addresses and rejects wildcard or cross-network targets;
+rendering does not install or start the units.
+
 Reproduce the static checks from the repository root with:
 
 ```sh
@@ -105,6 +113,9 @@ python3 -m unittest discover -s deploy/oci-a1/tests -v
 python3 deploy/oci-a1/preflight.py --env-file /secure/path/compose.env
 python3 deploy/oci-a1/render_device_ingress.py \
   --env-file /secure/path/compose.env --output-dir /tmp/amusant-g1-units
+python3 deploy/oci-a1/preflight.py --profile grok --env-file /secure/path/grok.env
+python3 deploy/oci-a1/render_device_ingress.py --profile grok \
+  --env-file /secure/path/grok.env --output-dir /tmp/amusant-grok-g1-units
 systemd-analyze verify /tmp/amusant-g1-units/amusant-device-ingress.socket \
   /tmp/amusant-g1-units/amusant-device-ingress.service
 ```

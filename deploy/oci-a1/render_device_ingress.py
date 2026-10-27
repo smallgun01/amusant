@@ -5,7 +5,7 @@ import argparse
 from pathlib import Path
 import sys
 
-from preflight import PreflightError, read_env_file, validate
+from preflight import PreflightError, read_env_file, validate, validate_grok
 
 
 PACKAGE = Path(__file__).resolve().parent
@@ -16,9 +16,15 @@ TEMPLATES = {
 
 
 def render(
-    values: dict[str, str], *, max_connections: int = 32, exit_idle_seconds: int = 120
+    values: dict[str, str], *, profile: str = "legacy", max_connections: int = 32,
+    exit_idle_seconds: int = 120,
 ) -> dict[str, str]:
-    validate(values)
+    validators = {"legacy": validate, "grok": validate_grok}
+    try:
+        validator = validators[profile]
+    except KeyError:
+        raise PreflightError("ingress profile must be legacy or grok") from None
+    validator(values)
     if not 2 <= max_connections <= 256:
         raise PreflightError("ingress connection limit must be between 2 and 256")
     if not 1 <= exit_idle_seconds <= 3600:
@@ -47,12 +53,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env-file", type=Path, default=Path(".env"))
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--profile", choices=("legacy", "grok"), default="legacy")
     parser.add_argument("--max-connections", type=int, default=32)
     parser.add_argument("--exit-idle-seconds", type=int, default=120)
     args = parser.parse_args()
     try:
         units = render(
             read_env_file(args.env_file),
+            profile=args.profile,
             max_connections=args.max_connections,
             exit_idle_seconds=args.exit_idle_seconds,
         )

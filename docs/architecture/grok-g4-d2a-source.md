@@ -20,6 +20,16 @@ The independent device route remains the reviewed G1 raw TCP path to the TLS-PSK
 
 ## Offline checks and rollback plan
 
-Run `python deploy/oci-a1/preflight.py --profile grok --env-file <reviewed-file>` and `docker compose --env-file <reviewed-file> -f deploy/oci-a1/compose.grok.yaml config` without starting services. Preflight checks immutable images, nonoverlapping private subnets, usable static IPs, exact callback mapping, restricted secret-file paths, existing state directory and bounded shutdown; the Owner must separately verify runtime UID access to mounted paths. The tests use fixture secrets, Fake Routine/Callback, local loopback and no real model calls. Relevant Grok/Relay ARM64 image build and smoke evidence is required at the Ready gate; Draft runs avoid that heavy lane. Source CI and image builds do not establish live ingress or physical device evidence.
+Run `python deploy/oci-a1/preflight.py --profile grok --env-file <reviewed-file>` and `docker compose --env-file <reviewed-file> -f deploy/oci-a1/compose.grok.yaml config` without starting services. Preflight checks immutable images, nonoverlapping private subnets, usable static IPs, exact callback mapping, restricted secret-file paths, existing state directory and bounded shutdown; the Owner must separately verify runtime UID access to mounted paths. Offline tests use fixture secrets, Fake Routine/Callback, local loopback and no real model calls. The dedicated Grok-only ARM64 smoke is bounded CI evidence, not live ingress or physical device acceptance.
+
+The device-ingress renderer supports `--profile grok` alongside its unchanged default `legacy` profile. Grok selection reuses `preflight.validate_grok()` and renders private VNIC TCP/443 to the selected `RELAY_BIND_IP:8443`; the fixture regression rejects wildcard and cross-network addresses. It only writes proposed unit files and never installs them. The dedicated Grok Draft CI job builds just the Relay and Egress Proxy ARM64 images, then starts those two services on private runner-local Compose networks with fixture-only secrets and waits for the WSS/Callback and proxy healthchecks. It does not build or start Hermes/Facade, publish ports, create an OCI deployment, or call a provider.
+
+### Acceptance matrix
+
+| Evidence class | What a PASS means | Scope limit |
+| --- | --- | --- |
+| Source | Linux Python 3.13 offline regression, Grok ingress fixture, and static Compose checks pass for this PR head. | No OCI runtime state or public reachability is established. |
+| ARM64 | Grok-only Relay and Egress Proxy images build as `linux/arm64`, start in the isolated CI runner, and both report healthy. | Emulated CI smoke is not a native OCI host/deployment result. |
+| OCI | **NOT TESTED**: no OCI host, route, tunnel, DNS, VNIC, or installed runtime was inspected or changed. | Requires separate Owner-authorized work. |
 
 For a separately authorized rollback, stop new admissions and disable the external Callback route and Routine trigger, revoke the appropriate credentials, and have the Owner reconcile or explicitly abandon any in-flight task. Never automatically resend an ambiguous Webhook or claim a remote Grok Stop. Selection of any previous stack or deletion/reset of test data requires the corresponding Owner authorization; no such action is performed here.

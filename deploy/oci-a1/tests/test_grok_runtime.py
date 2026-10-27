@@ -17,6 +17,9 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
 PACKAGE = ROOT / "deploy" / "oci-a1"
+sys.path.insert(0, str(PACKAGE))
+
+from render_device_ingress import render as render_device_ingress  # noqa: E402
 
 
 def load_module(name, filename):
@@ -56,13 +59,10 @@ class GrokProfileTests(unittest.TestCase):
         self.preflight = load_module("grok_preflight", "preflight.py")
 
     def cleanup_root(self):
-        for path in self.root.iterdir():
+        for path in self.root.rglob("*"):
             if path.is_file():
                 path.chmod(0o600)
-                path.unlink()
-            else:
-                path.rmdir()
-        self.root.rmdir()
+        shutil.rmtree(self.root)
 
     def test_preflight_rejects_unsafe_network_urls_and_missing_secrets(self):
         self.preflight.validate_grok(self.values)
@@ -116,6 +116,36 @@ class GrokProfileTests(unittest.TestCase):
         failure = subprocess.run(command, text=True, capture_output=True, timeout=10)
         self.assertEqual(failure.returncode, 2)
         self.assertNotIn("offline-fixture-secret", failure.stderr)
+
+    def test_grok_ingress_fixture_renders_only_selected_private_relay_target(self):
+        units = render_device_ingress(self.values, profile="grok")
+        socket_unit = units["amusant-device-ingress.socket"]
+        service_unit = units["amusant-device-ingress.service"]
+        self.assertIn("ListenStream=10.0.0.10:443", socket_unit)
+        self.assertIn("--exit-idle-time=120s 172.30.62.2:8443", service_unit)
+        self.assertNotIn("172.30.64.2", socket_unit + service_unit)
+        self.assertNotIn("172.30.63.2", socket_unit + service_unit)
+
+        env_file = self.root / "grok-ingress.env"
+        env_file.write_text("".join(f"{key}={value}\n" for key, value in self.values.items()), encoding="utf-8")
+        output_dir = self.root / "grok-ingress-units"
+        result = subprocess.run(
+            [sys.executable, str(PACKAGE / "render_device_ingress.py"), "--profile", "grok",
+             "--env-file", str(env_file), "--output-dir", str(output_dir)],
+            text=True, capture_output=True, timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((output_dir / "amusant-device-ingress.socket").read_text(encoding="utf-8"), socket_unit)
+        self.assertEqual((output_dir / "amusant-device-ingress.service").read_text(encoding="utf-8"), service_unit)
+
+        for change in (
+            {"RELAY_HOST_PRIVATE_IP": "0.0.0.0"},
+            {"RELAY_BIND_IP": "0.0.0.0"},
+            {"RELAY_BIND_IP": "172.30.64.2"},
+            {"RELAY_HOST_PRIVATE_IP": "172.30.62.2"},
+        ):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                render_device_ingress({**self.values, **change}, profile="grok")
 
     def test_compose_has_only_two_services_and_no_published_ports(self):
         document = yaml.safe_load((PACKAGE / "compose.grok.yaml").read_text(encoding="utf-8"))
