@@ -1,24 +1,17 @@
-# Amusant — Current execution plan
+# Amusant — Current execution plan (2026-10-27)
 
-Reconciled 2026-10-27 to the Grok-first decision in [#130](https://github.com/smallgun01/amusant/issues/130), [#132](https://github.com/smallgun01/amusant/issues/132) and [#135](https://github.com/smallgun01/amusant/issues/135). #132 owns staging and cutover; source selection is not installed state.
+Grok-first source selected; Owner-reported OCI second cutover completed. [#137](https://github.com/smallgun01/amusant/pull/137) H1 docs and [#138](https://github.com/smallgun01/amusant/pull/138) H2 optional-import isolation merged; neither means the current OCI images were upgraded. Optional legacy file relocation H3 is **not required** for M1.
 
-## Work sequence
+## Execution sequence
 
-| Order | Deliverable | Scope |
-| --- | --- | --- |
-| H1 — docs first | Align current README/SPEC/STATUS/PLAN/WS/Relay docs; pin superseded architecture. | Docs-only Draft PR, lightweight checks, no code or infrastructure. |
-| H2 — separate code PR | Audit and isolate ACP/DynamoDB optional imports and packaging. | Offline-only, preserve old modules/tests and selectors. Verify Grok startup isolation plus `openab_acp`, `hermes_runs` and `grok_callback`. |
-| H3 — optional | Move truly inactive legacy modules only if safe. | Separate Owner rollback decision after H2; retention in place is acceptable. |
-| #132 Owner gates | Grok OCI staging, Callback ingress, StickS3 ingress and device acceptance. | Owner-controlled; not performed by H1/H2. |
+1. Preserve [#132 second cutover evidence](https://github.com/smallgun01/amusant/issues/132#issuecomment-6444738695) and verified Owner-local two-file Compose configuration. Do not use an old single-file restart recipe.
+2. Review [#139](https://github.com/smallgun01/amusant/pull/139) source-template settings separately; merge and actual OCI adoption are distinct decisions.
+3. Under separate Owner authorization, complete secure public Callback route and independent StickS3 TCP/TLS-PSK ingress. No provider call is authorized by this document.
+4. Run bounded real Grok task and later explicit PTT readback only after approved ingress and cost gates. Capture Callback receipt, TaskStore/Inbox, transmission `spoken`, unknown native state and failure/reconcile behavior separately.
+5. Verify reboot recovery, off-host backup/restore, ingress disable/revocation and sustained resource/FAST latency under approved tests; do not expand tooling before M1.
 
-## H2 review inventory
+## Evidence boundary
 
-- `application.py` currently imports and loads ACP for Grok; `hermes_result.py` imports shared limits from the ACP module.
-- `store_factory.py` imports `DynamoDbTaskStore` at module load; it loads the Boto3 ledger in the explicit DynamoDB branch.
-- `boto3` is a base dependency although Grok Compose uses SQLite. Move it to an explicit optional dependency and retain it in dev test dependencies.
-- Audit compatibility tests, helper CLIs, Docker/package guards, deploy templates and CI references.
-- Preserve Token/Owner/SQLite v10 behavior, one-send semantics, explicit selection and source default. Never auto-fallback to Hermes or migrate data for source tidiness.
+Owner-reported [#132 second cutover](https://github.com/smallgun01/amusant/issues/132#issuecomment-6444738695): Grok Relay + Egress Proxy **2/2 Healthy**, fresh SQLite v10, legacy four containers removed without volumes, old v8 data retained. Installed images remain pinned to `e615c06`; newer main changes are not deployed by source merge. [#132 D2e](https://github.com/smallgun01/amusant/issues/132#issuecomment-6445970730) static mount/restart posture PASS, **REBOOT_RECOVERY=NOT_TESTED**. [Gate 2A](https://github.com/smallgun01/amusant/issues/132#issuecomment-6446503568) private callback 405/401/404 PASS; [Gate 2B](https://github.com/smallgun01/amusant/issues/132#issuecomment-6446621484) Cloudflare DNS/TCP 7844 PASS, not a configured tunnel. Public Callback/device ingress, real Routine/Provider E2E and new-PTT spoken Inbox remain NOT TESTED. Current OCI uses Owner-local two-file Compose (`compose.grok.yaml` + `compose.grok.local.yaml`); do not restart from the historical single-file example.
 
-PR #131 supplies 522-test Linux offline evidence and a healthy Grok-only ARM64 runner smoke. PR #133/#132 report image publication, OCI pre-pull and static config readiness. The first #132 Stop-and-Replace attempt failed when Grok `egress_proxy` became unhealthy; automatic rollback restored the legacy four services, all healthy. An isolated proxy diagnostic passed at a local 0.5 CPU limit (up from 0.1); throttling is suspected, not confirmed. #132 records revised retry readiness, but no later cutover. The legacy stack remains installed; no successful Grok deployment, public ingress, live task or device E2E PASS is recorded.
-
-Hermes G0 and PR #124 are not prerequisites for Grok staging. Keep old AWS/Hermes decisions and evidence linked in the [history index](docs/history/20261025-documentation-baseline.md).
+[STATUS](STATUS.md) owns acceptance facts; [SPEC](SPEC.md) owns v2 result and Owner/task contract. Hermes G0 and legacy SQLite migration [#124](https://github.com/smallgun01/amusant/pull/124) are not Grok staging prerequisites.
