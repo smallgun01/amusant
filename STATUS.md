@@ -15,7 +15,7 @@ Reconciled 2026-10-27 against `main@e615c06`, [#132](https://github.com/smallgun
 
 ## Installed OCI state
 
-The latest Owner-reported #132 inventory still has the existing Relay, Facade, Hermes and Egress Proxy healthy. Grok images and static staging configuration were prepared, but no Grok Compose startup or cutover is reported. The legacy stack remains the installed runtime at this snapshot.
+[#132 records](https://github.com/smallgun01/amusant/issues/132#issuecomment-6439306188) the first Owner Stop-and-Replace attempt failed when Grok `egress_proxy` became unhealthy and Relay remained `Created`; automatic rollback restored legacy Relay/Facade/Hermes/Egress Proxy 4/4 healthy. An [isolated proxy diagnostic](https://github.com/smallgun01/amusant/issues/132#issuecomment-6439495767) passed after a local-only CPU-limit increase from 0.1 to 0.5; throttling is suspected, not confirmed. [Revised retry readiness](https://github.com/smallgun01/amusant/issues/132#issuecomment-6439563486) is recorded, but no later cutover. The legacy stack remains installed; no successful Grok deployment, public ingress, live task or device E2E PASS is recorded.
 
 Public Callback, StickS3 TCP/443 ingress, native Grok Run status and physical Grok E2E remain NOT TESTED. #132 owns later staging gates.
 

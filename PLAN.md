@@ -19,6 +19,6 @@ Reconciled 2026-10-27 to the Grok-first decision in [#130](https://github.com/sm
 - Audit compatibility tests, helper CLIs, Docker/package guards, deploy templates and CI references.
 - Preserve Token/Owner/SQLite v10 behavior, one-send semantics, explicit selection and source default. Never auto-fallback to Hermes or migrate data for source tidiness.
 
-PR #131 supplies 522-test Linux offline evidence and a healthy Grok-only ARM64 runner smoke. PR #133/#132 report image publication, OCI pre-pull and static config readiness; latest reported OCI runtime remains the legacy four-service stack. No Grok cutover or public ingress PASS is recorded.
+PR #131 supplies 522-test Linux offline evidence and a healthy Grok-only ARM64 runner smoke. PR #133/#132 report image publication, OCI pre-pull and static config readiness. The first #132 Stop-and-Replace attempt failed when Grok `egress_proxy` became unhealthy; automatic rollback restored the legacy four services, all healthy. An isolated proxy diagnostic passed at a local 0.5 CPU limit (up from 0.1); throttling is suspected, not confirmed. #132 records revised retry readiness, but no later cutover. The legacy stack remains installed; no successful Grok deployment, public ingress, live task or device E2E PASS is recorded.
 
 Hermes G0 and PR #124 are not prerequisites for Grok staging. Keep old AWS/Hermes decisions and evidence linked in the [history index](docs/history/20261025-documentation-baseline.md).

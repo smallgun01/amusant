@@ -14,7 +14,7 @@ The selected SLOW profile uses Grok Bot through one Routine submission and a tas
 
 The Python fallback remains `hermes_runs`; Compose explicitly overrides it to `grok_callback`. Hermes is a separately selectable alternative/rollback source path. OpenAB ACP and DynamoDB are legacy compatibility paths, not part of the Grok profile.
 
-The last Owner-reported OCI inventory in #132 found the legacy four-service Relay/Facade/Hermes/Egress stack healthy. Grok images were published and pre-pulled, and static staging settings were checked, but the Grok Compose profile has not been started. Source, installed runtime, ingress and physical acceptance are separate evidence classes.
+The [first Owner Stop-and-Replace attempt](https://github.com/smallgun01/amusant/issues/132#issuecomment-6439306188) failed when Grok `egress_proxy` became unhealthy and Relay remained `Created`; automatic rollback restored the legacy Relay/Facade/Hermes/Egress stack, all four healthy. An [isolated proxy diagnostic](https://github.com/smallgun01/amusant/issues/132#issuecomment-6439495767) passed after a local-only CPU-limit increase from 0.1 to 0.5; throttling is suspected, not confirmed. [#132 records revised retry readiness](https://github.com/smallgun01/amusant/issues/132#issuecomment-6439563486), but no later cutover. The legacy stack remains installed; no successful Grok deployment, public ingress, live task or device E2E PASS is recorded.
 
 ## C. Delegation and result lifecycle
 
@@ -24,6 +24,15 @@ The last Owner-reported OCI inventory in #132 found the legacy four-service Rela
 - Do not claim remote Stop, native completion or cancellation from Callback text alone. Native state remains unknown without an authoritative verified signal.
 - After an ambiguous send, do not retry or switch to Hermes. Keep the task uncertain until a valid Callback or explicit Owner reconciliation/abandonment.
 - Keep results bounded. A native `box:` path is not an Amusant download URL or verified artifact reference.
+
+### M1 contracts shared by every SLOW backend
+
+| Area | Normative contract |
+| --- | --- |
+| Result bounds | Use Result Contract v2: `speak` ≤ 240 characters; `card.title` ≤ 80; 1–4 `card.lines`, each ≤ 120 characters; the complete trusted result envelope ≤ 3,000 UTF-8 bytes. Never clip output or pass raw reports through Live. |
+| Owner and task scope | `delegate_task`, `check_task_status` and `cancel_task` are scoped to the authenticated Owner and task. Generic task text is data, not tool authorization. Admit at most one active Amusant task per Owner; do not pass raw reports through Live. |
+| Device and voice | Require authenticated TLS-PSK/WSS and enforce turn/epoch ownership, interruption, and stale/replay rejection. FAST audio remains independent of SLOW work. Read results only on an explicit later PTT. Mark `spoken` only after the server observes the complete transmission; this does not prove the Owner heard it. |
+| Retention target | Retain eligible terminal Inbox/Ledger records for a 30-day target and protect unresolved, uncertain, or reconciliation records until resolved. This is a requirement target, not evidence that retention or backup is implemented or accepted. |
 
 ## D. Voice, privacy and persistence
 
@@ -44,4 +53,4 @@ Review H1 as a docs-only PR and H2 separately for optional-import isolation, exp
 
 ## F. Historical record
 
-The prior Hermes-current SPEC and embedded v0.4 appendix are pinned at [main@e615c06](https://github.com/smallgun01/amusant/blob/e615c06259195496ef94d6a6d2c6a038ff06c497/SPEC.md). Earlier OpenAB/AWS material is linked from the history index. ADR-0001 through ADR-0004 remain unchanged.
+The prior Hermes-current SPEC is pinned at [main@e615c06](https://github.com/smallgun01/amusant/blob/e615c06259195496ef94d6a6d2c6a038ff06c497/SPEC.md); the earlier v0.4 appendix is indexed from baseline `685db3b` in the history index. Earlier OpenAB/AWS material is also linked there. ADR-0001 through ADR-0004 remain unchanged.

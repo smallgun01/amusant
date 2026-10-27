@@ -26,7 +26,7 @@ The following immutable files pin the last root-document baseline before the Gro
 | Prior current-truth document | Immutable snapshot |
 | --- | --- |
 | README | [README at e615c06](https://github.com/smallgun01/amusant/blob/e615c06259195496ef94d6a6d2c6a038ff06c497/README.md) |
-| SPEC v0.6 and embedded v0.4 appendix | [SPEC at e615c06](https://github.com/smallgun01/amusant/blob/e615c06259195496ef94d6a6d2c6a038ff06c497/SPEC.md) |
+| SPEC v0.6 (Hermes-current, dated G4 addendum) | [SPEC at e615c06](https://github.com/smallgun01/amusant/blob/e615c06259195496ef94d6a6d2c6a038ff06c497/SPEC.md) |
 | STATUS | [STATUS at e615c06](https://github.com/smallgun01/amusant/blob/e615c06259195496ef94d6a6d2c6a038ff06c497/STATUS.md) |
 | PLAN | [PLAN at e615c06](https://github.com/smallgun01/amusant/blob/e615c06259195496ef94d6a6d2c6a038ff06c497/PLAN.md) |
 | WS index | [Workstreams at e615c06](https://github.com/smallgun01/amusant/blob/e615c06259195496ef94d6a6d2c6a038ff06c497/docs/project-management/workstreams.md) |
@@ -34,4 +34,4 @@ The following immutable files pin the last root-document baseline before the Gro
 | Grok validation gate text | [v0.3 at e615c06](https://github.com/smallgun01/amusant/blob/e615c06259195496ef94d6a6d2c6a038ff06c497/docs/project-management/grok-bot-validation-v0.3.md) |
 | Grok image-release runbook | [D2c runbook at e615c06](https://github.com/smallgun01/amusant/blob/e615c06259195496ef94d6a6d2c6a038ff06c497/docs/ops/grok-g4-d2c-image-release.md) |
 
-The prior four-service Hermes/Facade diagram is retained here for provenance. The current source profile is Grok-first and the latest Owner-reported installed runtime remains the legacy four-service stack until a separately recorded cutover.
+The prior four-service Hermes/Facade diagram is retained here for provenance. The current source profile is Grok-first. The first #132 Stop-and-Replace attempt failed and automatic rollback restored the legacy four-service stack 4/4 healthy; #132 records revised retry readiness but no later cutover. The legacy stack remains installed, with no successful Grok deployment or ingress/device E2E PASS recorded.

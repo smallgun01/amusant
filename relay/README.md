@@ -4,7 +4,7 @@
 
 [deploy/oci-a1/compose.grok.yaml](../deploy/oci-a1/compose.grok.yaml) explicitly selects `AMUSANT_SLOW_EXECUTOR=grok_callback`, runs Relay + Egress Proxy and uses SQLite v10 TaskStore/Inbox. Device WSS and Callback listeners are separate; Compose publishes no host ports. Public ingress remains an independent #132 Owner gate.
 
-The last Owner-reported host inventory still has the legacy Relay/Facade/Hermes/Egress stack installed. Grok images were published/pre-pulled and static staging configuration was checked, but no Grok Compose cutover is reported. See [STATUS](../STATUS.md).
+[#132 records](https://github.com/smallgun01/amusant/issues/132#issuecomment-6439306188) the first Owner Stop-and-Replace attempt failed when Grok `egress_proxy` became unhealthy and Relay remained `Created`; automatic rollback restored the legacy Relay/Facade/Hermes/Egress stack 4/4 healthy. An [isolated proxy diagnostic](https://github.com/smallgun01/amusant/issues/132#issuecomment-6439495767) passed after a local-only CPU-limit increase from 0.1 to 0.5; throttling is suspected, not confirmed. [Revised retry readiness](https://github.com/smallgun01/amusant/issues/132#issuecomment-6439563486) is recorded, but no later cutover. Legacy 4/4 healthy remains installed; no successful Grok deployment, public ingress, live task or device E2E PASS is recorded. See [STATUS](../STATUS.md).
 
 ## Explicit selection and compatibility
 

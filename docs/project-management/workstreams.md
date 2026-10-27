@@ -8,7 +8,7 @@ Reconciled 2026-10-27 to the Grok-first source selection. [STATUS](../../STATUS.
 | --- | --- | --- |
 | WS1 / #47 | StickS3 and physical acceptance | Preserve the current device path; G1 ingress and Grok readback remain separate #132 gates. |
 | WS2 / #48 | SLOW admission and result delivery | One Relay TaskStore/Inbox; Callback, Bot report and native Run state remain distinct. |
-| WS3 / #49 | Grok source profile and OCI evidence | Compose selects Relay + Egress Proxy with SQLite v10; legacy four-service stack remains installed per latest report. |
+| WS3 / #49 | Grok source profile and OCI evidence | First Stop-and-Replace failed; automatic rollback restored legacy services 4/4 healthy. Isolated proxy diagnostic passed and revised retry is ready, but no later cutover is reported. |
 | WS4 / #50 | Persistence, dependencies, secrets and rollback | H2 separates ACP/DynamoDB imports; keep schema behavior and regression tests; no H2 file relocation. |
 
 ## Sequence and boundaries
@@ -20,4 +20,4 @@ Reconciled 2026-10-27 to the Grok-first source selection. [STATUS](../../STATUS.
 
 Grok Compose explicitly sets `AMUSANT_SLOW_EXECUTOR=grok_callback`; the Python fallback remains `hermes_runs`. Hermes is a separate alternative/rollback path, not co-running or an automatic fallback. OpenAB ACP, DynamoDB, their tests, ADRs and AWS evidence stay in the repository.
 
-Do not retry an ambiguous Routine Webhook, add a second TaskStore, add a global scheduler or speak without a later explicit request. PR #131 gives source/ARM64 runner evidence; PR #133/#132 report image publication/pre-pull and static settings. Current Grok runtime, public Callback/StickS3 ingress and physical Grok E2E remain unverified. The prior Hermes-current index is pinned in the [history record](../history/20261025-documentation-baseline.md).
+Do not retry an ambiguous Routine Webhook, add a second TaskStore, add a global scheduler or speak without a later explicit request. PR #131 gives source/ARM64 runner evidence; PR #133/#132 report image publication/pre-pull and static settings. The latest #132 status has the legacy four-service stack installed and healthy after rollback; no successful Grok deployment, public Callback/StickS3 ingress, live task or physical Grok E2E PASS is recorded. The prior Hermes-current index is pinned in the [history record](../history/20261025-documentation-baseline.md).
