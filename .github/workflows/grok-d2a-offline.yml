@@ -1,0 +1,51 @@
+name: Grok D2a source-only Linux regression
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  linux-offline:
+    if: github.event.pull_request.draft && github.head_ref == 'codex/grok-g4-d2a-source'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            uv.lock
+            spikes/005-grok-bot-validation/uv.lock
+      - name: Install Python 3.13 and locked test dependencies
+        run: |
+          uv python install 3.13
+          uv sync --locked --python 3.13 --extra hardware-opus --group dev
+      - name: Grok spike offline regression
+        run: |
+          uv sync --locked --python 3.13 --project spikes/005-grok-bot-validation
+          uv run --locked --python 3.13 --project spikes/005-grok-bot-validation python -m unittest discover -s spikes/005-grok-bot-validation/tests -v
+      - name: Fast Voice offline regression
+        run: uv run --locked --python 3.13 --extra hardware-opus --group dev python -m unittest discover -s fast_voice/tests -v
+      - name: Relay offline regression
+        env:
+          PYTHONPATH: .:relay
+        run: uv run --locked --python 3.13 --extra hardware-opus --group dev python -m unittest discover -s relay/tests -v
+      - name: Grok Compose, preflight and proxy offline regression
+        env:
+          GROK_REQUIRE_COMPOSE: "1"
+        run: |
+          uv run --locked --python 3.13 --extra hardware-opus --group dev python -m unittest discover -s deploy/oci-a1/tests -p test_grok_runtime.py -v
+          uv run --locked --python 3.13 --extra hardware-opus --group dev python -m unittest discover -s deploy/oci-a1/tests -p test_runtime_guards.py -v
+          uv run --locked --python 3.13 --extra hardware-opus --group dev python -m unittest discover -s deploy/oci-a1/tests -p test_offline_package.py -v
+          uv run --locked --python 3.13 --extra hardware-opus --group dev python -m unittest discover -s deploy/oci-a1/tests -p test_sqlite_ledger_maintenance.py -v
+      - name: TLS-PSK loopback with fake LiveProvider
+        env:
+          PYTHONPATH: .
+        run: uv run --locked --python 3.13 --extra hardware-opus --group dev python relay/tests/psk_wss_integration.py

@@ -14,6 +14,7 @@ import os
 import signal
 import time
 from collections.abc import Awaitable, Callable, Mapping
+from contextlib import suppress
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -1259,16 +1260,16 @@ def make_handler(
     return handler
 
 
-def build_process_runtime(token: str, environ: Mapping[str, str], **kwargs):
+def build_process_runtime(token: str, environ: Mapping[str, str], *, include_store: bool = False, **kwargs):
     """Compose the supported process handler and optional ACP dispatcher."""
     from .application import build_supported_relay_runtime
 
-    handler, dispatcher, _store = build_supported_relay_runtime(
+    handler, dispatcher, store = build_supported_relay_runtime(
         expected_device_token=token,
         environ=environ,
         **kwargs,
     )
-    return handler, dispatcher
+    return (handler, dispatcher, store) if include_store else (handler, dispatcher)
 
 
 def build_process_handler(token: str, environ: Mapping[str, str], **kwargs):
@@ -1292,11 +1293,22 @@ async def run(host: str, port: int, token: str, *, device_mode: str = "pcm") -> 
         ssl_context = server_context_from_environ(os.environ)
         # Fail before opening the listener or starting the Slow Task dispatcher if Opus is unavailable.
         DeviceOpusCodec()
-    handler, dispatcher = build_process_runtime(token, os.environ)
+    callback_app = None
+    callback_config = None
+    if os.environ.get("AMUSANT_SLOW_EXECUTOR", "").strip().lower() == "grok_callback":
+        from .application import build_grok_callback_receiver_app
+        from .callback_listener import callback_listener_config
+
+        callback_config = callback_listener_config(os.environ, device_host=host)
+        handler, dispatcher, store = build_process_runtime(token, os.environ, include_store=True)
+        callback_app = build_grok_callback_receiver_app(
+            store=store, authenticated_client_id=os.environ.get("AMUSANT_CLIENT_ID", ""), environ=os.environ,
+        )
+    else:
+        handler, dispatcher = build_process_runtime(token, os.environ)
     if device_mode == "sticks3":
         handler = adapt_device_handler(handler, hardware_mode=True)
-    if dispatcher is not None:
-        await dispatcher.start()
+    dispatcher_started = False
     if device_mode == "sticks3":
         LOG.info("starting private Live bridge transport=sticks3-tls-psk port=%d admission=on acp=%s", port,
                  "on" if dispatcher is not None else "off")
@@ -1316,12 +1328,42 @@ async def run(host: str, port: int, token: str, *, device_mode: str = "pcm") -> 
         stop_event = asyncio.Event()
         installed_signals = install_shutdown_handlers(stop_event, loop)
         try:
-            async with serve(handler, host, port, **serve_options):
-                await stop_event.wait()
+            async with serve(handler, host, port, **serve_options) as device_server:
+                if callback_app is None:
+                    if dispatcher is not None and not stop_event.is_set():
+                        await dispatcher.start()
+                        dispatcher_started = True
+                    await stop_event.wait()
+                else:
+                    from .callback_listener import serve_callback
+
+                    async with serve_callback(callback_app, *callback_config) as callback_task:
+                        # Recovery may submit a queued task immediately. Both
+                        # listeners must be ready before the first Webhook.
+                        if dispatcher is not None and not stop_event.is_set():
+                            await dispatcher.start()
+                            dispatcher_started = True
+                        stop_task = asyncio.create_task(stop_event.wait())
+                        try:
+                            done, _ = await asyncio.wait((stop_task, callback_task), return_when=asyncio.FIRST_COMPLETED)
+                            if callback_task in done:
+                                await callback_task
+                                raise RuntimeError("Callback listener stopped unexpectedly")
+                            # Stop device admission first; keep the Callback
+                            # listener available while the dispatcher drains.
+                            device_server.close()
+                            await device_server.wait_closed()
+                            if dispatcher_started:
+                                await _stop_dispatcher_bounded(dispatcher, shutdown_grace_seconds)
+                                dispatcher_started = False
+                        finally:
+                            stop_task.cancel()
+                            with suppress(asyncio.CancelledError):
+                                await stop_task
         finally:
             remove_shutdown_handlers(loop, installed_signals)
     finally:
-        if dispatcher is not None:
+        if dispatcher_started:
             await _stop_dispatcher_bounded(dispatcher, shutdown_grace_seconds)
 
 

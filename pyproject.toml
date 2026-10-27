@@ -7,6 +7,7 @@ dependencies = [
     "certifi>=2026.10.19",  # GHSA-6q48-6c7w-9gw2: compromised CA keys
     "google-genai>=2.0",
     "opencc==1.4.2",
+    "uvicorn>=0.54,<0.55",
     "websockets>=14,<17",
 ]
 
