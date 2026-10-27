@@ -31,8 +31,11 @@ from .slow_path import (
 from .acp_client import load_acp_executor
 from .dispatcher import AsyncDispatcher, ExecutionOutcome, MAX_POLL_INTERVAL_SECONDS
 from .hermes_runs_executor import HermesConfigError, load_hermes_runs_executor
+from .grok_callback import create_grok_callback_app
+from .grok_callback_executor import GrokConfigError, load_grok_callback_executor
 from .store_factory import build_task_store
 from .task_store import TASK_KINDS
+from .task_store import SQLiteTaskStore
 
 ProviderClientFactory = Callable[..., Any]
 CLIENT_ID_ENV = "AMUSANT_CLIENT_ID"
@@ -125,8 +128,8 @@ def load_relay_process_config(
     if default_task_kind not in TASK_KINDS:
         raise ValueError("AMUSANT_DEFAULT_TASK_KIND must be agent or a legacy task-kind hint (ACP compatibility)")
     slow_executor_kind = (environ.get(SLOW_EXECUTOR_ENV) or DEFAULT_SLOW_EXECUTOR).strip().lower() or DEFAULT_SLOW_EXECUTOR
-    if slow_executor_kind not in {"openab_acp", "hermes_runs"}:
-        raise ValueError(f"{SLOW_EXECUTOR_ENV} must be openab_acp or hermes_runs")
+    if slow_executor_kind not in {"openab_acp", "hermes_runs", "grok_callback"}:
+        raise ValueError(f"{SLOW_EXECUTOR_ENV} must be openab_acp, hermes_runs, or grok_callback")
     # Older releases used this variable as a v1/v2 selector. Keep only a
     # fail-closed guard for stale deployment files; the runtime always uses v2
     # for Hermes Runs and the value no longer selects behavior.
@@ -215,7 +218,7 @@ def build_relay_handler(
     if conversation_id_factory is None:
         conversation_id_factory = lambda: str(uuid4())
 
-    live_tools = build_relay_tools(sdk_types)
+    live_tools = build_relay_tools(sdk_types, executor_kind=executor_kind)
     system_instruction = resolve_persona(provider_environ)
 
     def provider_factory() -> LiveProvider:
@@ -275,6 +278,8 @@ def build_supported_relay_runtime(
 ):
     """Build handler plus optional executor dispatcher; no configured executor skips dispatch."""
     config = load_relay_process_config(environ, expected_device_token=expected_device_token)
+    if config.slow_executor_kind == "grok_callback" and config.task_store_kind != "sqlite":
+        raise ValueError("grok_callback requires the existing SQLite TaskStore")
     store = build_task_store(environ, max_pending_tasks=config.max_pending_tasks)
     acp_executor = load_acp_executor(environ)
     try:
@@ -285,15 +290,29 @@ def build_supported_relay_runtime(
             update_stop_state=store.update_hermes_stop_state,
         )
     except HermesConfigError:
-        if config.slow_executor_kind != "openab_acp":
+        if config.slow_executor_kind not in {"openab_acp", "grok_callback"}:
             raise
         # Explicit legacy rollback must start even when stale Hermes settings
         # remain. An unavailable Hermes executor is never replaced with ACP for
         # existing Hermes tasks; the executor router fails those closed.
         hermes_executor = None
+    grok_executor = None
+    if config.slow_executor_kind == "grok_callback":
+        if config.task_store_kind != "sqlite" or not isinstance(store, SQLiteTaskStore):
+            raise ValueError("grok_callback requires the existing SQLite TaskStore")
+        try:
+            grok_executor = load_grok_callback_executor(
+                environ,
+                begin_submission=store.begin_grok_submission,
+                finish_submission=store.finish_grok_submission,
+                fail_before_send=store.fail,
+            )
+        except GrokConfigError as exc:
+            raise ValueError(str(exc)) from None
     configured_executors = {
         "openab_acp": acp_executor,
         "hermes_runs": hermes_executor,
+        "grok_callback": grok_executor,
     }
     selected_executor = configured_executors[config.slow_executor_kind]
     if config.slow_executor_kind == "hermes_runs" and selected_executor is None:
@@ -306,7 +325,7 @@ def build_supported_relay_runtime(
         async def execute(self, task):
             selected = active_executors.get(task.executor_kind)
             if selected is None:
-                state = "uncertain" if task.backend_run_id else "failed"
+                state = "uncertain" if task.backend_run_id or task.executor_kind == "grok_callback" else "failed"
                 return ExecutionOutcome(status=state, code="executor_unavailable")
             return await selected.execute(task)
 
@@ -341,6 +360,39 @@ def build_supported_relay_runtime(
         post_tool_ack_max_duration_seconds=post_tool_ack_max_duration_seconds,
     )
     return handler, dispatcher, store
+
+
+def build_grok_callback_receiver_app(
+    *,
+    store,
+    authenticated_client_id: str,
+    environ: Mapping[str, str],
+):
+    """Build the restricted ASGI app without binding a public or local listener.
+
+    A future HTTPS proxy/server must mount this app only after D2 review. This
+    factory deliberately does not consume forwarded headers or start a server.
+    """
+    if not isinstance(store, SQLiteTaskStore):
+        raise ValueError("grok_callback requires the existing SQLite TaskStore")
+    raw_hosts = environ.get("AMUSANT_GROK_CALLBACK_TRUSTED_HOSTS", "")
+    hosts = [host.strip() for host in raw_hosts.split(",") if host.strip()]
+    if not hosts:
+        raise ValueError("AMUSANT_GROK_CALLBACK_TRUSTED_HOSTS must be set before mounting the app")
+    raw_port = environ.get("AMUSANT_GROK_CALLBACK_SERVICE_PORT", "443")
+    if not isinstance(raw_port, str) or not raw_port.isascii() or not raw_port.isdigit():
+        raise ValueError("AMUSANT_GROK_CALLBACK_SERVICE_PORT must be an integer")
+    port = int(raw_port)
+    raw_limit = environ.get("AMUSANT_GROK_CALLBACK_MAX_INFLIGHT", "8")
+    if not isinstance(raw_limit, str) or not raw_limit.isascii() or not raw_limit.isdigit():
+        raise ValueError("AMUSANT_GROK_CALLBACK_MAX_INFLIGHT must be an integer")
+    return create_grok_callback_app(
+        store,
+        authenticated_client_id,
+        trusted_hosts=hosts,
+        expected_port=port,
+        max_inflight=int(raw_limit),
+    )
 
 
 def build_supported_relay_handler(

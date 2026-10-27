@@ -137,10 +137,11 @@ class LedgerMaintenanceTests(unittest.TestCase):
         self.assertEqual(restored_store.get_by_task_id(self._task_id_for("done-read"))["status"], "completed")
         with closing(sqlite3.connect(destination)) as db:
             self.assertEqual(db.execute("SELECT count(*) FROM slow_tasks").fetchone()[0], 12)
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 9)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 10)
             task_columns = {row[1] for row in db.execute("PRAGMA table_info(slow_tasks)")}
             result_columns = {row[1] for row in db.execute("PRAGMA table_info(task_results)")}
             self.assertIn("result_contract_version", task_columns)
+            self.assertTrue({"grok_submission_state", "grok_token_sha256", "grok_callback_receipt_id"} <= task_columns)
             self.assertTrue({"artifact_status", "artifact_ref", "presentation_status", "delivery_error"} <= result_columns)
         if os.name == "posix":
             self.assertEqual(destination.stat().st_mode & 0o777, 0o600)

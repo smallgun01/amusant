@@ -1092,7 +1092,7 @@ class SQLiteHermesMappingTests(unittest.TestCase):
         self.assertEqual(row["executor_kind"], "openab_acp")
         self.assertIsNone(row["backend_run_id"])
         connection = sqlite3.connect(self.db)
-        self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 9)
+        self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 10)
         columns = {row[1] for row in connection.execute("PRAGMA table_info(slow_tasks)")}
         self.assertTrue({
             "run_started_at", "run_deadline_at", "next_poll_at", "poll_attempts",
@@ -1149,7 +1149,7 @@ class SQLiteHermesMappingTests(unittest.TestCase):
         self.assertIsNone(row["stop_requested_at"])
         self.assertEqual(row["stop_attempts"], 0)
         connection = sqlite3.connect(self.db)
-        self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 9)
+        self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 10)
         self.assertEqual(connection.execute(
             "SELECT result_contract_version FROM slow_tasks WHERE task_id=?", (task_id,)
         ).fetchone()[0], 1)

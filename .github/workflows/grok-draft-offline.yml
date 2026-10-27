@@ -1,0 +1,46 @@
+name: Grok draft Linux offline regression
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  linux-offline:
+    # A bounded draft review lane; the existing Ready gate owns ARM64 work.
+    if: github.event.pull_request.draft && github.head_ref == 'codex/grok-g4-d1-offline'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            uv.lock
+            spikes/005-grok-bot-validation/uv.lock
+      - name: Install Python 3.13 and locked test dependencies
+        run: |
+          uv python install 3.13
+          uv sync --locked --python 3.13 --extra hardware-opus --group dev
+      - name: Grok spike offline regression
+        run: |
+          uv sync --locked --python 3.13 --project spikes/005-grok-bot-validation
+          uv run --locked --python 3.13 --project spikes/005-grok-bot-validation python -m unittest discover -s spikes/005-grok-bot-validation/tests -v
+      - name: Fast Voice offline regression
+        run: uv run --locked --python 3.13 --extra hardware-opus --group dev python -m unittest discover -s fast_voice/tests -v
+      - name: Relay offline regression, including Grok and v2 contracts
+        env:
+          PYTHONPATH: .:relay
+        run: uv run --locked --python 3.13 --extra hardware-opus --group dev python -m unittest discover -s relay/tests -v
+      - name: SQLite ledger maintenance offline regression
+        run: uv run --locked --python 3.13 --extra hardware-opus --group dev python -m unittest discover -s deploy/oci-a1/tests -p test_sqlite_ledger_maintenance.py -v
+      - name: TLS-PSK loopback with fake LiveProvider
+        env:
+          PYTHONPATH: .
+        run: uv run --locked --python 3.13 --extra hardware-opus --group dev python relay/tests/psk_wss_integration.py

@@ -200,7 +200,7 @@ class TaskStoreMigrationTests(unittest.TestCase):
 
             store = SQLiteTaskStore(database_path=path, max_pending_tasks=8)
             connection = sqlite3.connect(path)
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 9)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 10)
             schema = connection.execute(
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name='slow_tasks'"
             ).fetchone()[0]
