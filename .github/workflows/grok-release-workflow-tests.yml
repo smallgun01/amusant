@@ -1,0 +1,36 @@
+name: Grok release workflow safety tests
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+    paths:
+      - .github/workflows/grok-arm64-image-release.yml
+      - .github/workflows/grok-release-workflow-tests.yml
+      - deploy/oci-a1/grok-staging.env.example
+      - deploy/oci-a1/tests/test_grok_release_workflow.py
+
+permissions:
+  contents: read
+
+jobs:
+  static-release-safety:
+    name: Static release safety (Python 3.13)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install Python 3.13
+        run: uv python install 3.13
+
+      - name: Run focused workflow and staging-template tests
+        run: >-
+          uv run --no-project --python 3.13 --with pyyaml==6.0.3
+          python -m unittest discover
+          -s deploy/oci-a1/tests -p test_grok_release_workflow.py -v
