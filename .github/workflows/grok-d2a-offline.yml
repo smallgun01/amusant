@@ -145,12 +145,38 @@ jobs:
           set -euo pipefail
           compose=(docker compose --project-name "$GROK_SMOKE_PROJECT" --env-file "$GROK_SMOKE_DIR/compose.env" \
             -f deploy/oci-a1/compose.grok.yaml -f "$GROK_SMOKE_DIR/images.override.yaml")
-          "${compose[@]}" up --detach --no-build
+          "${compose[@]}" up --detach --no-build --no-deps egress_proxy
           for image in amusant-relay:grok-d2a-arm64-smoke amusant-egress-proxy:grok-d2a-arm64-smoke; do
             architecture="$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")"
             [[ "$architecture" == "linux/arm64" ]]
             echo "$image $architecture"
           done
+          deadline=$((SECONDS + 90))
+          while (( SECONDS < deadline )); do
+            container="$("${compose[@]}" ps --quiet egress_proxy)"
+            if [[ -n "$container" ]]; then
+              status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container")"
+              if [[ "$status" == "unhealthy" || "$status" == "exited" || "$status" == "dead" ]]; then
+                docker inspect --format '{{range .State.Health.Log}}{{println .ExitCode .Output}}{{end}}' "$container"
+                "${compose[@]}" logs --no-color egress_proxy
+                exit 1
+              fi
+              if [[ "$status" == "healthy" ]]; then
+                break
+              fi
+            fi
+            sleep 3
+          done
+          container="$("${compose[@]}" ps --quiet egress_proxy)"
+          status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container")"
+          if [[ "$status" != "healthy" ]]; then
+            docker inspect --format '{{range .State.Health.Log}}{{println .ExitCode .Output}}{{end}}' "$container"
+            "${compose[@]}" logs --no-color egress_proxy
+            echo "Grok ARM64 Egress Proxy did not become healthy: $status" >&2
+            exit 1
+          fi
+          # This uses the real service_healthy dependency from compose.grok.yaml.
+          "${compose[@]}" up --detach --no-build relay
           deadline=$((SECONDS + 210))
           while (( SECONDS < deadline )); do
             all_healthy=true
@@ -162,6 +188,7 @@ jobs:
               fi
               status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container")"
               if [[ "$status" == "unhealthy" || "$status" == "exited" || "$status" == "dead" ]]; then
+                docker inspect --format '{{range .State.Health.Log}}{{println .ExitCode .Output}}{{end}}' "$container"
                 "${compose[@]}" logs --no-color "$service"
                 exit 1
               fi
