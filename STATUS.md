@@ -1,28 +1,15 @@
-# Amusant — Current source, deployment and acceptance status
+# Amusant — Current source, OCI runtime and acceptance
 
-Reconciled 2026-10-27 against `main@e615c06`, [#132](https://github.com/smallgun01/amusant/issues/132) and linked source/release evidence. This file distinguishes selected source, installed OCI state and acceptance; it does not assert an unreported action.
+Source baseline: [main@84ac24b](https://github.com/smallgun01/amusant/commit/84ac24bd236cff6222f1281814afa39486225774). [#131](https://github.com/smallgun01/amusant/pull/131) Grok adapter, [#133](https://github.com/smallgun01/amusant/pull/133) image release and [#138](https://github.com/smallgun01/amusant/pull/138) optional-import isolation are merged. New main is **not** the installed e615c06 image. Hermes/ACP/DynamoDB compatibility is retained but not part of Grok Compose.
 
-## Selected source target
+## OCI current evidence
 
-| Item | Current state |
-| --- | --- |
-| SLOW backend | Grok Compose profile explicitly sets `AMUSANT_SLOW_EXECUTOR=grok_callback`. |
-| Services/store | Relay + Egress Proxy; SQLite v10 TaskStore/Inbox. No Hermes, Facade, DynamoDB or ACP in this profile. |
-| Source fallback | `relay/application.py` still defaults to `hermes_runs`; Compose selects Grok explicitly. |
-| Import separation | ACP loader and DynamoDB adapter are still imported at this baseline. Separate H2 tracks import/dependency isolation. |
-| Source CI | PR #131 merged; cited Linux run reported 522 tests PASS; native ARM64 runner reported both Grok services healthy. |
-| Image readiness | PR #133 merged; #132 reports Owner-approved image publication, pre-pull and static staging config checks PASS. |
+Owner-reported [#132 second cutover](https://github.com/smallgun01/amusant/issues/132#issuecomment-6444738695): Grok Relay + Egress Proxy **2/2 Healthy**, fresh SQLite v10, legacy four containers removed without volumes, old v8 data retained. Installed images remain pinned to `e615c06`; newer main changes are not deployed by source merge. [#132 D2e](https://github.com/smallgun01/amusant/issues/132#issuecomment-6445970730) static mount/restart posture PASS, **REBOOT_RECOVERY=NOT_TESTED**. [Gate 2A](https://github.com/smallgun01/amusant/issues/132#issuecomment-6446503568) private callback 405/401/404 PASS; [Gate 2B](https://github.com/smallgun01/amusant/issues/132#issuecomment-6446621484) Cloudflare DNS/TCP 7844 PASS, not a configured tunnel. Public Callback/device ingress, real Routine/Provider E2E and new-PTT spoken Inbox remain NOT TESTED. Current OCI uses Owner-local two-file Compose (`compose.grok.yaml` + `compose.grok.local.yaml`); do not restart from the historical single-file example.
 
-## Installed OCI state
+## Product gates
 
-[#132 records](https://github.com/smallgun01/amusant/issues/132#issuecomment-6439306188) the first Owner Stop-and-Replace attempt failed when Grok `egress_proxy` became unhealthy and Relay remained `Created`; automatic rollback restored legacy Relay/Facade/Hermes/Egress Proxy 4/4 healthy. An [isolated proxy diagnostic](https://github.com/smallgun01/amusant/issues/132#issuecomment-6439495767) passed after a local-only CPU-limit increase from 0.1 to 0.5; throttling is suspected, not confirmed. [Revised retry readiness](https://github.com/smallgun01/amusant/issues/132#issuecomment-6439563486) is recorded, but no later cutover. The legacy stack remains installed; no successful Grok deployment, public ingress, live task or device E2E PASS is recorded.
+G3 native Grok feasibility and isolated callback were previously Owner-reported PASS; this does not establish current Relay-to-public-callback-to-device operation. M1 requires StickS3 PTT → Gemini FAST delegation → Relay → Grok Routine → authenticated Callback → SQLite Inbox → later PTT speech and server-side `spoken` transmission acknowledgment. No current end-to-end PASS is recorded. Device hearing and native Grok terminal state are not proven by receipt or `spoken` flag.
 
-Public Callback, StickS3 TCP/443 ingress, native Grok Run status and physical Grok E2E remain NOT TESTED. #132 owns later staging gates.
+## Work boundaries
 
-## Remaining work
-
-1. **H1:** documentation-only alignment, with immutable links to the superseded Hermes-current source docs.
-2. **H2:** separate offline code PR for ACP/DynamoDB import/dependency separation; preserve legacy modules and all explicit executor/store selections.
-3. **Optional H3:** relocate modules only if H2 proves isolation and the Owner explicitly accepts rollback consequences. Leaving compatibility modules in place is an acceptable result.
-
-Hermes G0 and PR #124 are not prerequisites for Grok staging. H1/H2 are not the #132 cutover GO and do not establish live/device acceptance. The former Hermes-current docs are pinned in the [history index](docs/history/20261025-documentation-baseline.md); older evidence and ADRs remain intact.
+[#132](https://github.com/smallgun01/amusant/issues/132) owns ingress/physical acceptance; [#135](https://github.com/smallgun01/amusant/issues/135) owns docs and optional-import hygiene; [#136](https://github.com/smallgun01/amusant/issues/136) owns firmware baseline. [#139](https://github.com/smallgun01/amusant/pull/139) template work is separate from installed config. No automatic fallback, no blind resend, no provider/host action authorized by this file. [SPEC](SPEC.md) · [PLAN](PLAN.md) · [WS Index](docs/project-management/workstreams.md).
