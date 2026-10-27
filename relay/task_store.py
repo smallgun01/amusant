@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -17,8 +18,9 @@ GENERIC_TASK_KIND = "agent"
 LEGACY_TASK_KINDS = frozenset({"research", "compare", "summarize"})
 TASK_KINDS = LEGACY_TASK_KINDS | {GENERIC_TASK_KIND}
 _TASK_KIND_CHECK = "('research','compare','summarize','agent')"
-SCHEMA_VERSION = 9
-EXECUTOR_KINDS = frozenset({"openab_acp", "hermes_runs"})
+SCHEMA_VERSION = 10
+EXECUTOR_KINDS = frozenset({"openab_acp", "hermes_runs", "grok_callback"})
+GROK_BACKEND_ID = "grok_bot"
 DELIVERY_STATES = frozenset({"pending", "notified", "read", "spoken"})
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _ERROR_RE = re.compile(r"^[A-Za-z0-9_]{1,64}$")
@@ -72,12 +74,12 @@ class TaskAdmissionRequest:
 
     def __post_init__(self) -> None:
         # This field is historical metadata for ACP tasks and a fixed contract
-        # pin for Hermes. Never default a new Hermes admission to contract v1.
+        # pin for Hermes/Grok callback tasks. Never default either to contract v1.
         if self.result_contract_version is None:
             object.__setattr__(
                 self,
                 "result_contract_version",
-                2 if self.executor_kind == "hermes_runs" else 1,
+                2 if self.executor_kind in {"hermes_runs", "grok_callback"} else 1,
             )
 
     def fingerprint(self) -> str:
@@ -159,6 +161,23 @@ class CancelReceipt:
 
 
 @dataclass(frozen=True, slots=True)
+class GrokCallbackReceipt:
+    task_id: str
+    receipt_id: str
+    duplicate: bool
+    late: bool
+    reported_outcome: str | None = None
+
+
+class GrokCallbackUnauthorized(AdmissionError):
+    """Owner, task capability, expiry, or revocation did not validate."""
+
+
+class GrokCallbackConflict(AdmissionError):
+    """A task already has a different immutable callback receipt."""
+
+
+@dataclass(frozen=True, slots=True)
 class RecoveryCounts:
     requeued: int
     uncertain: int
@@ -197,6 +216,20 @@ class TaskStore(Protocol):
     def claim_due(self, *, now: datetime, lease_seconds: int, limit: int = 1) -> list[ClaimedTask]: ...
 
     def mark_dispatch_started(self, task_id: str, *, now: datetime) -> None: ...
+
+    def begin_grok_submission(
+        self, task_id: str, *, token_sha256: str, token_expires_at: datetime,
+        callback_deadline_at: datetime, now: datetime,
+    ) -> None: ...
+
+    def finish_grok_submission(self, task_id: str, *, state: str, now: datetime) -> None: ...
+
+    def commit_grok_callback(
+        self, *, client_id: str, task_id: str, token: str, digest: str,
+        reported_outcome: str, result: BoundedTaskResult, now: datetime,
+    ) -> GrokCallbackReceipt: ...
+
+    def expire_grok_callback_deadlines(self, *, now: datetime) -> int: ...
 
     def save_backend_run_id(
         self,
@@ -265,6 +298,7 @@ class TaskStore(Protocol):
         operator_id: str,
         evidence_ref: str,
         now: datetime,
+        revoke_callback_token: bool = False,
     ) -> CancelReceipt: ...
 
     def lookup_inbox(
@@ -341,6 +375,7 @@ class SQLiteTaskStore:
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
             if "slow_tasks" not in tables:
                 self._create_v2(connection)
+                self._migrate_v9_to_v10(connection)
             else:
                 if version < 2:
                     self._migrate_v1_to_v2(connection)
@@ -365,6 +400,9 @@ class SQLiteTaskStore:
                     version = 8
                 if version < 9:
                     self._migrate_v8_to_v9(connection)
+                    version = 9
+                if version < 10:
+                    self._migrate_v9_to_v10(connection)
             os.chmod(self._path, 0o600)
         except (sqlite3.Error, OSError, AdmissionUnavailable):
             raise AdmissionUnavailable("task_store_unavailable") from None
@@ -430,7 +468,7 @@ class SQLiteTaskStore:
                 delivery_state TEXT NOT NULL CHECK(delivery_state IN ('pending','notified','read','spoken')),
                 updated_at TEXT NOT NULL
             );
-            PRAGMA user_version={SCHEMA_VERSION};
+            PRAGMA user_version=9;
             """
         )
 
@@ -613,6 +651,40 @@ class SQLiteTaskStore:
         finally:
             connection.execute("PRAGMA foreign_keys=ON")
 
+    @staticmethod
+    def _migrate_v9_to_v10(connection: sqlite3.Connection) -> None:
+        """Add Grok callback lifecycle metadata to existing task rows, in place.
+
+        All fields are inert for historical Hermes/ACP rows. The TaskStore,
+        dispatch outbox, results and Inbox remain the only Amusant ledger.
+        """
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(slow_tasks)")}
+            additions = (
+                ("grok_submission_state", "TEXT NOT NULL DEFAULT 'not_sent'"),
+                ("grok_token_sha256", "TEXT"),
+                ("grok_token_expires_at", "TEXT"),
+                ("grok_callback_deadline_at", "TEXT"),
+                ("grok_token_revoked", "INTEGER NOT NULL DEFAULT 0"),
+                ("grok_callback_receipt_id", "TEXT"),
+                ("grok_callback_digest", "TEXT"),
+                ("grok_callback_received_at", "TEXT"),
+                ("grok_reported_outcome", "TEXT"),
+                ("grok_late_callback_receipt_id", "TEXT"),
+                ("grok_late_callback_digest", "TEXT"),
+                ("grok_late_callback_at", "TEXT"),
+            )
+            for name, declaration in additions:
+                if name not in columns:
+                    connection.execute(f"ALTER TABLE slow_tasks ADD COLUMN {name} {declaration}")
+            connection.execute("PRAGMA user_version=10")
+            connection.execute("COMMIT")
+        except sqlite3.Error:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
+
     def _migrate_v1_to_v2(self, connection: sqlite3.Connection) -> None:
         connection.execute("PRAGMA foreign_keys=OFF")
         try:
@@ -694,7 +766,7 @@ class SQLiteTaskStore:
             raise AdmissionUnavailable("invalid_executor_kind")
         if type(request.result_contract_version) is not int or request.result_contract_version not in {1, 2}:
             raise AdmissionUnavailable("invalid_result_contract_version")
-        expected_contract = 2 if request.executor_kind == "hermes_runs" else 1
+        expected_contract = 2 if request.executor_kind in {"hermes_runs", "grok_callback"} else 1
         if request.result_contract_version != expected_contract:
             raise AdmissionUnavailable("invalid_result_contract_version")
         if (request.created_at.tzinfo is None or request.created_at.utcoffset() is None
@@ -803,7 +875,9 @@ class SQLiteTaskStore:
             uncertain = connection.execute(
                 "UPDATE dispatch_outbox SET state='uncertain', last_error=CASE "
                 "WHEN task_id IN (SELECT task_id FROM slow_tasks WHERE executor_kind='hermes_runs') "
-                "THEN 'hermes_submission_unconfirmed' ELSE 'acp_result_unconfirmed' END "
+                "THEN 'hermes_submission_unconfirmed' "
+                "WHEN task_id IN (SELECT task_id FROM slow_tasks WHERE executor_kind='grok_callback') "
+                "THEN 'grok_submission_unconfirmed' ELSE 'acp_result_unconfirmed' END "
                 "WHERE state='claimed' AND dispatch_started_at IS NOT NULL"
             ).rowcount
             connection.execute(
@@ -979,6 +1053,320 @@ class SQLiteTaskStore:
                 connection.execute("ROLLBACK")
             except sqlite3.Error:
                 pass
+            raise AdmissionUnavailable("task_store_unavailable") from None
+        finally:
+            connection.close()
+
+    def begin_grok_submission(
+        self,
+        task_id: str,
+        *,
+        token_sha256: str,
+        token_expires_at: datetime,
+        callback_deadline_at: datetime,
+        now: datetime,
+    ) -> None:
+        """Atomically establish the Grok no-resend boundary and task capability."""
+        if not isinstance(token_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", token_sha256):
+            raise AdmissionUnavailable("invalid_grok_token_hash")
+        now_iso = _utc_iso(now)
+        token_expiry_iso = _utc_iso(token_expires_at)
+        callback_deadline_iso = _utc_iso(callback_deadline_at)
+        token_ttl = (token_expires_at.astimezone(timezone.utc) - now.astimezone(timezone.utc)).total_seconds()
+        callback_wait = (callback_deadline_at.astimezone(timezone.utc) - now.astimezone(timezone.utc)).total_seconds()
+        if not (1 <= token_ttl <= 86_400 and 1 <= callback_wait <= 86_400 and callback_wait <= token_ttl):
+            raise AdmissionUnavailable("invalid_grok_callback_deadline")
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            updated = connection.execute(
+                "UPDATE slow_tasks SET grok_submission_state='sending',grok_token_sha256=?,"
+                "grok_token_expires_at=?,grok_callback_deadline_at=? "
+                "WHERE task_id=? AND executor_kind='grok_callback' AND status='running' "
+                "AND grok_submission_state='not_sent' AND grok_token_sha256 IS NULL "
+                "AND EXISTS (SELECT 1 FROM dispatch_outbox o WHERE o.task_id=slow_tasks.task_id "
+                "AND o.state='claimed' AND o.dispatch_started_at IS NULL)",
+                (token_sha256, token_expiry_iso, callback_deadline_iso, task_id),
+            ).rowcount
+            if updated != 1:
+                connection.execute("ROLLBACK")
+                raise AdmissionUnavailable("grok_submission_not_sendable")
+            started = connection.execute(
+                "UPDATE dispatch_outbox SET dispatch_started_at=? WHERE task_id=? "
+                "AND state='claimed' AND dispatch_started_at IS NULL",
+                (now_iso, task_id),
+            ).rowcount
+            if started != 1:
+                connection.execute("ROLLBACK")
+                raise AdmissionUnavailable("grok_submission_not_sendable")
+            connection.execute("COMMIT")
+        except AdmissionUnavailable:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
+        except sqlite3.Error:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise AdmissionUnavailable("task_store_unavailable") from None
+        finally:
+            connection.close()
+
+    def finish_grok_submission(self, task_id: str, *, state: str, now: datetime) -> None:
+        """Record one Webhook response without overwriting a racing Callback."""
+        if state not in {"accepted", "acceptance_unknown", "rejected"}:
+            raise AdmissionUnavailable("invalid_grok_submission_state")
+        now_iso = _utc_iso(now)
+        if state == "accepted":
+            task_state, outbox_state, code = "running", "sent", None
+        elif state == "rejected":
+            task_state, outbox_state, code = "failed", "failed", "grok_webhook_rejected"
+        else:
+            task_state, outbox_state, code = "uncertain", "uncertain", "grok_webhook_acceptance_unknown"
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT grok_submission_state,grok_callback_receipt_id,status,stop_requested_at "
+                "FROM slow_tasks "
+                "WHERE task_id=? AND executor_kind='grok_callback'",
+                (task_id,),
+            ).fetchone()
+            if row is None:
+                connection.execute("ROLLBACK")
+                raise AdmissionUnavailable("grok_submission_not_found")
+            # A callback can commit while the Webhook ACK is still in flight.
+            # Its atomic receipt is authoritative, regardless of this response.
+            if row[1] is not None or row[0] == "callback_received":
+                connection.execute("COMMIT")
+                return
+            if row[0] != "sending":
+                connection.execute("COMMIT")
+                return
+            if row[3] is not None:
+                # Owner cancellation after the send boundary cannot stop Grok.
+                # Preserve the busy/uncertain outcome even if the Webhook ACK
+                # arrives after the cancel transaction.
+                changed = connection.execute(
+                    "UPDATE slow_tasks SET grok_submission_state=?,status='uncertain',next_poll_at=NULL "
+                    "WHERE task_id=? AND executor_kind='grok_callback' AND grok_submission_state='sending' "
+                    "AND grok_callback_receipt_id IS NULL",
+                    (state, task_id),
+                ).rowcount
+                if changed == 1:
+                    connection.execute(
+                        "UPDATE dispatch_outbox SET state='uncertain',claimed_until=NULL,"
+                        "last_error='grok_remote_stop_unsupported' WHERE task_id=? "
+                        "AND state IN ('claimed','sent','uncertain')",
+                        (task_id,),
+                    )
+                connection.execute("COMMIT")
+                return
+            changed = connection.execute(
+                "UPDATE slow_tasks SET grok_submission_state=?,status=?,next_poll_at=NULL "
+                "WHERE task_id=? AND executor_kind='grok_callback' AND grok_submission_state='sending' "
+                "AND grok_callback_receipt_id IS NULL",
+                (state, task_state, task_id),
+            ).rowcount
+            if changed != 1:
+                connection.execute("COMMIT")
+                return
+            connection.execute(
+                "UPDATE dispatch_outbox SET state=?,claimed_until=NULL,last_error=? "
+                "WHERE task_id=? AND state='claimed' AND dispatch_started_at IS NOT NULL",
+                (outbox_state, code, task_id),
+            )
+            if state != "accepted":
+                connection.execute(
+                    "INSERT OR IGNORE INTO task_inbox(task_id,delivery_state,updated_at) VALUES(?,?,?)",
+                    (task_id, "pending", now_iso),
+                )
+            connection.execute("COMMIT")
+        except AdmissionUnavailable:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
+        except sqlite3.Error:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise AdmissionUnavailable("task_store_unavailable") from None
+        finally:
+            connection.close()
+
+    def expire_grok_callback_deadlines(self, *, now: datetime) -> int:
+        """Move missed callback waits to uncertain; keep the Owner slot occupied."""
+        now_iso = _utc_iso(now)
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            task_ids = [row[0] for row in connection.execute(
+                "SELECT task_id FROM slow_tasks WHERE executor_kind='grok_callback' "
+                "AND status='running' AND grok_callback_receipt_id IS NULL "
+                "AND grok_callback_deadline_at IS NOT NULL AND grok_callback_deadline_at<=?",
+                (now_iso,),
+            ).fetchall()]
+            if task_ids:
+                connection.executemany(
+                    "UPDATE slow_tasks SET status='uncertain',next_poll_at=NULL "
+                    "WHERE task_id=? AND status='running' AND grok_callback_receipt_id IS NULL",
+                    [(task_id,) for task_id in task_ids],
+                )
+                connection.executemany(
+                    "UPDATE dispatch_outbox SET state='uncertain',claimed_until=NULL,last_error='grok_callback_timeout' "
+                    "WHERE task_id=? AND state IN ('claimed','sent')",
+                    [(task_id,) for task_id in task_ids],
+                )
+                connection.executemany(
+                    "INSERT OR IGNORE INTO task_inbox(task_id,delivery_state,updated_at) VALUES(?,?,?)",
+                    [(task_id, "pending", now_iso) for task_id in task_ids],
+                )
+            connection.execute("COMMIT")
+            return len(task_ids)
+        except sqlite3.Error:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise AdmissionUnavailable("task_store_unavailable") from None
+        finally:
+            connection.close()
+
+    def commit_grok_callback(
+        self,
+        *,
+        client_id: str,
+        task_id: str,
+        token: str,
+        digest: str,
+        reported_outcome: str,
+        result: BoundedTaskResult,
+        now: datetime,
+    ) -> GrokCallbackReceipt:
+        """Atomically authenticate and project one Grok report into results + Inbox."""
+        if not isinstance(client_id, str) or not _ID_RE.fullmatch(client_id):
+            raise GrokCallbackUnauthorized("invalid Owner")
+        if not isinstance(task_id, str) or not task_id:
+            raise GrokCallbackUnauthorized("invalid task")
+        if not isinstance(token, str) or not token or len(token) > 128:
+            raise GrokCallbackUnauthorized("invalid capability")
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise AdmissionUnavailable("invalid_grok_report_digest")
+        if reported_outcome not in {"completed", "not_completed"}:
+            raise AdmissionUnavailable("invalid_grok_report_outcome")
+        if not isinstance(result, BoundedTaskResult):
+            raise AdmissionUnavailable("invalid_grok_bounded_result")
+        now_iso = _utc_iso(now)
+        token_hash = hashlib.sha256(token.encode("utf-8", errors="strict")).hexdigest()
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT t.client_id,t.status,t.executor_kind,t.grok_token_sha256,t.grok_token_expires_at,"
+                "t.grok_token_revoked,t.grok_callback_receipt_id,t.grok_callback_digest,"
+                "t.grok_reported_outcome,t.manual_reconciled_state,t.grok_late_callback_receipt_id,"
+                "t.grok_late_callback_digest "
+                "FROM slow_tasks t WHERE t.task_id=?",
+                (task_id,),
+            ).fetchone()
+            if row is None or row[2] != "grok_callback" or row[0] != client_id:
+                connection.execute("ROLLBACK")
+                raise GrokCallbackUnauthorized("task capability is not valid")
+            if row[5] or not isinstance(row[3], str) or not hmac.compare_digest(row[3], token_hash):
+                connection.execute("ROLLBACK")
+                raise GrokCallbackUnauthorized("task capability is not valid")
+            try:
+                expiry = datetime.fromisoformat(str(row[4]))
+                if expiry.tzinfo is None or expiry.utcoffset() is None or _utc_iso(now) >= _utc_iso(expiry):
+                    raise ValueError("expired")
+            except (TypeError, ValueError, AdmissionUnavailable):
+                connection.execute("ROLLBACK")
+                raise GrokCallbackUnauthorized("task capability is not valid") from None
+
+            existing_receipt_id, existing_digest = row[6], row[7]
+            if existing_receipt_id is not None:
+                if not isinstance(existing_digest, str) or not hmac.compare_digest(existing_digest, digest):
+                    connection.execute("ROLLBACK")
+                    raise GrokCallbackConflict("different callback already has a receipt")
+                connection.execute("COMMIT")
+                return GrokCallbackReceipt(
+                    task_id, str(existing_receipt_id), True, False,
+                    row[8] if isinstance(row[8], str) else None,
+                )
+
+            # Owner Abandon releases only the local single-flight slot. An
+            # authenticated late report is retained as metadata and cannot
+            # reopen the task, write a result, or recreate an Inbox event.
+            if row[9] == "abandoned":
+                late_id, late_digest = row[10], row[11]
+                if late_id is not None:
+                    if not isinstance(late_digest, str) or not hmac.compare_digest(late_digest, digest):
+                        connection.execute("ROLLBACK")
+                        raise GrokCallbackConflict("different late callback was already recorded")
+                    connection.execute("COMMIT")
+                    return GrokCallbackReceipt(task_id, str(late_id), True, True)
+                late_id = f"grok_late_{os.urandom(16).hex()}"
+                connection.execute(
+                    "UPDATE slow_tasks SET grok_late_callback_receipt_id=?,grok_late_callback_digest=?,"
+                    "grok_late_callback_at=? WHERE task_id=? AND manual_reconciled_state='abandoned' "
+                    "AND grok_late_callback_receipt_id IS NULL",
+                    (late_id, digest, now_iso, task_id),
+                )
+                connection.execute("COMMIT")
+                return GrokCallbackReceipt(task_id, late_id, False, True)
+
+            if row[1] not in {"running", "uncertain"}:
+                connection.execute("ROLLBACK")
+                raise GrokCallbackUnauthorized("task capability is not valid")
+            receipt_id = f"grok_rcpt_{os.urandom(16).hex()}"
+            task_status = "completed" if reported_outcome == "completed" else "failed"
+            error = None if reported_outcome == "completed" else "grok_reported_not_completed"
+            connection.execute(
+                "INSERT INTO task_results(task_id,speak,card_json,details_md,artifact_status,artifact_ref,"
+                "presentation_status,delivery_error,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (
+                    task_id,
+                    result.speak,
+                    json.dumps(result.card, separators=(",", ":"), ensure_ascii=False),
+                    result.details_md,
+                    None,
+                    None,
+                    "ready",
+                    None,
+                    now_iso,
+                ),
+            )
+            updated = connection.execute(
+                "UPDATE slow_tasks SET status=?,grok_submission_state='callback_received',"
+                "grok_callback_receipt_id=?,grok_callback_digest=?,grok_callback_received_at=?,"
+                "grok_reported_outcome=?,next_poll_at=NULL "
+                "WHERE task_id=? AND executor_kind='grok_callback' AND grok_callback_receipt_id IS NULL "
+                "AND status IN ('running','uncertain')",
+                (task_status, receipt_id, digest, now_iso, reported_outcome, task_id),
+            ).rowcount
+            if updated != 1:
+                connection.execute("ROLLBACK")
+                raise GrokCallbackUnauthorized("task capability is not valid")
+            connection.execute(
+                "UPDATE dispatch_outbox SET state='sent',claimed_until=NULL,last_error=? "
+                "WHERE task_id=? AND state IN ('claimed','sent','uncertain')",
+                (error, task_id),
+            )
+            connection.execute(
+                "INSERT INTO task_inbox(task_id,delivery_state,updated_at) VALUES(?,?,?) "
+                "ON CONFLICT(task_id) DO UPDATE SET delivery_state=CASE "
+                "WHEN task_inbox.delivery_state='spoken' THEN 'spoken' ELSE 'pending' END,updated_at=excluded.updated_at",
+                (task_id, "pending", now_iso),
+            )
+            connection.execute("COMMIT")
+            return GrokCallbackReceipt(task_id, receipt_id, False, False, reported_outcome)
+        except (GrokCallbackUnauthorized, GrokCallbackConflict):
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
+        except AdmissionUnavailable:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
+        except sqlite3.Error:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
             raise AdmissionUnavailable("task_store_unavailable") from None
         finally:
             connection.close()
@@ -1268,9 +1656,56 @@ class SQLiteTaskStore:
                 return CancelReceipt(task_id, "completed", "already_terminal")
             if status == "failed":
                 code = str(last_error or "already_terminal")
-                visible = "cancelled" if code in {"slow_cancelled_before_dispatch", "hermes_cancelled"} else ("timed_out" if code == "hermes_run_timed_out" else "failed")
+                visible = "cancelled" if code in {"slow_cancelled_before_dispatch", "hermes_cancelled", "grok_cancelled_before_send"} else ("timed_out" if code == "hermes_run_timed_out" else "failed")
                 connection.execute("COMMIT")
                 return CancelReceipt(task_id, visible, code)
+            if executor_kind == "grok_callback":
+                if stop_at is not None:
+                    connection.execute("COMMIT")
+                    return CancelReceipt(
+                        task_id, "uncertain", "grok_remote_stop_unsupported", duplicate=True
+                    )
+                if dispatch_started is None and status in {"queued", "running"}:
+                    code = "grok_cancelled_before_send"
+                    released = connection.execute(
+                        "UPDATE dispatch_outbox SET state='failed',claimed_until=NULL,last_error=? "
+                        "WHERE task_id=? AND state IN ('pending','claimed') AND dispatch_started_at IS NULL",
+                        (code, task_id),
+                    ).rowcount
+                    if released != 1:
+                        connection.execute("ROLLBACK")
+                        raise AdmissionUnavailable("cancel_state_unavailable")
+                    connection.execute(
+                        "UPDATE slow_tasks SET status='failed',grok_submission_state='rejected',"
+                        "stop_requested_at=?,stop_reason=?,next_poll_at=NULL "
+                        "WHERE task_id=? AND status IN ('queued','running')",
+                        (now_iso, reason, task_id),
+                    )
+                    connection.execute(
+                        "INSERT OR IGNORE INTO task_inbox(task_id,delivery_state,updated_at) VALUES(?,?,?)",
+                        (task_id, "pending", now_iso),
+                    )
+                    connection.execute("COMMIT")
+                    return CancelReceipt(task_id, "cancelled", code)
+                # A sent or possibly sent webhook has no remote stop API. Keep
+                # the Owner reservation until a Callback or explicit Abandon.
+                connection.execute(
+                    "UPDATE dispatch_outbox SET state='uncertain',claimed_until=NULL,"
+                    "last_error='grok_remote_stop_unsupported' WHERE task_id=? "
+                    "AND state IN ('claimed','sent','uncertain')",
+                    (task_id,),
+                )
+                connection.execute(
+                    "UPDATE slow_tasks SET status='uncertain',stop_requested_at=?,stop_reason=?,next_poll_at=NULL "
+                    "WHERE task_id=? AND status IN ('queued','running','uncertain')",
+                    (now_iso, reason, task_id),
+                )
+                connection.execute(
+                    "INSERT OR IGNORE INTO task_inbox(task_id,delivery_state,updated_at) VALUES(?,?,?)",
+                    (task_id, "pending", now_iso),
+                )
+                connection.execute("COMMIT")
+                return CancelReceipt(task_id, "uncertain", "grok_remote_stop_unsupported")
             if stop_at is not None:
                 if status == "uncertain" and last_error == "hermes_stop_unconfirmed":
                     connection.execute("COMMIT")
@@ -1410,10 +1845,11 @@ class SQLiteTaskStore:
         operator_id: str,
         evidence_ref: str,
         now: datetime,
+        revoke_callback_token: bool = False,
     ) -> CancelReceipt:
         if not isinstance(client_id, str) or not _ID_RE.fullmatch(client_id):
             raise AdmissionUnavailable("invalid_identity")
-        if terminal_state not in {"completed", "failed", "cancelled", "interrupted", "no_remote_run"}:
+        if terminal_state not in {"completed", "failed", "cancelled", "interrupted", "no_remote_run", "abandoned"}:
             raise AdmissionUnavailable("invalid_reconciliation_state")
         if not isinstance(operator_id, str) or not _ID_RE.fullmatch(operator_id):
             raise AdmissionUnavailable("invalid_operator_id")
@@ -1421,19 +1857,59 @@ class SQLiteTaskStore:
             raise AdmissionUnavailable("reconciliation_evidence_required")
         if verified_run_id is not None and (not isinstance(verified_run_id, str) or not _RUN_ID_RE.fullmatch(verified_run_id)):
             raise AdmissionUnavailable("invalid_reconciled_run_id")
+        if type(revoke_callback_token) is not bool or (revoke_callback_token and terminal_state != "abandoned"):
+            raise AdmissionUnavailable("invalid_callback_revocation_request")
         now_iso = _utc_iso(now)
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT t.status,t.backend_run_id,t.stop_reason,o.state FROM slow_tasks AS t "
+                "SELECT t.status,t.backend_run_id,t.stop_reason,o.state,t.executor_kind,"
+                "o.dispatch_started_at,t.grok_callback_receipt_id "
+                "FROM slow_tasks AS t "
                 "JOIN dispatch_outbox AS o USING(task_id) WHERE t.client_id=? AND t.task_id=?",
                 (client_id, task_id),
             ).fetchone()
             if row is None:
                 connection.execute("COMMIT")
                 return CancelReceipt(task_id, "not_found", "task_not_found")
-            status, saved_run_id, stop_reason, outbox_state = row
+            status, saved_run_id, stop_reason, outbox_state = row[:4]
+            executor_kind, dispatch_started_at, callback_receipt_id = row[4:7]
+            if executor_kind == "grok_callback":
+                if (
+                    terminal_state != "abandoned"
+                    or verified_run_id is not None
+                    or dispatch_started_at is None
+                    or status not in {"running", "uncertain"}
+                    or outbox_state not in {"claimed", "sent", "uncertain"}
+                    or callback_receipt_id is not None
+                ):
+                    connection.execute("ROLLBACK")
+                    raise AdmissionUnavailable("grok_abandon_state_unavailable")
+                code = "grok_owner_abandoned"
+                connection.execute(
+                    "UPDATE dispatch_outbox SET state='failed',claimed_until=NULL,last_error=? "
+                    "WHERE task_id=? AND state IN ('claimed','sent','uncertain')",
+                    (code, task_id),
+                )
+                connection.execute(
+                    "UPDATE slow_tasks SET status='failed',grok_submission_state='abandoned',"
+                    "next_poll_at=NULL,manual_reconciled_at=?,manual_reconciled_by=?,"
+                    "manual_reconciliation_ref=?,manual_reconciled_state='abandoned',"
+                    "grok_token_revoked=?,"
+                    "manual_reconciled_run_id=NULL WHERE task_id=? AND client_id=? "
+                    "AND status IN ('running','uncertain') AND grok_callback_receipt_id IS NULL",
+                    (now_iso, operator_id, evidence_ref.strip(), int(bool(revoke_callback_token)), task_id, client_id),
+                )
+                connection.execute(
+                    "INSERT OR IGNORE INTO task_inbox(task_id,delivery_state,updated_at) VALUES(?,?,?)",
+                    (task_id, "pending", now_iso),
+                )
+                connection.execute("COMMIT")
+                return CancelReceipt(task_id, "abandoned", code)
+            if terminal_state == "abandoned":
+                connection.execute("ROLLBACK")
+                raise AdmissionUnavailable("abandon_only_supported_for_grok_callback")
             if status != "uncertain" or outbox_state != "uncertain":
                 connection.execute("ROLLBACK")
                 raise AdmissionUnavailable("task_not_in_manual_reconciliation")
@@ -1579,7 +2055,9 @@ class SQLiteTaskStore:
                 "SELECT t.task_id,t.status,o.state,o.attempts,o.dispatch_started_at,o.last_error, "
                 "t.executor_kind,t.backend_run_id,t.run_started_at,t.run_deadline_at,"
                 "t.next_poll_at,t.poll_attempts,t.stop_requested_at,t.stop_reason,"
-                "t.stop_attempts,t.stop_accepted_at,t.result_contract_version "
+                "t.stop_attempts,t.stop_accepted_at,t.result_contract_version,"
+                "t.grok_submission_state,t.grok_token_expires_at,t.grok_callback_deadline_at,"
+                "t.grok_callback_receipt_id,t.grok_reported_outcome,t.grok_late_callback_at "
                 "FROM slow_tasks AS t JOIN dispatch_outbox AS o USING(task_id) WHERE t.task_id=?",
                 (task_id,),
             ).fetchone()
@@ -1604,6 +2082,12 @@ class SQLiteTaskStore:
                 "stop_attempts": int(row[14] or 0),
                 "stop_accepted_at": row[15],
                 "result_contract_version": int(row[16] or 1),
+                "grok_submission_state": row[17],
+                "grok_token_expires_at": row[18],
+                "grok_callback_deadline_at": row[19],
+                "grok_callback_receipt_id": row[20],
+                "grok_reported_outcome": row[21],
+                "grok_late_callback_at": row[22],
             }
         except sqlite3.Error:
             raise AdmissionUnavailable("task_store_unavailable") from None
@@ -1630,6 +2114,7 @@ class SQLiteTaskStore:
                 return None
         clock = now or datetime.now(timezone.utc)
         now_iso = _utc_iso(clock)
+        self.expire_grok_callback_deadlines(now=clock)
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
@@ -1638,7 +2123,9 @@ class SQLiteTaskStore:
                     "SELECT t.task_id,t.status,t.task_kind,t.expires_at,i.delivery_state,"
                     "r.speak,r.card_json,r.details_md,t.backend_run_id,t.executor_kind,o.last_error,"
                     "t.stop_requested_at,t.stop_reason,t.stop_attempts,t.stop_accepted_at,"
-                    "r.artifact_status,r.artifact_ref,r.presentation_status,r.delivery_error "
+                    "r.artifact_status,r.artifact_ref,r.presentation_status,r.delivery_error,"
+                    "t.grok_reported_outcome,t.grok_callback_received_at,t.grok_late_callback_at,"
+                    "t.grok_submission_state "
                     "FROM slow_tasks AS t LEFT JOIN dispatch_outbox AS o USING(task_id) "
                     "LEFT JOIN task_inbox AS i USING(task_id) "
                     "LEFT JOIN task_results AS r USING(task_id) "
@@ -1650,7 +2137,9 @@ class SQLiteTaskStore:
                     "SELECT t.task_id,t.status,t.task_kind,t.expires_at,i.delivery_state,"
                     "r.speak,r.card_json,r.details_md,t.backend_run_id,t.executor_kind,o.last_error,"
                     "t.stop_requested_at,t.stop_reason,t.stop_attempts,t.stop_accepted_at,"
-                    "r.artifact_status,r.artifact_ref,r.presentation_status,r.delivery_error "
+                    "r.artifact_status,r.artifact_ref,r.presentation_status,r.delivery_error,"
+                    "t.grok_reported_outcome,t.grok_callback_received_at,t.grok_late_callback_at,"
+                    "t.grok_submission_state "
                     "FROM slow_tasks AS t LEFT JOIN dispatch_outbox AS o USING(task_id) "
                     "LEFT JOIN task_inbox AS i USING(task_id) "
                     "LEFT JOIN task_results AS r USING(task_id) "
@@ -1674,7 +2163,9 @@ class SQLiteTaskStore:
             if status in {"queued", "running"} and row[3] <= now_iso:
                 # Preserve OpenAB's legacy expiry behavior. For Hermes, this is a queue
                 # deadline only; active work and known Runs use the executor/result state.
-                if row[9] != "hermes_runs" or (status == "queued" and row[8] is None):
+                if row[9] not in {"hermes_runs", "grok_callback"} or (
+                    status == "queued" and row[8] is None
+                ):
                     status = "expired"
             if status == "running" and stop_requested_at is not None:
                 status = "stopping"
@@ -1710,13 +2201,28 @@ class SQLiteTaskStore:
                 "task_kind": row[2],
                 "delivery_state": delivery,
             }
+            if row[9] == "grok_callback":
+                payload["native_state"] = "unknown"
+                if isinstance(row[19], str):
+                    payload["reported_outcome"] = row[19]
+                if isinstance(row[20], str):
+                    payload["callback_received_at"] = row[20]
+                if isinstance(row[21], str):
+                    payload["late_callback_at"] = row[21]
+                payload["submission_state"] = row[22]
             if status in {"failed", "uncertain", "timed_out", "cancelled"} and isinstance(row[10], str):
                 payload["code"] = row[10]
             if status == "stopping":
                 payload["code"] = "hermes_stop_pending"
-            if status == "completed" and result is not None:
+            if (
+                status == "completed"
+                or (row[9] == "grok_callback" and row[19] == "not_completed")
+            ) and result is not None:
                 payload.update(result)
-            if speak and status == "completed" and result is not None:
+            if speak and (
+                status == "completed"
+                or (row[9] == "grok_callback" and row[19] == "not_completed")
+            ) and result is not None:
                 payload["speak_now"] = True
             return payload
         except (sqlite3.Error, json.JSONDecodeError):
@@ -1735,7 +2241,7 @@ class SQLiteTaskStore:
         task_id: str,
         now: datetime | None = None,
     ) -> bool:
-        """Acknowledge a completed result after successful server-side audio delivery."""
+        """Acknowledge an allowed result after successful server-side audio delivery."""
         if not isinstance(client_id, str) or not _ID_RE.fullmatch(client_id):
             raise AdmissionUnavailable("invalid_identity")
         if not isinstance(task_id, str):
@@ -1751,14 +2257,17 @@ class SQLiteTaskStore:
         try:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT t.status,r.speak,i.delivery_state "
+                "SELECT t.status,r.speak,i.delivery_state,t.executor_kind,t.grok_reported_outcome "
                 "FROM slow_tasks AS t "
                 "LEFT JOIN task_results AS r USING(task_id) "
                 "LEFT JOIN task_inbox AS i USING(task_id) "
                 "WHERE t.client_id=? AND t.task_id=?",
                 (client_id, task_id),
             ).fetchone()
-            if row is None or row[0] != "completed" or row[1] is None:
+            if row is None or row[1] is None or not (
+                row[0] == "completed"
+                or (row[0] == "failed" and row[3] == "grok_callback" and row[4] == "not_completed")
+            ):
                 connection.execute("COMMIT")
                 return False
             if row[2] == "spoken":

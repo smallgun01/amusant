@@ -126,6 +126,12 @@ class AsyncDispatcher:
 
     async def dispatch_available(self) -> int:
         """Drain currently due work without blocking the event loop on store I/O."""
+        expire_grok = getattr(self._store, "expire_grok_callback_deadlines", None)
+        if callable(expire_grok):
+            try:
+                await self._store_call(expire_grok, now=self._now())
+            except Exception:
+                pass
         handled = 0
         while True:
             try:
@@ -184,7 +190,7 @@ class AsyncDispatcher:
         if task.attempts > self._max_attempts and not known_hermes_run:
             await self._safe_store(self._store.fail, task.task_id, code="dispatch_attempts_exhausted")
             return
-        if not known_hermes_run:
+        if not known_hermes_run and task.executor_kind != "grok_callback":
             started_at = self._now()
             try:
                 await self._store_call(
@@ -201,12 +207,28 @@ class AsyncDispatcher:
         try:
             outcome = await self._executor.execute(task)
         except Exception as exc:
+            if task.executor_kind == "grok_callback":
+                # The executor owns the persisted send boundary. A callback may
+                # also have won the receipt transaction while its Webhook call
+                # was unwinding, so do not use generic _finish/uncertain writes.
+                finish = getattr(self._store, "finish_grok_submission", None)
+                if callable(finish):
+                    try:
+                        await self._store_call(finish, task.task_id, state="acceptance_unknown", now=self._now())
+                    except Exception:
+                        pass
+                return
             code = getattr(exc, "code", "acp_result_unconfirmed")
             await self._safe_store(
                 self._store.mark_uncertain,
                 task.task_id,
                 code=code,
             )
+            return
+        if task.executor_kind == "grok_callback":
+            # Grok submission and Callback receipt are transactionally managed
+            # by its executor/receiver; generic _finish requires a claimed row
+            # and would race or overwrite a Callback received before Webhook ACK.
             return
         if (
             outcome.status == "uncertain"

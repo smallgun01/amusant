@@ -13,9 +13,13 @@ import os
 import sqlite3
 import sys
 
-EXPECTED_LEDGER_SCHEMA_VERSION = 9
+EXPECTED_LEDGER_SCHEMA_VERSION = 10
 REQUIRED_LEDGER_COLUMNS = {
-    "slow_tasks": {"task_id", "status", "created_at", "stop_requested_at", "manual_reconciled_at", "result_contract_version"},
+    "slow_tasks": {
+        "task_id", "status", "created_at", "stop_requested_at", "manual_reconciled_at",
+        "result_contract_version", "grok_submission_state", "grok_token_sha256",
+        "grok_callback_deadline_at", "grok_callback_receipt_id",
+    },
     "dispatch_outbox": {"task_id", "state"},
     "task_inbox": {"task_id", "delivery_state", "updated_at"},
     "task_results": {

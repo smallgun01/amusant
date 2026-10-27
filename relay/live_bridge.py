@@ -836,7 +836,6 @@ def make_handler(
                 if (
                     first_action
                     and turn.tool_action_kind == "lookup"
-                    and result.get("status") == "completed"
                     and result.get("speak_now") is True
                 ):
                     turn.spoken_requested = True
