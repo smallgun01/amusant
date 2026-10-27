@@ -127,6 +127,7 @@ class GrokProfileTests(unittest.TestCase):
         relay = document["services"]["relay"]
         self.assertEqual(set(relay["depends_on"]), {"egress_proxy"})
         self.assertEqual(relay["environment"]["AMUSANT_SLOW_EXECUTOR"], "grok_callback")
+        self.assertEqual(relay["environment"]["AMUSANT_GROK_CALLBACK_MAX_INFLIGHT"], "1")
         self.assertNotIn("AMUSANT_GROK_ROUTINE_TOKEN", relay["environment"])
         self.assertIn("AMUSANT_GROK_ROUTINE_TOKEN_FILE", relay["environment"])
         self.assertTrue(document["networks"]["callback_api"]["internal"])
@@ -166,6 +167,7 @@ class GrokProfileTests(unittest.TestCase):
         self.assertEqual(set(rendered["services"]), {"relay", "egress_proxy"})
         for service in rendered["services"].values():
             self.assertFalse(service.get("ports"))
+        self.assertEqual(rendered["services"]["relay"]["environment"]["AMUSANT_GROK_CALLBACK_MAX_INFLIGHT"], "1")
         self.assertNotIn("offline-fixture-secret", result.stdout)
 
 

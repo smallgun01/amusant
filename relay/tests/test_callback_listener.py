@@ -224,6 +224,28 @@ class CallbackListenerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(b" 408 ", response.split(b"\r\n", 1)[0])
                 self.assertIsNone(self.store.get_result(self.task_id))
 
+    async def test_one_inflight_callback_rejects_concurrent_request(self):
+        app = create_grok_callback_app(
+            self.store, self.owner, trusted_hosts=["callback.invalid"], expected_port=443, max_inflight=1,
+        )
+        port = self.port()
+        async with serve_callback(app, "127.0.0.1", port):
+            _reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.write((
+                "POST /callback/results HTTP/1.1\r\nHost: callback.invalid\r\n"
+                f"Authorization: Bearer {self.token}\r\nContent-Type: application/json\r\n"
+                "Content-Length: 100\r\nConnection: close\r\n\r\n{"
+            ).encode())
+            await writer.drain()
+            await asyncio.sleep(0.1)
+            try:
+                status, _ = await self.request(port)
+                self.assertEqual(status, 429)
+                self.assertIsNone(self.store.get_result(self.task_id))
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
     async def test_process_starts_callback_before_dispatch_and_drains_without_repost(self):
         database = self.root / "process.sqlite3"
         store = SQLiteTaskStore(database_path=database, max_pending_tasks=8)
