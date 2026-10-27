@@ -1,5 +1,7 @@
 # Amusant Grok Bot 驗證提案 v0.3 — 階段 gate 與 Owner evidence 更新
 
+**2026-10-27 latest current-evidence addendum:** [#132 second cutover](https://github.com/smallgun01/amusant/issues/132#issuecomment-6444738695) Owner-reported Grok Relay+Proxy 2/2 Healthy and SQLite v10; legacy four containers removed without volumes, v8 data retained. Static mount/restart posture PASS, reboot recovery NOT TESTED. Public Callback/device ingress, provider/device E2E and native terminal state NOT TESTED. This later evidence supersedes older progress phrases below that say Grok has not been installed; dated G1/G2/G3 pilot history remains unchanged. Current OCI uses an Owner-local two-file Compose and older e615c06 images, not necessarily latest main.
+
 日期：2026-10-25（Asia/Taipei）
 Owner：Arthur
 基準：[`grok-bot-validation-v0.2.md`](grok-bot-validation-v0.2.md)；v0.2 的契約、primary transport、安全與離線測試要求持續有效，除本文件明確更新的階段 gate 與證據外不變。
