@@ -28,9 +28,7 @@ from .slow_path import (
     TaskAdmissionStore,
     build_relay_tools,
 )
-from .acp_client import load_acp_executor
 from .dispatcher import AsyncDispatcher, ExecutionOutcome, MAX_POLL_INTERVAL_SECONDS
-from .hermes_runs_executor import HermesConfigError, load_hermes_runs_executor
 from .grok_callback import create_grok_callback_app
 from .grok_callback_executor import GrokConfigError, load_grok_callback_executor
 from .store_factory import build_task_store
@@ -105,6 +103,25 @@ def _optional_positive_float(environ: Mapping[str, str], name: str, default: flo
     if not math.isfinite(value) or value <= 0:
         raise ValueError(f"{name} must be a finite positive number")
     return value
+
+
+def load_acp_executor(environ):
+    """Import the legacy ACP adapter only when explicitly selected."""
+    from .acp_client import load_acp_executor as load
+
+    return load(environ)
+
+
+def load_hermes_runs_executor(environ, *, save_backend_run_id, update_poll_state, update_stop_state):
+    """Import Hermes only when explicitly selected as the rollback executor."""
+    from .hermes_runs_executor import load_hermes_runs_executor as load
+
+    return load(
+        environ,
+        save_backend_run_id=save_backend_run_id,
+        update_poll_state=update_poll_state,
+        update_stop_state=update_stop_state,
+    )
 
 
 def load_relay_process_config(
@@ -276,32 +293,39 @@ def build_supported_relay_runtime(
     post_tool_ack_timeout_seconds: float = POST_TOOL_ACK_TIMEOUT_SECONDS,
     post_tool_ack_max_duration_seconds: float = POST_TOOL_ACK_MAX_DURATION_SECONDS,
 ):
-    """Build handler plus optional executor dispatcher; no configured executor skips dispatch."""
+    """Build the selected executor dispatcher and Live handler.
+
+    Do not switch executor kinds on a ledger with queued, running, or uncertain
+    tasks. This runtime selects one executor and does not recover another
+    backend's rows; such rows can be finalized as executor_unavailable. A
+    same-ledger switch guard/recovery policy is a separate #135 follow-up.
+    The Grok profile uses a separate fresh SQLite v10 ledger.
+    """
     config = load_relay_process_config(environ, expected_device_token=expected_device_token)
     if config.slow_executor_kind == "grok_callback" and config.task_store_kind != "sqlite":
         raise ValueError("grok_callback requires the existing SQLite TaskStore")
     store = build_task_store(environ, max_pending_tasks=config.max_pending_tasks)
-    acp_executor = load_acp_executor(environ)
-    try:
-        hermes_executor = load_hermes_runs_executor(
+    selected_executor = None
+    if config.slow_executor_kind == "openab_acp":
+        selected_executor = load_acp_executor(environ)
+        if selected_executor is None:
+            raise ValueError(
+                "ACP selection requires AMUSANT_ACP_URL, AMUSANT_ACP_AUTH_KEY, and AMUSANT_ACP_CWD"
+            )
+    elif config.slow_executor_kind == "hermes_runs":
+        selected_executor = load_hermes_runs_executor(
             environ,
             save_backend_run_id=store.save_backend_run_id,
             update_poll_state=store.update_hermes_poll_state,
             update_stop_state=store.update_hermes_stop_state,
         )
-    except HermesConfigError:
-        if config.slow_executor_kind not in {"openab_acp", "grok_callback"}:
-            raise
-        # Explicit legacy rollback must start even when stale Hermes settings
-        # remain. An unavailable Hermes executor is never replaced with ACP for
-        # existing Hermes tasks; the executor router fails those closed.
-        hermes_executor = None
-    grok_executor = None
-    if config.slow_executor_kind == "grok_callback":
+        if selected_executor is None:
+            raise ValueError("Hermes selection requires AMUSANT_HERMES_RUNS_URL and AMUSANT_FACADE_API_KEY")
+    else:
         if config.task_store_kind != "sqlite" or not isinstance(store, SQLiteTaskStore):
             raise ValueError("grok_callback requires the existing SQLite TaskStore")
         try:
-            grok_executor = load_grok_callback_executor(
+            selected_executor = load_grok_callback_executor(
                 environ,
                 begin_submission=store.begin_grok_submission,
                 finish_submission=store.finish_grok_submission,
@@ -309,17 +333,11 @@ def build_supported_relay_runtime(
             )
         except GrokConfigError as exc:
             raise ValueError(str(exc)) from None
-    configured_executors = {
-        "openab_acp": acp_executor,
-        "hermes_runs": hermes_executor,
-        "grok_callback": grok_executor,
-    }
-    selected_executor = configured_executors[config.slow_executor_kind]
-    if config.slow_executor_kind == "hermes_runs" and selected_executor is None:
-        raise ValueError("Hermes selection requires AMUSANT_HERMES_RUNS_URL and AMUSANT_FACADE_API_KEY")
-    if selected_executor is None and any(configured_executors.values()):
-        raise ValueError(f"{SLOW_EXECUTOR_ENV} selects an executor without complete server configuration")
-    active_executors = {kind: executor for kind, executor in configured_executors.items() if executor is not None}
+    active_executors = (
+        {config.slow_executor_kind: selected_executor}
+        if selected_executor is not None
+        else {}
+    )
 
     class _ExecutorRouter:
         async def execute(self, task):

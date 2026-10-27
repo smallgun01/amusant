@@ -530,28 +530,67 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
                     sdk_types=FakeSchemaTypes,
                 )
 
-    def test_supported_startup_recovers_started_work_without_executor(self):
+    def test_explicit_acp_without_configuration_fails_closed_before_recovery(self):
         store = self.store()
         store.admit(request_for(TASK_ID))
         store.claim_due(now=NOW, lease_seconds=30)
         store.mark_dispatch_started(TASK_ID, now=NOW)
+        before = store.get_by_task_id(TASK_ID)
         env = {
             "AMUSANT_LIVE_PROVIDER": "gemini",
             "GEMINI_API_KEY": "offline-test-key",
             "AMUSANT_CLIENT_ID": CLIENT,
             "AMUSANT_BACKEND_ID": "openab",
-            "AMUSANT_SLOW_EXECUTOR": "openab_acp",  # explicit legacy recovery fixture
+            "AMUSANT_SLOW_EXECUTOR": "openab_acp",
             "AMUSANT_TASK_DB": str(self.db_path),
         }
-        with patch("relay.application.build_live_provider", return_value=object()):
-            build_supported_relay_handler(
+        with self.assertRaisesRegex(ValueError, "ACP selection requires"):
+            build_supported_relay_runtime(
                 expected_device_token="device-token-12",
                 environ=env,
                 sdk_types=FakeSchemaTypes,
             )
-        row = SQLiteTaskStore(database_path=self.db_path, max_pending_tasks=8).get_by_task_id(TASK_ID)
-        self.assertEqual(row["status"], "uncertain")
-        self.assertEqual(row["dispatch_state"], "uncertain")
+        after = store.get_by_task_id(TASK_ID)
+        self.assertEqual(after["status"], before["status"])
+        self.assertEqual(after["dispatch_state"], before["dispatch_state"])
+
+    def test_explicit_acp_rejects_partial_configuration(self):
+        env = {
+            "AMUSANT_LIVE_PROVIDER": "gemini",
+            "GEMINI_API_KEY": "offline-test-key",
+            "AMUSANT_CLIENT_ID": CLIENT,
+            "AMUSANT_BACKEND_ID": "server-backend",
+            "AMUSANT_TASK_DB": str(self.db_path),
+            "AMUSANT_SLOW_EXECUTOR": "openab_acp",
+            "AMUSANT_ACP_URL": "ws://127.0.0.1:9/acp",
+        }
+        with self.assertRaisesRegex(ValueError, "ACP executor requires AMUSANT_ACP_URL"):
+            build_supported_relay_runtime(
+                expected_device_token="device-token-12",
+                environ=env,
+                sdk_types=FakeSchemaTypes,
+            )
+
+    def test_explicit_acp_does_not_fall_back_to_stale_hermes_configuration(self):
+        env = {
+            "AMUSANT_LIVE_PROVIDER": "gemini",
+            "GEMINI_API_KEY": "offline-test-key",
+            "AMUSANT_CLIENT_ID": CLIENT,
+            "AMUSANT_BACKEND_ID": "server-backend",
+            "AMUSANT_TASK_DB": str(self.db_path),
+            "AMUSANT_SLOW_EXECUTOR": "openab_acp",
+            "AMUSANT_HERMES_RUNS_URL": "http://127.0.0.1:8642",
+            "AMUSANT_FACADE_API_KEY": "local-test-api-key-123",
+            "AMUSANT_HERMES_TIMEOUT_SECONDS": "120",
+        }
+        with patch("relay.application.load_hermes_runs_executor") as hermes_loader:
+            with self.assertRaisesRegex(ValueError, "ACP selection requires"):
+                build_supported_relay_runtime(
+                    expected_device_token="device-token-12",
+                    environ=env,
+                    sdk_types=FakeSchemaTypes,
+                )
+        hermes_loader.assert_not_called()
 
 
     async def test_late_commit_after_router_timeout_is_found_by_fallback_poll(self):

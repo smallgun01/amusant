@@ -1283,7 +1283,10 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
                 "GEMINI_API_KEY": "offline-test-key",
                 "AMUSANT_CLIENT_ID": "trusted-owner",
                 "AMUSANT_BACKEND_ID": "openab",
-                "AMUSANT_SLOW_EXECUTOR": "openab_acp",  # explicit legacy fixture
+                "AMUSANT_SLOW_EXECUTOR": "openab_acp",  # explicit configured legacy fixture
+                "AMUSANT_ACP_URL": "ws://127.0.0.1:9/acp",
+                "AMUSANT_ACP_AUTH_KEY": "offline-test-acp-key-123",
+                "AMUSANT_ACP_CWD": "/workspace",
                 "AMUSANT_TASK_DB": str(db_path),
             }
             with patch("relay.application.build_live_provider", return_value=fake):
@@ -1326,7 +1329,10 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
                 "GEMINI_API_KEY": "offline-test-key",
                 "AMUSANT_CLIENT_ID": "trusted-owner",
                 "AMUSANT_BACKEND_ID": "openab",
-                "AMUSANT_SLOW_EXECUTOR": "openab_acp",  # explicit legacy fixture
+                "AMUSANT_SLOW_EXECUTOR": "openab_acp",  # explicit configured legacy fixture
+                "AMUSANT_ACP_URL": "ws://127.0.0.1:9/acp",
+                "AMUSANT_ACP_AUTH_KEY": "offline-test-acp-key-123",
+                "AMUSANT_ACP_CWD": "/workspace",
                 "AMUSANT_TASK_DB": str(db_path),
             }
             with patch("relay.application.build_live_provider", side_effect=provider_builder):

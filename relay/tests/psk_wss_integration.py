@@ -316,7 +316,10 @@ class PskWssIntegrationTests(unittest.IsolatedAsyncioTestCase):
             environ = {
                 "AMUSANT_CLIENT_ID": "h03-owner",
                 "AMUSANT_BACKEND_ID": "openab",
-                "AMUSANT_SLOW_EXECUTOR": "openab_acp",  # explicit legacy no-executor fixture
+                "AMUSANT_SLOW_EXECUTOR": "openab_acp",  # explicit configured legacy fixture
+                "AMUSANT_ACP_URL": "ws://127.0.0.1:9/acp",
+                "AMUSANT_ACP_AUTH_KEY": "offline-test-acp-key-123",
+                "AMUSANT_ACP_CWD": "/workspace",
                 "AMUSANT_TASK_DB": f"{temp_dir}/task-ledger.sqlite3",
                 "AMUSANT_TASK_STORE": "sqlite",
                 "AMUSANT_DEFAULT_TASK_KIND": "research",
@@ -336,7 +339,7 @@ class PskWssIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     post_tool_ack_timeout_seconds=0.2,
                     post_tool_ack_max_duration_seconds=1.0,
                 )
-                self.assertIsNone(dispatcher)  # local ledger admission only; no ACP/AWS call.
+                self.assertIsNotNone(dispatcher)  # configured, but not started; no ACP/AWS call.
                 server = await serve(
                     adapt_device_handler(handler, hardware_mode=True),
                     "127.0.0.1",

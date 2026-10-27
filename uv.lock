@@ -12,7 +12,6 @@ name = "amusant"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
-    { name = "boto3" },
     { name = "certifi" },
     { name = "google-genai" },
     { name = "opencc" },
@@ -26,6 +25,9 @@ hardware-opus = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
+dynamodb = [
+    { name = "boto3" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -35,7 +37,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "av", marker = "extra == 'hardware-opus'", specifier = ">=14,<17" },
-    { name = "boto3", specifier = ">=1.43.111" },
+    { name = "boto3", marker = "extra == 'dynamodb'", specifier = ">=1.43.111" },
     { name = "certifi", specifier = ">=2026.10.19" },
     { name = "google-genai", specifier = ">=2.0" },
     { name = "numpy", marker = "extra == 'hardware-opus'", specifier = ">=1.26,<3" },
@@ -43,7 +45,7 @@ requires-dist = [
     { name = "uvicorn", specifier = ">=0.54,<0.55" },
     { name = "websockets", specifier = ">=14,<17" },
 ]
-provides-extras = ["hardware-opus"]
+provides-extras = ["dynamodb", "hardware-opus"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "moto", extras = ["dynamodb"], specifier = ">=5.2.4" }]

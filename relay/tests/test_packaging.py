@@ -18,7 +18,7 @@ class PackagingTests(unittest.TestCase):
         self.assertIn("/app/.venv/bin/python", text)
         self.assertNotIn("uv run", text)
 
-    def test_production_lockfile_export_excludes_moto(self):
+    def test_production_lockfile_export_keeps_dynamodb_opt_in(self):
         import subprocess
 
         exported = subprocess.check_output(
@@ -26,8 +26,17 @@ class PackagingTests(unittest.TestCase):
             cwd=ROOT,
             text=True,
         )
-        self.assertIn("boto3", exported)
+        self.assertNotIn("boto3", exported)
         self.assertNotIn("moto", exported)
+        dynamodb_export = subprocess.check_output(
+            ["uv", "export", "--frozen", "--no-dev", "--extra", "dynamodb"],
+            cwd=ROOT,
+            text=True,
+        )
+        self.assertIn("boto3", dynamodb_export)
+        self.assertNotIn("moto", dynamodb_export)
+        dockerfile = (ROOT / "Dockerfile").read_text()
+        self.assertIn("--extra dynamodb", dockerfile)
 
     def test_taskdef_has_placeholders_not_account_ids(self):
         text = (ROOT / "deploy/oab-amusant-relay.taskdef.json").read_text()
