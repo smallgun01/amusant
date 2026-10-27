@@ -54,7 +54,7 @@ class GrokProfileTests(unittest.TestCase):
             "AMUSANT_GROK_CALLBACK_SERVICE_PORT": "443", "OCI_DATA_DIR": str(self.root),
             "RELAY_STOP_GRACE_PERIOD": "30s", "AMUSANT_RELAY_SHUTDOWN_GRACE_SECONDS": "10",
             "RELAY_CPU_LIMIT": "0.5", "RELAY_MEMORY_LIMIT": "512m",
-            "PROXY_CPU_LIMIT": "0.1", "PROXY_MEMORY_LIMIT": "128m", **self.secrets,
+            "PROXY_CPU_LIMIT": "0.5", "PROXY_MEMORY_LIMIT": "128m", **self.secrets,
         }
         self.preflight = load_module("grok_preflight", "preflight.py")
 
@@ -157,6 +157,9 @@ class GrokProfileTests(unittest.TestCase):
         relay = document["services"]["relay"]
         self.assertEqual(set(relay["depends_on"]), {"egress_proxy"})
         self.assertEqual(relay["environment"]["AMUSANT_SLOW_EXECUTOR"], "grok_callback")
+        self.assertEqual(relay["environment"]["AMUSANT_PERSONA_PROFILE"], "jellii")
+        self.assertEqual(relay["environment"]["AMUSANT_GEMINI_GOOGLE_SEARCH"], "1")
+        self.assertEqual(relay["environment"]["AMUSANT_GEMINI_VOICE"], "Zephyr")
         self.assertEqual(relay["environment"]["AMUSANT_GROK_CALLBACK_MAX_INFLIGHT"], "1")
         self.assertNotIn("AMUSANT_GROK_ROUTINE_TOKEN", relay["environment"])
         self.assertIn("AMUSANT_GROK_ROUTINE_TOKEN_FILE", relay["environment"])
@@ -198,6 +201,9 @@ class GrokProfileTests(unittest.TestCase):
         for service in rendered["services"].values():
             self.assertFalse(service.get("ports"))
         self.assertEqual(rendered["services"]["relay"]["environment"]["AMUSANT_GROK_CALLBACK_MAX_INFLIGHT"], "1")
+        self.assertEqual(rendered["services"]["relay"]["environment"]["AMUSANT_GEMINI_GOOGLE_SEARCH"], "1")
+        self.assertEqual(rendered["services"]["relay"]["environment"]["AMUSANT_GEMINI_VOICE"], "Zephyr")
+        self.assertEqual(float(rendered["services"]["egress_proxy"]["deploy"]["resources"]["limits"]["cpus"]), 0.5)
         self.assertNotIn("offline-fixture-secret", result.stdout)
 
 

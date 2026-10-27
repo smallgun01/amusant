@@ -139,6 +139,7 @@ class GrokImageReleaseWorkflowTests(unittest.TestCase):
             "DEVICE_PSKS_FILE", "GROK_ROUTINE_TOKEN_FILE",
         }
         self.assertTrue(required.issubset(values))
+        self.assertEqual(values["PROXY_CPU_LIMIT"], "0.5")
         self.assertEqual(
             {name for name in values if name.endswith("_IMAGE")},
             {"RELAY_IMAGE", "EGRESS_PROXY_IMAGE"},
