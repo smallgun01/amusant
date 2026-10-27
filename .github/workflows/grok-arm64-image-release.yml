@@ -1,0 +1,141 @@
+name: Grok ARM64 Image Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_images:
+        description: Publish the two ARM64 images after separate Owner approval.
+        type: boolean
+        required: true
+        default: false
+      publish_confirmation:
+        description: Select PUBLISH only when the Owner has approved this release.
+        type: choice
+        required: true
+        default: NO
+        options:
+          - NO
+          - PUBLISH
+
+permissions:
+  contents: read
+
+concurrency:
+  group: grok-arm64-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    name: Validate manual Owner release request
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions: {}
+    outputs:
+      publish: ${{ steps.guard.outputs.publish }}
+    steps:
+      - name: Require Owner, main, and both explicit confirmations
+        id: guard
+        shell: bash
+        env:
+          PUBLISH_IMAGES: ${{ inputs.publish_images }}
+          PUBLISH_CONFIRMATION: ${{ inputs.publish_confirmation }}
+          DISPATCH_ACTOR: ${{ github.actor }}
+          DISPATCH_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [[ "$PUBLISH_IMAGES" != "true" ]]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "Image publication is disabled; no images will be built or pushed."
+            exit 0
+          fi
+          if [[ "$DISPATCH_ACTOR" != "smallgun01" ]]; then
+            echo "Only the repository Owner account may publish these images." >&2
+            exit 1
+          fi
+          if [[ "$DISPATCH_REF" != "refs/heads/main" ]]; then
+            echo "Image publication must run from main." >&2
+            exit 1
+          fi
+          if [[ "$PUBLISH_CONFIRMATION" != "PUBLISH" ]]; then
+            echo "Select PUBLISH only after separate Owner approval." >&2
+            exit 1
+          fi
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+
+  publish:
+    name: Build and publish Grok-only ARM64 images
+    needs: guard
+    if: needs.guard.outputs.publish == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      relay_image: ${{ steps.references.outputs.relay_image }}
+      egress_proxy_image: ${{ steps.references.outputs.egress_proxy_image }}
+    steps:
+      - name: Check out the approved main revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR with the job-scoped token
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Relay for ARM64
+        id: relay
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/oci-a1/Dockerfile.relay
+          platforms: linux/arm64
+          push: true
+          tags: ghcr.io/smallgun01/amusant-relay:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/smallgun01/amusant
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Build and push Egress Proxy for ARM64
+        id: egress_proxy
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/oci-a1/Dockerfile.egress-proxy
+          platforms: linux/arm64
+          push: true
+          tags: ghcr.io/smallgun01/amusant-egress-proxy:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/smallgun01/amusant
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Validate and report immutable image digests
+        id: references
+        shell: bash
+        env:
+          RELAY_DIGEST: ${{ steps.relay.outputs.digest }}
+          EGRESS_PROXY_DIGEST: ${{ steps.egress_proxy.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$RELAY_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$EGRESS_PROXY_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          relay_image="ghcr.io/smallgun01/amusant-relay@$RELAY_DIGEST"
+          egress_proxy_image="ghcr.io/smallgun01/amusant-egress-proxy@$EGRESS_PROXY_DIGEST"
+          echo "relay_image=$relay_image" >> "$GITHUB_OUTPUT"
+          echo "egress_proxy_image=$egress_proxy_image" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Published Grok ARM64 image digests"
+            echo
+            echo "Source revision: `$GITHUB_SHA`"
+            echo
+            echo "- Relay: `$relay_image`"
+            echo "- Egress Proxy: `$egress_proxy_image`"
+          } >> "$GITHUB_STEP_SUMMARY"
