@@ -13,6 +13,25 @@ These immutable links preserve the original documents, embedded historical appen
 | H1.2 delivery proposal | [Original proposal](https://github.com/smallgun01/amusant/blob/685db3bf5a48017b0a535354ec4efc64e89dc972/docs/hermes-h1.2-result-delivery-proposal.md) |
 | Single-flight implementation notes | [Original lifecycle notes](https://github.com/smallgun01/amusant/blob/685db3bf5a48017b0a535354ec4efc64e89dc972/docs/slow-task-single-flight.md) |
 
-Historical claims remain claims as of their dates. In particular, old B0/OpenAB/AWS choices, v1 rollout defaults, mandatory-report requirements, broad one-Slow wording and unimplemented proposal fields do not override [SPEC](../../SPEC.md) / [ADR-0004](../adr/0004-owner-managed-hermes.md).
+Historical claims remain claims as of their dates. Old B0/OpenAB/AWS choices and embedded proposal requirements do not override current [SPEC](../../SPEC.md) or [STATUS](../../STATUS.md). ADR-0004 is retained as dated decision context.
 
 The separate [2026-10-22/23 OCI evidence](../oci-go2-go3-live-evidence-20261022.md), [AWS T4b evidence](../p4-t4b-live-acceptance.md), ADR-0001/0002, test harnesses and PR discussions are retained. This documentation alignment neither deletes operational data nor promotes any test to a higher acceptance tier.
+
+
+
+## 2026-10-27 — Superseded Hermes-current documentation snapshot
+
+The following immutable files pin the last root-document baseline before the Grok-first alignment in #135. They describe the former Hermes-current source documentation at main@e615c06; they are historical provenance, not present deployment evidence or current instructions.
+
+| Prior current-truth document | Immutable snapshot |
+| --- | --- |
+| README | [README at e615c06](https://github.com/smallgun01/amusant/blob/e615c06259195496ef94d6a6d2c6a038ff06c497/README.md) |
+| SPEC v0.6 and embedded v0.4 appendix | [SPEC at e615c06](https://github.com/smallgun01/amusant/blob/e615c06259195496ef94d6a6d2c6a038ff06c497/SPEC.md) |
+| STATUS | [STATUS at e615c06](https://github.com/smallgun01/amusant/blob/e615c06259195496ef94d6a6d2c6a038ff06c497/STATUS.md) |
+| PLAN | [PLAN at e615c06](https://github.com/smallgun01/amusant/blob/e615c06259195496ef94d6a6d2c6a038ff06c497/PLAN.md) |
+| WS index | [Workstreams at e615c06](https://github.com/smallgun01/amusant/blob/e615c06259195496ef94d6a6d2c6a038ff06c497/docs/project-management/workstreams.md) |
+| Relay README | [Relay README at e615c06](https://github.com/smallgun01/amusant/blob/e615c06259195496ef94d6a6d2c6a038ff06c497/relay/README.md) |
+| Grok validation gate text | [v0.3 at e615c06](https://github.com/smallgun01/amusant/blob/e615c06259195496ef94d6a6d2c6a038ff06c497/docs/project-management/grok-bot-validation-v0.3.md) |
+| Grok image-release runbook | [D2c runbook at e615c06](https://github.com/smallgun01/amusant/blob/e615c06259195496ef94d6a6d2c6a038ff06c497/docs/ops/grok-g4-d2c-image-release.md) |
+
+The prior four-service Hermes/Facade diagram is retained here for provenance. The current source profile is Grok-first and the latest Owner-reported installed runtime remains the legacy four-service stack until a separately recorded cutover.

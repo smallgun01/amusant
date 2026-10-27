@@ -1,6 +1,6 @@
 # Grok G4-D2a source-only runtime
 
-This design is a candidate for later Owner-authorized staging. It makes no claim about the current OCI host, VCN, DNS, Cloudflare, installed containers, costs, or device reachability. No deployment is performed by this change.
+This is the selected Grok-first source profile following the Owner decision in #130/#132 and merged source PR #131. The latest Owner reports in #132 record digest image publication/pre-pull and static staging configuration checks as PASS; the legacy four-service stack remains installed and no Grok Compose cutover is reported. This document describes source architecture, not installed state or deployment instructions.
 
 ## Two listeners and one ledger
 
@@ -12,11 +12,11 @@ The Routine trigger bearer comes from `GROK_ROUTINE_TOKEN_FILE`, mounted as a se
 
 The egress proxy's explicit `grok` mode opens one private bind and accepts one private Relay peer. CONNECT is restricted to public destinations on 443; DNS answers are checked and pinned before connecting. The legacy two-peer mode and historical Compose file remain available. No Hermes or Facade service is a dependency of this profile.
 
-## Candidate ingress and later Owner gate
+## Separate ingress and live acceptance gates
 
 The candidate Callback path is an Owner-controlled fixed HTTPS hostname on Cloudflare Named Tunnel, routed to a host-loopback-only proxy and then to the approved private Docker Callback address. A connector in a separate container has its own loopback namespace; its `127.0.0.1` is not the host or Relay listener, so its route needs an explicitly reviewed network connection. The exact hostname, DNS record, tunnel, host socket/service, IPs and rate policy are not selected here. Before any live change, review a single exact method/path mapping to `/callback/results`, canonical upstream Host/port, TLS, rate limits, header and slow-body timeouts, request-size limits, Authorization preservation and redaction, removal of untrusted `Forwarded`/`X-Forwarded-*`, access controls, and disable/revoke procedures. Uvicorn ignores proxy headers and access logging is disabled; the app bounds body size and body receive time. The external edge still must enforce request-rate and slow-header limits.
 
-The independent device route remains the reviewed G1 raw TCP path to the TLS-PSK WSS listener; Cloudflare HTTP termination must not replace that TLS-PSK transport. Active host/network inventory, exact ingress configuration, secret provisioning, usage/cost, fresh test DB initialization, deployment and real device/Provider calls all need a separate Owner GO. Hermes G0 and preservation of disposable v8/v9 data are not prerequisites.
+The independent device route remains the reviewed G1 raw TCP path to the TLS-PSK WSS listener; Cloudflare HTTP termination must not replace that TLS-PSK transport. #132 records the Owner-reported host inventory, image pre-pull and static environment audit; it also records Stop-and-Replace authorization, but no Grok cutover. Public Callback routing, G1 device ingress and real device/Provider calls remain separate gates. Hermes G0 and preservation of disposable v8/v9 data are not prerequisites.
 
 ## Offline checks and rollback plan
 

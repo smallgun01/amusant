@@ -80,3 +80,14 @@ This dated addendum **supersedes the older 'G3-P2 not started' progress statemen
 Four live Webhook POSTs including the fixed synthetic are **reported**. Durations are prepare-to-receipt, **not** pure model execution or statistical reliability. Valid `reported_outcome` and committed callback are not independently verified native Run termination; `native_state=unknown` is correct. Native `box:` workspace locator is only a native reference, **not** an Owner-authenticated download URL or Facade artifact. Actual complete Markdown byte-diff was not independently reviewed. No real device/G4 production flow, native Stop, long-term uptime, callback failure injection, explicit approval case, cost or quota trend has passed.
 
 **Stage verdict:** G1 accepted; G2 accepted; G3 **core product feasibility** met for two factual query cases and native full document with same-work edit. **Conditional GO for G4-D0 read-only architecture**, not permission for G4 runtime edits, OCI public ingress, live tests or G5 Hermes retirement. v0.2 originally proposed Remote HTTPS MCP/OAuth primary; callback-first was a validation order and did not formally retire MCP. G4-D0 must compare routes and ask Owner to choose exactly one managed return transport. Existing Hermes G0 physical Slow→Inbox→spoken still gates G4 live/device acceptance. [#123 evidence](https://github.com/smallgun01/amusant/issues/123#issuecomment-6419151666) · [G4 agent work order](../handoffs/20261027-grok-g4-agents.md).
+
+
+
+## 2026-10-27 Owner selection update — Grok-first source and staging
+
+This later Owner decision supersedes the earlier phrases in this proposal that call Grok a candidate/non-selected backend or require Hermes G0 as a prerequisite for Grok staging. The dated phase history above remains unchanged as provenance. Current requirements and evidence are in [SPEC](../../SPEC.md), [STATUS](../../STATUS.md), [PLAN](../../PLAN.md), [#130](https://github.com/smallgun01/amusant/issues/130), [#132](https://github.com/smallgun01/amusant/issues/132), and [#135](https://github.com/smallgun01/amusant/issues/135).
+
+- The selected Grok source profile explicitly runs Relay + Egress Proxy with SQLite v10. Hermes is an explicit alternative/rollback path; there is no automatic fallback.
+- Hermes G0 and PR #124 are not prerequisites for Grok source or staging. #132 owns the independent Owner-operated OCI cutover and ingress gates.
+- PR #131 source/ARM64 CI passed; PR #133 image publication and the Owner-reported pre-pull/static-config checks are recorded in #132. The Grok Compose profile has not been started; public Callback ingress, StickS3 ingress, native Run terminal state, and physical Grok E2E remain unverified.
+- A Callback receipt and Bot-reported outcome do not prove native Run termination. Do not claim native Stop, retry an ambiguous Routine Webhook, or infer Hermes fallback.

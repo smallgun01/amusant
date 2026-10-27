@@ -1,3 +1,5 @@
+> **Historical handoff (2026-10-27):** this work order predates the Grok-first source decision and was written against an older source snapshot. Follow current [README](../../README.md), [SPEC](../../SPEC.md), [PLAN](../../PLAN.md), [STATUS](../../STATUS.md), [#132](https://github.com/smallgun01/amusant/issues/132) and [#135](https://github.com/smallgun01/amusant/issues/135) for present selection and gates. Preserve this document as dated context.
+
 # Grok G4 — Codex / OpenClaw work orders (2026-10-27)
 
 **Objective:** assess Grok Bot as a **replacement candidate for Hermes** as Amusant's SLOW backend. **Never treat Grok as a tool underneath Hermes.** Selected Hermes target, SPEC v0.6 and ADR-0004 remain active until a distinct Owner cutover decision. Track [G4 #127](https://github.com/smallgun01/amusant/issues/127). Source baseline at handoff: main@e776495; each agent verifies latest main. This is a read-only design authorization, not runtime/live/paid-work approval.

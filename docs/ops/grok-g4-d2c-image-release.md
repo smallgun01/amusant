@@ -1,6 +1,10 @@
 # G4-D2c Grok ARM64 image release and staging runbook
 
-This is a preparation guide. It does not publish images, access OCI, create secret files or data directories, stop a service, configure ingress, or submit a Grok task. Issue #132 Gate 0C still has unresolved read-only evidence, and no staging or release GO is implied by this PR.
+This is an Owner-operated staging and rollback guide; it performs no actions. Owner reports in [#132](https://github.com/smallgun01/amusant/issues/132) record PR #133 image publication, digest pre-pull and static staging configuration checks as PASS. The existing four-service legacy stack is still the reported installed runtime; no Grok Compose cutover, public Callback/device ingress or live Grok task is recorded. #132 records the Owner's Stop-and-Replace authorization and retains its prerequisites.
+
+## Recorded release and staging status
+
+The manual workflow was run by the Owner on `main` after PR #133 merged. The published Relay and Egress Proxy digests were pre-pulled and checked as `linux/arm64`; #132 also records the isolated v10 staging path/secrets and static environment audit as PASS. These checks do not establish a running Grok profile. Keep the verified legacy rollback stack intact until the documented cutover prerequisites and Owner-controlled sequence are complete.
 
 ## Manual image release
 
