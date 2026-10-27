@@ -1,4 +1,4 @@
-"""Small CONNECT-only proxy with public-IP allowlisting for the Hermes container."""
+"""CONNECT-only proxy with public-IP destination checks and isolated peers."""
 from __future__ import annotations
 
 import asyncio
@@ -309,17 +309,31 @@ async def _healthcheck(reader: asyncio.StreamReader, writer: asyncio.StreamWrite
             pass
 
 
-async def serve() -> None:
-    bind_values = [value.strip() for value in os.environ["EGRESS_PROXY_BIND_IPS"].split(",") if value.strip()]
+def proxy_config(environ):
+    """Parse the explicit isolated listener and peer set before opening sockets."""
+    mode = environ.get("EGRESS_PROXY_MODE", "legacy")
+    if mode not in {"legacy", "grok"}:
+        raise ValueError("proxy mode must be legacy or grok")
+    expected_clients = 1 if mode == "grok" else 2
+    bind_values = [value.strip() for value in environ["EGRESS_PROXY_BIND_IPS"].split(",") if value.strip()]
     bind_ips = tuple(ipaddress.ip_address(value) for value in bind_values)
-    if len(bind_ips) != 2 or len(set(bind_ips)) != len(bind_ips):
-        raise ValueError("proxy requires two unique isolated listener addresses")
-    peer_values = [value.strip() for value in os.environ["EGRESS_PROXY_ALLOWED_CLIENTS"].split(",") if value.strip()]
+    if len(bind_ips) != expected_clients or len(set(bind_ips)) != len(bind_ips):
+        raise ValueError("proxy requires the configured number of unique isolated listener addresses")
+    peer_values = [value.strip() for value in environ["EGRESS_PROXY_ALLOWED_CLIENTS"].split(",") if value.strip()]
     allowed_peers = frozenset(ipaddress.ip_address(value) for value in peer_values)
     if len(allowed_peers) != len(peer_values):
         raise ValueError("proxy client addresses must be unique")
-    if len(allowed_peers) != MAX_PROXY_CLIENTS:
-        raise ValueError("proxy requires the Relay and Hermes client addresses")
+    if len(allowed_peers) != expected_clients:
+        raise ValueError("proxy requires the configured number of isolated client addresses")
+    private_networks = tuple(ipaddress.ip_network(cidr) for cidr in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
+    if any(not isinstance(ip, ipaddress.IPv4Address) or not any(ip in net for net in private_networks)
+           for ip in (*bind_ips, *allowed_peers)) or set(bind_ips) & set(allowed_peers):
+        raise ValueError("proxy bind and client addresses must be distinct RFC1918 IPv4 addresses")
+    return bind_ips, allowed_peers
+
+
+async def serve() -> None:
+    bind_ips, allowed_peers = proxy_config(os.environ)
     capacities = ProxyCapacity(allowed_peers)
     proxy_port = int(os.environ.get("EGRESS_PROXY_PORT", "3128"))
 

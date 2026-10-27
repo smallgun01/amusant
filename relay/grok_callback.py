@@ -19,6 +19,7 @@ from .task_store import (
 
 CALLBACK_PATH = "/callback/results"
 CALLBACK_BODY_LIMIT = 16_384
+CALLBACK_BODY_TIMEOUT_SECONDS = 5.0
 MAX_CALLBACK_INFLIGHT = 32
 _AUTHORIZATION = re.compile(r"(?i:Bearer) ([A-Za-z0-9._~-]{1,128})\Z")
 _CONTENT_LENGTH = re.compile(r"[0-9]+\Z")
@@ -241,8 +242,14 @@ async def _handle(scope, receive, store, client_id, hosts, expected_port, store_
         expected_length = int(normalized_length)
 
     body = bytearray()
+    deadline = asyncio.get_running_loop().time() + CALLBACK_BODY_TIMEOUT_SECONDS
     while True:
-        message = await receive()
+        try:
+            message = await asyncio.wait_for(receive(), timeout=max(0, deadline - asyncio.get_running_loop().time()))
+        except asyncio.TimeoutError:
+            status, response, response_headers = _response(408, {"accepted": False, "error": "request body timed out"})
+            response_headers.append((b"connection", b"close"))
+            return status, response, response_headers
         if message.get("type") == "http.disconnect":
             return _response(400, {"accepted": False, "error": "request body incomplete"})
         if message.get("type") != "http.request":

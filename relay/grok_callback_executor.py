@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import ipaddress
 import json
 import secrets
 import urllib.error
@@ -47,9 +48,20 @@ def _https_url(value: str, name: str, *, path: str | None = None) -> None:
     ):
         raise GrokConfigError(f"{name} must be an HTTPS URL without userinfo, query, or fragment")
     try:
-        _ = parts.port
+        port = parts.port
     except ValueError:
         raise GrokConfigError(f"{name} has an invalid port") from None
+    if port is not None and not 1 <= port <= 65535:
+        raise GrokConfigError(f"{name} has an invalid port")
+    if parts.hostname == "localhost" or parts.hostname.endswith(".localhost"):
+        raise GrokConfigError(f"{name} must not use a local hostname")
+    try:
+        literal = ipaddress.ip_address(parts.hostname)
+    except ValueError:
+        pass
+    else:
+        if not literal.is_global:
+            raise GrokConfigError(f"{name} must not use a nonpublic IP address")
 
 
 def _proxy_url(value: str) -> None:

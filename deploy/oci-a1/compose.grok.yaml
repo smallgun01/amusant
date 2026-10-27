@@ -1,0 +1,139 @@
+name: amusant-oci-a1-grok
+
+services:
+  relay:
+    image: ${RELAY_IMAGE:?set an immutable Relay image reference}
+    platform: linux/arm64
+    user: "10001:10001"
+    group_add: ["20000"]
+    init: true
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=64m,mode=1777"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    stop_grace_period: ${RELAY_STOP_GRACE_PERIOD:?set a bounded shutdown grace}
+    environment:
+      RELAY_DEVICE_MODE: sticks3
+      RELAY_BIND_IP: ${RELAY_BIND_IP:?set private device listener IP}
+      RELAY_LISTEN_PORT: "8443"
+      RELAY_CALLBACK_BIND_IP: ${RELAY_CALLBACK_BIND_IP:?set private callback listener IP}
+      RELAY_CALLBACK_LISTEN_PORT: "8645"
+      AMUSANT_LIVE_PROVIDER: gemini
+      AMUSANT_PERSONA_PROFILE: jellii
+      AMUSANT_CLIENT_ID: ${AMUSANT_CLIENT_ID:?set the authenticated owner id}
+      AMUSANT_BACKEND_ID: grok_bot
+      AMUSANT_TASK_STORE: sqlite
+      AMUSANT_TASK_DB: /var/lib/amusant/task-ledger.sqlite3
+      AMUSANT_SLOW_EXECUTOR: grok_callback
+      AMUSANT_GROK_ROUTINE_URL: ${AMUSANT_GROK_ROUTINE_URL:?set nonsecret HTTPS Routine URL}
+      AMUSANT_GROK_CALLBACK_URL: ${AMUSANT_GROK_CALLBACK_URL:?set canonical HTTPS Callback URL}
+      AMUSANT_GROK_CALLBACK_TRUSTED_HOSTS: ${AMUSANT_GROK_CALLBACK_TRUSTED_HOSTS:?set canonical Callback host}
+      AMUSANT_GROK_CALLBACK_SERVICE_PORT: ${AMUSANT_GROK_CALLBACK_SERVICE_PORT:-443}
+      AMUSANT_GROK_CALLBACK_MAX_INFLIGHT: "1"
+      AMUSANT_RELAY_SHUTDOWN_GRACE_SECONDS: ${AMUSANT_RELAY_SHUTDOWN_GRACE_SECONDS:?set bounded dispatcher drain grace}
+      HTTPS_PROXY: http://${EGRESS_PROXY_RELAY_BIND_IP:?set proxy IP}:3128
+      HTTP_PROXY: http://${EGRESS_PROXY_RELAY_BIND_IP:?}:3128
+      https_proxy: http://${EGRESS_PROXY_RELAY_BIND_IP:?}:3128
+      http_proxy: http://${EGRESS_PROXY_RELAY_BIND_IP:?}:3128
+      wss_proxy: http://${EGRESS_PROXY_RELAY_BIND_IP:?}:3128
+      NO_PROXY: localhost,127.0.0.1
+      no_proxy: localhost,127.0.0.1
+      GEMINI_API_KEY_FILE: /run/secrets/gemini_api_key
+      AMUSANT_DEVICE_TOKEN_FILE: /run/secrets/device_token
+      AMUSANT_DEVICE_PSKS_FILE: /run/secrets/device_psks
+      AMUSANT_GROK_ROUTINE_TOKEN_FILE: /run/secrets/grok_routine_token
+    secrets:
+      - gemini_api_key
+      - device_token
+      - device_psks
+      - grok_routine_token
+    volumes:
+      - relay_state:/var/lib/amusant
+    networks:
+      relay_api:
+        ipv4_address: ${RELAY_BIND_IP:?}
+      callback_api:
+        ipv4_address: ${RELAY_CALLBACK_BIND_IP:?}
+      relay_egress:
+        ipv4_address: ${RELAY_EGRESS_IP:?}
+    depends_on:
+      egress_proxy:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/app/.venv/bin/python", "/opt/amusant/healthcheck.py"]
+      interval: 10s
+      timeout: 4s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: ${RELAY_CPU_LIMIT:?set a measured Relay CPU ceiling}
+          memory: ${RELAY_MEMORY_LIMIT:?set a measured Relay memory ceiling}
+
+  egress_proxy:
+    image: ${EGRESS_PROXY_IMAGE:?set an immutable egress proxy image reference}
+    platform: linux/arm64
+    user: "10002:10002"
+    init: true
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=16m,mode=1777"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    environment:
+      EGRESS_PROXY_MODE: grok
+      EGRESS_PROXY_BIND_IPS: ${EGRESS_PROXY_RELAY_BIND_IP:?}
+      EGRESS_PROXY_ALLOWED_CLIENTS: ${RELAY_EGRESS_IP:?}
+    networks:
+      relay_egress:
+        ipv4_address: ${EGRESS_PROXY_RELAY_BIND_IP:?}
+      proxy_outbound: {}
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3129/healthz', timeout=1).read(16)"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: ${PROXY_CPU_LIMIT:?set a measured proxy CPU ceiling}
+          memory: ${PROXY_MEMORY_LIMIT:?set a proxy memory ceiling}
+
+networks:
+  relay_api:
+    internal: true
+    ipam:
+      config:
+        - subnet: ${RELAY_API_CIDR:?set private device subnet}
+  callback_api:
+    internal: true
+    ipam:
+      config:
+        - subnet: ${CALLBACK_API_CIDR:?set private callback subnet}
+  relay_egress:
+    internal: true
+    ipam:
+      config:
+        - subnet: ${RELAY_EGRESS_CIDR:?set private egress subnet}
+  proxy_outbound: {}
+
+volumes:
+  relay_state:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${OCI_DATA_DIR:?set the prepared test data directory}/relay
+
+secrets:
+  gemini_api_key:
+    file: ${GEMINI_API_KEY_FILE:?set secret file path}
+  device_token:
+    file: ${DEVICE_TOKEN_FILE:?set secret file path}
+  device_psks:
+    file: ${DEVICE_PSKS_FILE:?set secret file path}
+  grok_routine_token:
+    file: ${GROK_ROUTINE_TOKEN_FILE:?set secret file path}

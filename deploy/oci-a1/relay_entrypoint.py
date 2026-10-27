@@ -7,11 +7,10 @@ import stat
 import sys
 
 
-SECRET_FILES = {
+COMMON_SECRET_FILES = {
     "GEMINI_API_KEY": "GEMINI_API_KEY_FILE",
     "AMUSANT_DEVICE_TOKEN": "AMUSANT_DEVICE_TOKEN_FILE",
     "AMUSANT_DEVICE_PSKS": "AMUSANT_DEVICE_PSKS_FILE",
-    "AMUSANT_FACADE_API_KEY": "AMUSANT_FACADE_API_KEY_FILE",
 }
 
 
@@ -57,7 +56,13 @@ def _read_secret(path_value: str) -> str:
 
 def load_secrets(environ: dict[str, str]) -> None:
     """Replace *_FILE pointers with the environment strings expected by Relay."""
-    for target, source in SECRET_FILES.items():
+    executor = environ.get("AMUSANT_SLOW_EXECUTOR", "hermes_runs")
+    secret_files = dict(COMMON_SECRET_FILES)
+    if executor == "grok_callback":
+        secret_files["AMUSANT_GROK_ROUTINE_TOKEN"] = "AMUSANT_GROK_ROUTINE_TOKEN_FILE"
+    else:
+        secret_files["AMUSANT_FACADE_API_KEY"] = "AMUSANT_FACADE_API_KEY_FILE"
+    for target, source in secret_files.items():
         if environ.get(target):
             raise SecretConfigurationError("direct secret environment values are not allowed")
         path = environ.get(source)

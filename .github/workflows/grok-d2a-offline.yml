@@ -1,0 +1,219 @@
+name: Grok D2a source-only Linux regression
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  linux-offline:
+    if: github.event.pull_request.draft && github.head_ref == 'codex/grok-g4-d2a-source'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            uv.lock
+            spikes/005-grok-bot-validation/uv.lock
+      - name: Install Python 3.13 and locked test dependencies
+        run: |
+          uv python install 3.13
+          uv sync --locked --python 3.13 --extra hardware-opus --group dev
+      - name: Grok spike offline regression
+        run: |
+          uv sync --locked --python 3.13 --project spikes/005-grok-bot-validation
+          uv run --locked --python 3.13 --project spikes/005-grok-bot-validation python -m unittest discover -s spikes/005-grok-bot-validation/tests -v
+      - name: Fast Voice offline regression
+        run: uv run --locked --python 3.13 --extra hardware-opus --group dev python -m unittest discover -s fast_voice/tests -v
+      - name: Relay offline regression
+        env:
+          PYTHONPATH: .:relay
+        run: uv run --locked --python 3.13 --extra hardware-opus --group dev python -m unittest discover -s relay/tests -v
+      - name: Grok Compose, preflight and proxy offline regression
+        env:
+          GROK_REQUIRE_COMPOSE: "1"
+        run: |
+          uv run --locked --python 3.13 --extra hardware-opus --group dev python -m unittest discover -s deploy/oci-a1/tests -p test_grok_runtime.py -v
+          uv run --locked --python 3.13 --extra hardware-opus --group dev python -m unittest discover -s deploy/oci-a1/tests -p test_device_ingress_units.py -v
+          uv run --locked --python 3.13 --extra hardware-opus --group dev python -m unittest discover -s deploy/oci-a1/tests -p test_runtime_guards.py -v
+          uv run --locked --python 3.13 --extra hardware-opus --group dev python -m unittest discover -s deploy/oci-a1/tests -p test_offline_package.py -v
+          uv run --locked --python 3.13 --extra hardware-opus --group dev python -m unittest discover -s deploy/oci-a1/tests -p test_sqlite_ledger_maintenance.py -v
+      - name: TLS-PSK loopback with fake LiveProvider
+        env:
+          PYTHONPATH: .
+        run: uv run --locked --python 3.13 --extra hardware-opus --group dev python relay/tests/psk_wss_integration.py
+
+  grok-arm64-runtime-smoke:
+    if: github.event.pull_request.draft && github.head_ref == 'codex/grok-g4-d2a-source'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Verify native ARM64 runner
+        run: test "$(uname -m)" = aarch64
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build Grok Relay image for ARM64
+        run: docker buildx build --platform linux/arm64 --load -f deploy/oci-a1/Dockerfile.relay -t amusant-relay:grok-d2a-arm64-smoke .
+      - name: Build Grok Egress Proxy image for ARM64
+        run: docker buildx build --platform linux/arm64 --load -f deploy/oci-a1/Dockerfile.egress-proxy -t amusant-egress-proxy:grok-d2a-arm64-smoke .
+      - name: Create disposable offline-only Compose fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          smoke_dir="$RUNNER_TEMP/grok-d2a-arm64-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$smoke_dir/data/relay" "$smoke_dir/secrets"
+          sudo chown "10001:$(id -g)" "$smoke_dir/data/relay"
+          sudo chmod 0770 "$smoke_dir/data/relay"
+          python3 - "$smoke_dir" <<'PY'
+          from pathlib import Path
+          import sys
+
+          root = Path(sys.argv[1])
+          secret_values = {
+              "GEMINI_API_KEY_FILE": ("gemini_api_key", "offline-fixture-not-a-real-provider-key\n"),
+              "DEVICE_TOKEN_FILE": ("device_token", "offline-device-fixture-token-0123456789\n"),
+              "DEVICE_PSKS_FILE": ("device_psks", "offline-stick:" + bytes(range(32)).hex() + "\n"),
+              "GROK_ROUTINE_TOKEN_FILE": ("grok_routine_token", "offline-routine-fixture-token\n"),
+          }
+          values = {
+              "RELAY_IMAGE": "registry.invalid/relay@sha256:" + "a" * 64,
+              "EGRESS_PROXY_IMAGE": "registry.invalid/proxy@sha256:" + "b" * 64,
+              "RELAY_API_CIDR": "172.30.62.0/29",
+              "RELAY_BIND_IP": "172.30.62.2",
+              "CALLBACK_API_CIDR": "172.30.64.0/29",
+              "RELAY_CALLBACK_BIND_IP": "172.30.64.2",
+              "RELAY_EGRESS_CIDR": "172.30.63.0/29",
+              "RELAY_EGRESS_IP": "172.30.63.2",
+              "EGRESS_PROXY_RELAY_BIND_IP": "172.30.63.3",
+              "RELAY_HOST_PRIVATE_IP": "10.0.0.10",
+              "AMUSANT_CLIENT_ID": "offline-owner",
+              "AMUSANT_GROK_ROUTINE_URL": "https://routine.invalid/webhook",
+              "AMUSANT_GROK_CALLBACK_URL": "https://callback.invalid/callback/results",
+              "AMUSANT_GROK_CALLBACK_TRUSTED_HOSTS": "callback.invalid",
+              "AMUSANT_GROK_CALLBACK_SERVICE_PORT": "443",
+              "OCI_DATA_DIR": str(root / "data"),
+              "RELAY_STOP_GRACE_PERIOD": "30s",
+              "AMUSANT_RELAY_SHUTDOWN_GRACE_SECONDS": "10",
+              "RELAY_CPU_LIMIT": "0.5",
+              "RELAY_MEMORY_LIMIT": "512m",
+              "PROXY_CPU_LIMIT": "0.1",
+              "PROXY_MEMORY_LIMIT": "128m",
+          }
+          for variable, (filename, content) in secret_values.items():
+              path = root / "secrets" / filename
+              path.write_text(content, encoding="utf-8")
+              values[variable] = str(path)
+          (root / "compose.env").write_text(
+              "".join(f"{name}={value}\n" for name, value in values.items()), encoding="utf-8"
+          )
+          (root / "images.override.yaml").write_text(
+              "services:\n"
+              "  relay:\n"
+              "    image: amusant-relay:grok-d2a-arm64-smoke\n"
+              "  egress_proxy:\n"
+              "    image: amusant-egress-proxy:grok-d2a-arm64-smoke\n",
+              encoding="utf-8",
+          )
+          PY
+          sudo chown root:20000 "$smoke_dir"/secrets/*
+          sudo chmod 0440 "$smoke_dir"/secrets/*
+          echo "GROK_SMOKE_DIR=$smoke_dir" >> "$GITHUB_ENV"
+          echo "GROK_SMOKE_PROJECT=grok-d2a-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
+      - name: Validate Grok-only fixture and rendered Compose boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 deploy/oci-a1/preflight.py --profile grok --env-file "$GROK_SMOKE_DIR/compose.env"
+          docker compose --project-name "$GROK_SMOKE_PROJECT" --env-file "$GROK_SMOKE_DIR/compose.env" \
+            -f deploy/oci-a1/compose.grok.yaml -f "$GROK_SMOKE_DIR/images.override.yaml" config --format json \
+            | python3 -c 'import json,sys; x=json.load(sys.stdin); assert set(x["services"]) == {"relay","egress_proxy"}; assert all(not s.get("ports") for s in x["services"].values()); assert x["services"]["relay"]["platform"] == "linux/arm64"; assert x["services"]["egress_proxy"]["platform"] == "linux/arm64"; assert x["services"]["relay"]["environment"]["AMUSANT_SLOW_EXECUTOR"] == "grok_callback"; print("GROK_ONLY_ARM64_COMPOSE_CONFIG_PASS")'
+      - name: Boot the two private ARM64 services and wait for health
+        shell: bash
+        run: |
+          set -euo pipefail
+          compose=(docker compose --project-name "$GROK_SMOKE_PROJECT" --env-file "$GROK_SMOKE_DIR/compose.env" \
+            -f deploy/oci-a1/compose.grok.yaml -f "$GROK_SMOKE_DIR/images.override.yaml")
+          "${compose[@]}" up --detach --no-build --no-deps egress_proxy
+          for image in amusant-relay:grok-d2a-arm64-smoke amusant-egress-proxy:grok-d2a-arm64-smoke; do
+            architecture="$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")"
+            [[ "$architecture" == "linux/arm64" ]]
+            echo "$image $architecture"
+          done
+          deadline=$((SECONDS + 90))
+          while (( SECONDS < deadline )); do
+            container="$("${compose[@]}" ps --quiet egress_proxy)"
+            if [[ -n "$container" ]]; then
+              status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container")"
+              if [[ "$status" == "unhealthy" || "$status" == "exited" || "$status" == "dead" ]]; then
+                docker inspect --format '{{range .State.Health.Log}}{{println .ExitCode .Output}}{{end}}' "$container"
+                "${compose[@]}" logs --no-color egress_proxy
+                exit 1
+              fi
+              if [[ "$status" == "healthy" ]]; then
+                break
+              fi
+            fi
+            sleep 3
+          done
+          container="$("${compose[@]}" ps --quiet egress_proxy)"
+          status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container")"
+          if [[ "$status" != "healthy" ]]; then
+            docker inspect --format '{{range .State.Health.Log}}{{println .ExitCode .Output}}{{end}}' "$container"
+            "${compose[@]}" logs --no-color egress_proxy
+            echo "Grok ARM64 Egress Proxy did not become healthy: $status" >&2
+            exit 1
+          fi
+          # This uses the real service_healthy dependency from compose.grok.yaml.
+          "${compose[@]}" up --detach --no-build relay
+          deadline=$((SECONDS + 210))
+          while (( SECONDS < deadline )); do
+            all_healthy=true
+            for service in relay egress_proxy; do
+              container="$("${compose[@]}" ps --quiet "$service")"
+              if [[ -z "$container" ]]; then
+                all_healthy=false
+                continue
+              fi
+              status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container")"
+              if [[ "$status" == "unhealthy" || "$status" == "exited" || "$status" == "dead" ]]; then
+                docker inspect --format '{{range .State.Health.Log}}{{println .ExitCode .Output}}{{end}}' "$container"
+                "${compose[@]}" logs --no-color "$service"
+                exit 1
+              fi
+              [[ "$status" == "healthy" ]] || all_healthy=false
+            done
+            if [[ "$all_healthy" == true ]]; then
+              echo "GROK_ARM64_RELAY_AND_EGRESS_HEALTH_PASS"
+              "${compose[@]}" ps
+              exit 0
+            fi
+            sleep 3
+          done
+          "${compose[@]}" ps
+          "${compose[@]}" logs --no-color
+          echo "Grok-only ARM64 services did not become healthy before timeout" >&2
+          exit 1
+      - name: Stop the disposable runner-local fixture
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${GROK_SMOKE_DIR:-}" ]]; then
+            docker compose --project-name "${GROK_SMOKE_PROJECT:-grok-d2a-cleanup}" \
+              --env-file "$GROK_SMOKE_DIR/compose.env" \
+              -f deploy/oci-a1/compose.grok.yaml -f "$GROK_SMOKE_DIR/images.override.yaml" \
+              down --remove-orphans || true
+            echo "Stopped the disposable Compose project; the hosted runner discards its temporary fixture after the job."
+          fi

@@ -1,0 +1,35 @@
+# Grok G4-D2a source-only runtime
+
+This design is a candidate for later Owner-authorized staging. It makes no claim about the current OCI host, VCN, DNS, Cloudflare, installed containers, costs, or device reachability. No deployment is performed by this change.
+
+## Two listeners and one ledger
+
+`compose.grok.yaml` selects only Relay and the existing CONNECT egress proxy. Relay runs as UID 10001 with a read-only root filesystem and the existing SQLite v10 TaskStore/Inbox volume. It binds StickS3 TLS-PSK/WSS on `RELAY_BIND_IP:8443` and a separate plain HTTP ASGI Callback on `RELAY_CALLBACK_BIND_IP:8645`. The two static addresses are on separate internal RFC1918 Docker networks; neither is published as a host port. The Callback bind must be a distinct private IPv4 address, and its one canonical Host must match the configured HTTPS Callback URL. The listener uses the same in-process SQLiteTaskStore as the Dispatcher and Inbox; it is not another service or ledger.
+
+The Relay opens both listeners before starting Dispatcher recovery. If Callback startup fails, WSS closes and queued Webhooks are not submitted. During orderly shutdown it closes WSS first, keeps Callback available during bounded Dispatcher drain, then closes Callback. A process crash still uses the existing persisted one-send boundary and uncertain/reconcile semantics. The healthcheck probes WSS TCP and the Callback app's non-mutating GET/405 response; it proves listener liveness only, not Provider or external ingress health. Docker's restart policy restarts an exited process; an unhealthy status alone is not an automatic restart.
+
+The Routine trigger bearer comes from `GROK_ROUTINE_TOKEN_FILE`, mounted as a secret and read by the guarded Relay entrypoint. Direct secret environment values are rejected. Gemini/device secrets use the existing mounted-file mechanism; no Facade secret is required by the Grok profile. The Callback URL is a fixed, nonsecret HTTPS URL with path `/callback/results`, no userinfo, query, or fragment. The result capability is per task, delivered in Authorization, hashed in SQLite and bounded by TTL; it is visible to the native Routine and must never be logged. The Grok profile permits one in-flight Callback; this limit is not a request-rate limit.
+
+The egress proxy's explicit `grok` mode opens one private bind and accepts one private Relay peer. CONNECT is restricted to public destinations on 443; DNS answers are checked and pinned before connecting. The legacy two-peer mode and historical Compose file remain available. No Hermes or Facade service is a dependency of this profile.
+
+## Candidate ingress and later Owner gate
+
+The candidate Callback path is an Owner-controlled fixed HTTPS hostname on Cloudflare Named Tunnel, routed to a host-loopback-only proxy and then to the approved private Docker Callback address. A connector in a separate container has its own loopback namespace; its `127.0.0.1` is not the host or Relay listener, so its route needs an explicitly reviewed network connection. The exact hostname, DNS record, tunnel, host socket/service, IPs and rate policy are not selected here. Before any live change, review a single exact method/path mapping to `/callback/results`, canonical upstream Host/port, TLS, rate limits, header and slow-body timeouts, request-size limits, Authorization preservation and redaction, removal of untrusted `Forwarded`/`X-Forwarded-*`, access controls, and disable/revoke procedures. Uvicorn ignores proxy headers and access logging is disabled; the app bounds body size and body receive time. The external edge still must enforce request-rate and slow-header limits.
+
+The independent device route remains the reviewed G1 raw TCP path to the TLS-PSK WSS listener; Cloudflare HTTP termination must not replace that TLS-PSK transport. Active host/network inventory, exact ingress configuration, secret provisioning, usage/cost, fresh test DB initialization, deployment and real device/Provider calls all need a separate Owner GO. Hermes G0 and preservation of disposable v8/v9 data are not prerequisites.
+
+## Offline checks and rollback plan
+
+Run `python deploy/oci-a1/preflight.py --profile grok --env-file <reviewed-file>` and `docker compose --env-file <reviewed-file> -f deploy/oci-a1/compose.grok.yaml config` without starting services. Preflight checks immutable images, nonoverlapping private subnets, usable static IPs, exact callback mapping, restricted secret-file paths, existing state directory and bounded shutdown; the Owner must separately verify runtime UID access to mounted paths. Offline tests use fixture secrets, Fake Routine/Callback, local loopback and no real model calls. The dedicated Grok-only ARM64 smoke is bounded CI evidence, not live ingress or physical device acceptance.
+
+The device-ingress renderer supports `--profile grok` alongside its unchanged default `legacy` profile. Grok selection reuses `preflight.validate_grok()` and renders private VNIC TCP/443 to the selected `RELAY_BIND_IP:8443`; the fixture regression rejects wildcard and cross-network addresses. It only writes proposed unit files and never installs them. The dedicated Grok Draft CI job builds just the Relay and Egress Proxy ARM64 images on a native ARM64 runner, then starts those two services on private runner-local Compose networks with fixture-only secrets and waits for the WSS/Callback and proxy healthchecks. The test uses the Grok Compose CPU limits and is not OCI capacity evidence. It does not build or start Hermes/Facade, publish ports, create an OCI deployment, or call a provider.
+
+### Acceptance matrix
+
+| Evidence class | What a PASS means | Scope limit |
+| --- | --- | --- |
+| Source | Linux Python 3.13 offline regression, Grok ingress fixture, and static Compose checks pass for this PR head. | No OCI runtime state or public reachability is established. |
+| ARM64 | Grok-only Relay and Egress Proxy images build as `linux/arm64`, start on a native ARM64 CI runner, and both report healthy. | CI runtime smoke is not an OCI host/deployment result. |
+| OCI | **NOT TESTED**: no OCI host, route, tunnel, DNS, VNIC, or installed runtime was inspected or changed. | Requires separate Owner-authorized work. |
+
+For a separately authorized rollback, stop new admissions and disable the external Callback route and Routine trigger, revoke the appropriate credentials, and have the Owner reconcile or explicitly abandon any in-flight task. Never automatically resend an ambiguous Webhook or claim a remote Grok Stop. Selection of any previous stack or deletion/reset of test data requires the corresponding Owner authorization; no such action is performed here.
