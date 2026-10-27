@@ -1,6 +1,6 @@
 # Grok G4-D2a source-only runtime
 
-This design is a candidate for later Owner-authorized staging. It makes no claim about the current OCI host, VCN, DNS, Cloudflare, installed containers, costs, or device reachability. No deployment is performed by this change.
+This is the selected Grok-first source profile following the Owner decision in #130/#132 and merged source PR #131. The [first Owner Stop-and-Replace attempt](https://github.com/smallgun01/amusant/issues/132#issuecomment-6439306188) failed when Grok `egress_proxy` became unhealthy and Relay remained `Created`; automatic rollback restored the legacy four services, all healthy. An [isolated proxy diagnostic](https://github.com/smallgun01/amusant/issues/132#issuecomment-6439495767) passed after a local-only CPU-limit increase from 0.1 to 0.5; throttling is suspected, not confirmed. [#132 records revised retry readiness](https://github.com/smallgun01/amusant/issues/132#issuecomment-6439563486), but no later cutover. The legacy stack remains installed; no successful Grok deployment, public ingress, live task or device E2E PASS is recorded. This document describes source architecture, not installed state or deployment instructions.
 
 ## Two listeners and one ledger
 
@@ -12,11 +12,11 @@ The Routine trigger bearer comes from `GROK_ROUTINE_TOKEN_FILE`, mounted as a se
 
 The egress proxy's explicit `grok` mode opens one private bind and accepts one private Relay peer. CONNECT is restricted to public destinations on 443; DNS answers are checked and pinned before connecting. The legacy two-peer mode and historical Compose file remain available. No Hermes or Facade service is a dependency of this profile.
 
-## Candidate ingress and later Owner gate
+## Separate ingress and live acceptance gates
 
 The candidate Callback path is an Owner-controlled fixed HTTPS hostname on Cloudflare Named Tunnel, routed to a host-loopback-only proxy and then to the approved private Docker Callback address. A connector in a separate container has its own loopback namespace; its `127.0.0.1` is not the host or Relay listener, so its route needs an explicitly reviewed network connection. The exact hostname, DNS record, tunnel, host socket/service, IPs and rate policy are not selected here. Before any live change, review a single exact method/path mapping to `/callback/results`, canonical upstream Host/port, TLS, rate limits, header and slow-body timeouts, request-size limits, Authorization preservation and redaction, removal of untrusted `Forwarded`/`X-Forwarded-*`, access controls, and disable/revoke procedures. Uvicorn ignores proxy headers and access logging is disabled; the app bounds body size and body receive time. The external edge still must enforce request-rate and slow-header limits.
 
-The independent device route remains the reviewed G1 raw TCP path to the TLS-PSK WSS listener; Cloudflare HTTP termination must not replace that TLS-PSK transport. Active host/network inventory, exact ingress configuration, secret provisioning, usage/cost, fresh test DB initialization, deployment and real device/Provider calls all need a separate Owner GO. Hermes G0 and preservation of disposable v8/v9 data are not prerequisites.
+The independent device route remains the reviewed G1 raw TCP path to the TLS-PSK WSS listener; Cloudflare HTTP termination must not replace that TLS-PSK transport. #132 records the Owner-reported host inventory, image pre-pull and static environment audit, first failed Stop-and-Replace attempt and automatic rollback, isolated proxy diagnostic, and revised retry readiness. Public Callback routing, G1 device ingress and real device/Provider calls remain separate gates. Hermes G0 and preservation of disposable v8/v9 data are not prerequisites.
 
 ## Offline checks and rollback plan
 

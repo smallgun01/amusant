@@ -1,6 +1,10 @@
 # G4-D2c Grok ARM64 image release and staging runbook
 
-This is a preparation guide. It does not publish images, access OCI, create secret files or data directories, stop a service, configure ingress, or submit a Grok task. Issue #132 Gate 0C still has unresolved read-only evidence, and no staging or release GO is implied by this PR.
+This is an Owner-operated staging and rollback guide; it performs no actions. Owner reports in [#132](https://github.com/smallgun01/amusant/issues/132) record PR #133 image publication, digest pre-pull and static staging configuration checks as PASS. The first Stop-and-Replace attempt failed when Grok `egress_proxy` became unhealthy and Relay remained `Created`; automatic rollback restored the legacy four services, all healthy. An isolated proxy diagnostic passed at a local 0.5 CPU limit (up from 0.1); throttling is suspected, not confirmed. #132 records revised retry readiness, but no later cutover. The legacy stack remains installed; no successful Grok deployment, public ingress, live task or device E2E PASS is recorded. The Owner's separate Stop-and-Replace authorization and prerequisites remain in force.
+
+## Recorded release and staging status
+
+The manual workflow was run by the Owner on `main` after PR #133 merged. The published Relay and Egress Proxy digests were pre-pulled and checked as `linux/arm64`; #132 also records the isolated v10 staging path/secrets and static environment audit as PASS. The failed first attempt and successful automatic rollback demonstrate the legacy recovery path; the later proxy-only diagnostic and retry-readiness record do not establish a running Grok profile or a second cutover. Keep the restored legacy stack intact until the documented cutover prerequisites and Owner-controlled sequence are complete.
 
 ## Manual image release
 

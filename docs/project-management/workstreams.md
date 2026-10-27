@@ -1,47 +1,23 @@
-# Amusant WS1-WS4 — Owner-managed Agent integration
+# Amusant WS1–WS4 — Current workstreams
 
-Reconciled 2026-10-26 to [SPEC](../../SPEC.md), [ADR-0004](../adr/0004-owner-managed-hermes.md) and retained [OCI architecture](../adr/0003-oci-a1-hermes-sqlite.md). [STATUS](../../STATUS.md) owns evidence. This index assigns work; it does not grant deployment authority.
+Reconciled 2026-10-27 to the Grok-first source selection. [STATUS](../../STATUS.md) owns evidence; [SPEC](../../SPEC.md) owns current requirements; [#132](https://github.com/smallgun01/amusant/issues/132) owns OCI staging and cutover gates.
 
 ## Workstreams
 
-| Lane / tracker | Responsibility | Next scoped work |
+| Lane | Responsibility | Next scoped work |
 | --- | --- | --- |
-| WS1 / #47 | StickS3, provisioning, FAST speech/display and physical UX | Preserve working FAST/BLE/QR; separate W2a, CJK, latency/battery and ingress acceptance |
-| WS2 / #48 | Generic Hermes task/result integration, not Agent administration | #118 and #120 merged; real Owner-policy, v2 delivery and native tool acceptance remain |
-| WS3 / #49 | Deployment compatibility and voice/native access integration | Active OCI bundle/schema, #124 readiness, #46/#62 physical loop; separate Grok #123 G3 pilot |
-| WS4 / #50 | Persistence, secrets, resources, backup/restore, CI discipline | #118 offline recovery merged; #124 v8→v9 readiness open; live recovery, restore/load and security pending |
+| WS1 / #47 | StickS3 and physical acceptance | Preserve the current device path; G1 ingress and Grok readback remain separate #132 gates. |
+| WS2 / #48 | SLOW admission and result delivery | One Relay TaskStore/Inbox; Callback, Bot report and native Run state remain distinct. |
+| WS3 / #49 | Grok source profile and OCI evidence | First Stop-and-Replace failed; automatic rollback restored legacy services 4/4 healthy. Isolated proxy diagnostic passed and revised retry is ready, but no later cutover is reported. |
+| WS4 / #50 | Persistence, dependencies, secrets and rollback | H2 separates ACP/DynamoDB imports; keep schema behavior and regression tests; no H2 file relocation. |
 
-## Coordination
+## Sequence and boundaries
 
-Codex owns repository runtime edits/tests. OpenClaw owns permitted host inspection, change planning and separately authorized operations. Owner supplies credentials through secure native mechanisms, approves merges/live changes and performs device interaction. Review checks scope and evidence; it does not substitute for those approvals.
+1. **H1:** docs-only current-truth alignment and immutable history pointers.
+2. **H2:** separate code PR, lazy-load explicit legacy backends, isolate optional package dependencies, test Grok plus all three executor selections.
+3. **#132:** Owner reviews the exact staging config and separately controls OCI, ingress and device gates.
+4. **Optional H3:** consider module relocation only after H2 import independence and explicit Owner rollback review.
 
-Use [the handoff index](../handoffs/20261025-owner-managed-hermes.md). C1 (#118) and C2 (#120) have merged; the earlier sequence is historical. O1/O2 still require active runtime evidence and separate Owner authority. OpenClaw reports a repo defect to Codex rather than hot-patching the live container.
+Grok Compose explicitly sets `AMUSANT_SLOW_EXECUTOR=grok_callback`; the Python fallback remains `hermes_runs`. Hermes is a separate alternative/rollback path, not co-running or an automatic fallback. OpenAB ACP, DynamoDB, their tests, ADRs and AWS evidence stay in the repository.
 
-## Required sequence and limits
-
-1. Preserve merged #118/#120 as source milestones; #117 closed without merge.
-2. Review #124 v8→v9 release readiness and verify the active OCI bundle/schema before any authorized upgrade.
-3. Reconcile existing OCI/device evidence and prepare native Hermes access under O1 read-only limits.
-4. With separate Owner authority, verify deployed v2 Slow→Inbox→new-PTT spoken and independent native access.
-5. Track Grok independently: G1 Owner-reported and G2 offline accepted, #125 G3-P1 merged; #123 G3-P2 setup/live incomplete. G4 still requires Hermes G0.
-
-Do not wait for a catalog of Calendar/Cron/booking adapters. Those capabilities belong to Hermes. Native scheduling/notifications are not new Relay features. Native management is required integration work, not a mandate to implement every upstream capability before the current voice loop can be tested.
-
-Keep one major build per affected lane plus scoped reliability remediation. Documentation-only PRs use lightweight checks. Draft heavy-job skips save minutes but are not runtime evidence; corrected Ready runtime PRs require applicable full jobs.
-
-## Channel boundaries
-
-- One outstanding Amusant-admitted Run per Owner, not one job across all Hermes channels.
-- No unsolicited Amusant speech, not a ban on Owner-configured native Telegram delivery.
-- Shared Agent/profile is not shared session/approval/Inbox; do not promise automatic continuation.
-- No raw reports/credentials to Relay or Live, no direct Relay-to-Hermes route, no public Hermes/Facade API, no new Worker/queue/Admin service.
-
-## History
-
-[#87/#90](https://github.com/smallgun01/amusant/pull/90) remain offline integration evidence; [GO 2/3](../oci-go2-go3-live-evidence-20261022.md) remains dated live functional evidence. Legacy WS and AWS snapshots are available through the [immutable history index](../history/20261025-documentation-baseline.md), not competing current requirements.
-
-## 2026-10-27 G4 alternative backend coordination
-
-[Issue #127](https://github.com/smallgun01/amusant/issues/127) is the active G4 **Grok-as-Hermes-replacement** design tracker. WS2/Codex owns a read-only source/lifecycle design and (after independent code GO) a narrow offline adapter. WS3/OpenClaw owns authorized read-only G0 runtime evidence, ingress and operational plan; WS1/Owner owns the eventual physical PTT acceptance; WS4 reviews secret/auth/duplicate/late/backup/rollback semantics. This does **not** turn Grok into a Hermes Skill or require per-tool Relay adapters.
-
-G3 [#123](https://github.com/smallgun01/amusant/issues/123#issuecomment-6419151666) Q1/Q2/D1 and fixed synthetic callback all have Owner-supplied native/SQLite matching evidence; G3-R/A and native Run terminal remain NOT TESTED. The 'G3-P2 incomplete' text in the dated workstream sequence above is superseded for pilot feasibility only. G4 **design GO** is not production/device GO. Hermes G0 physical v2 Slow→Inbox→spoken remains a gating item. Keep source, deployment and physical evidence distinct; do not run expensive CI on a docs-only change. [Agent handoff](../handoffs/20261027-grok-g4-agents.md).
+Do not retry an ambiguous Routine Webhook, add a second TaskStore, add a global scheduler or speak without a later explicit request. PR #131 gives source/ARM64 runner evidence; PR #133/#132 report image publication/pre-pull and static settings. The latest #132 status has the legacy four-service stack installed and healthy after rollback; no successful Grok deployment, public Callback/StickS3 ingress, live task or physical Grok E2E PASS is recorded. The prior Hermes-current index is pinned in the [history record](../history/20261025-documentation-baseline.md).

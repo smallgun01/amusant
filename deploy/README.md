@@ -1,4 +1,4 @@
-> **Current OCI target (2026-10-18):** The new host placement and persistent SQLite design are tracked in [ADR-0003](../docs/adr/0003-oci-a1-hermes-sqlite.md) and [OCI PR #70](https://github.com/smallgun01/amusant/pull/70). This directory's ECS/DynamoDB task definitions and one-off commands are **historical AWS templates**, not the new Oracle launch instructions. Keep those artifacts for provenance and possible explicit rollback; no AWS cleanup is authorized.
+> **Historical AWS package (2026-10-13/18):** This directory retains ECS/OpenAB ACP/DynamoDB task definitions and one-off commands for provenance and any separately reviewed rollback. They are not instructions for the current Grok-first OCI profile. See [README](../README.md), [STATUS](../STATUS.md) and [deploy/oci-a1/compose.grok.yaml](oci-a1/compose.grok.yaml). No AWS cleanup is authorized.
 
 # Store-ready Relay packaging
 
