@@ -21,6 +21,8 @@ services:
       RELAY_CALLBACK_LISTEN_PORT: "8645"
       AMUSANT_LIVE_PROVIDER: gemini
       AMUSANT_PERSONA_PROFILE: jellii
+      AMUSANT_GEMINI_GOOGLE_SEARCH: "1"
+      AMUSANT_GEMINI_VOICE: Zephyr
       AMUSANT_CLIENT_ID: ${AMUSANT_CLIENT_ID:?set the authenticated owner id}
       AMUSANT_BACKEND_ID: grok_bot
       AMUSANT_TASK_STORE: sqlite
