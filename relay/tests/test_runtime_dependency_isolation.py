@@ -15,6 +15,7 @@ class RuntimeDependencyIsolationTests(unittest.TestCase):
 import sys
 import tempfile
 from importlib.abc import MetaPathFinder
+from pathlib import Path
 
 blocked = {
     "relay.acp_client",
@@ -48,7 +49,7 @@ with tempfile.TemporaryDirectory(dir=".") as tmp:
         "AMUSANT_CLIENT_ID": "offline-owner",
         "AMUSANT_BACKEND_ID": "grok_bot",
         "AMUSANT_TASK_STORE": "sqlite",
-        "AMUSANT_TASK_DB": tmp + "/tasks.sqlite3",
+        "AMUSANT_TASK_DB": str(Path(tmp).resolve() / "tasks.sqlite3"),
         "AMUSANT_SLOW_EXECUTOR": "grok_callback",
         "AMUSANT_GROK_ROUTINE_URL": "https://routine.invalid/webhook",
         "AMUSANT_GROK_ROUTINE_TOKEN": "offline-routine-token-123",
