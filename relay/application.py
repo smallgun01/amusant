@@ -293,7 +293,14 @@ def build_supported_relay_runtime(
     post_tool_ack_timeout_seconds: float = POST_TOOL_ACK_TIMEOUT_SECONDS,
     post_tool_ack_max_duration_seconds: float = POST_TOOL_ACK_MAX_DURATION_SECONDS,
 ):
-    """Build handler plus optional executor dispatcher; no configured executor skips dispatch."""
+    """Build the selected executor dispatcher and Live handler.
+
+    Do not switch executor kinds on a ledger with queued, running, or uncertain
+    tasks. This runtime selects one executor and does not recover another
+    backend's rows; such rows can be finalized as executor_unavailable. A
+    same-ledger switch guard/recovery policy is a separate #135 follow-up.
+    The Grok profile uses a separate fresh SQLite v10 ledger.
+    """
     config = load_relay_process_config(environ, expected_device_token=expected_device_token)
     if config.slow_executor_kind == "grok_callback" and config.task_store_kind != "sqlite":
         raise ValueError("grok_callback requires the existing SQLite TaskStore")
@@ -301,6 +308,10 @@ def build_supported_relay_runtime(
     selected_executor = None
     if config.slow_executor_kind == "openab_acp":
         selected_executor = load_acp_executor(environ)
+        if selected_executor is None:
+            raise ValueError(
+                "ACP selection requires AMUSANT_ACP_URL, AMUSANT_ACP_AUTH_KEY, and AMUSANT_ACP_CWD"
+            )
     elif config.slow_executor_kind == "hermes_runs":
         selected_executor = load_hermes_runs_executor(
             environ,
