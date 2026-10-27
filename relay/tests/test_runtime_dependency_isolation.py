@@ -43,7 +43,7 @@ class FakeSchemaTypes:
 
 from relay.application import build_supported_relay_runtime
 
-with tempfile.TemporaryDirectory() as tmp:
+with tempfile.TemporaryDirectory(dir=".") as tmp:
     environ = {
         "AMUSANT_CLIENT_ID": "offline-owner",
         "AMUSANT_BACKEND_ID": "grok_bot",
