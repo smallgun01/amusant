@@ -1,23 +1,14 @@
-# Amusant WS1–WS4 — Current workstreams
+# Amusant WS1–WS4 — Current workstreams (2026-10-27)
 
-Reconciled 2026-10-27 to the Grok-first source selection. [STATUS](../../STATUS.md) owns evidence; [SPEC](../../SPEC.md) owns current requirements; [#132](https://github.com/smallgun01/amusant/issues/132) owns OCI staging and cutover gates.
+[STATUS](../../STATUS.md) owns evidence, [SPEC](../../SPEC.md) owns contracts and [#132](https://github.com/smallgun01/amusant/issues/132) owns OCI/ingress gates.
 
-## Workstreams
-
-| Lane | Responsibility | Next scoped work |
+| Lane | Owner scope | Current gate |
 | --- | --- | --- |
-| WS1 / #47 | StickS3 and physical acceptance | Preserve the current device path; G1 ingress and Grok readback remain separate #132 gates. |
-| WS2 / #48 | SLOW admission and result delivery | One Relay TaskStore/Inbox; Callback, Bot report and native Run state remain distinct. |
-| WS3 / #49 | Grok source profile and OCI evidence | First Stop-and-Replace failed; automatic rollback restored legacy services 4/4 healthy. Isolated proxy diagnostic passed and revised retry is ready, but no later cutover is reported. |
-| WS4 / #50 | Persistence, dependencies, secrets and rollback | H2 separates ACP/DynamoDB imports; keep schema behavior and regression tests; no H2 file relocation. |
+| WS1 / #47 | StickS3 provisioning, FAST, LCD and physical readback | Prior BLE/QR and FAST evidence retained; Grok external PTT/Spoken E2E unaccepted; [#136](https://github.com/smallgun01/amusant/issues/136) firmware consolidation and [#67](https://github.com/smallgun01/amusant/issues/67) card/display gate remain separate. |
+| WS2 / #48 | Generic Slow delegation, one Ledger/Inbox, bounded v2 receipt | [#129](https://github.com/smallgun01/amusant/pull/129) merged Grok callback adapter; native Run state is unknown absent authoritative proof. |
+| WS3 / #49 | OCI profile, secure Callback and device ingress | [#132](https://github.com/smallgun01/amusant/issues/132) second cutover 2/2 Healthy; public Callback/device ingress and physical E2E NOT TESTED. |
+| WS4 / #50 | Dependencies, security, operations, CI, rollback | [#138](https://github.com/smallgun01/amusant/pull/138) merged optional imports; OCI runs older image. Static restart/mount PASS; reboot recovery NOT TESTED. |
 
-## Sequence and boundaries
+Owner-reported [#132 second cutover](https://github.com/smallgun01/amusant/issues/132#issuecomment-6444738695): Grok Relay + Egress Proxy **2/2 Healthy**, fresh SQLite v10, legacy four containers removed without volumes, old v8 data retained. Installed images remain pinned to `e615c06`; newer main changes are not deployed by source merge. [#132 D2e](https://github.com/smallgun01/amusant/issues/132#issuecomment-6445970730) static mount/restart posture PASS, **REBOOT_RECOVERY=NOT_TESTED**. [Gate 2A](https://github.com/smallgun01/amusant/issues/132#issuecomment-6446503568) private callback 405/401/404 PASS; [Gate 2B](https://github.com/smallgun01/amusant/issues/132#issuecomment-6446621484) Cloudflare DNS/TCP 7844 PASS, not a configured tunnel. Public Callback/device ingress, real Routine/Provider E2E and new-PTT spoken Inbox remain NOT TESTED. Current OCI uses Owner-local two-file Compose (`compose.grok.yaml` + `compose.grok.local.yaml`); do not restart from the historical single-file example.
 
-1. **H1:** docs-only current-truth alignment and immutable history pointers.
-2. **H2:** separate code PR, lazy-load explicit legacy backends, isolate optional package dependencies, test Grok plus all three executor selections.
-3. **#132:** Owner reviews the exact staging config and separately controls OCI, ingress and device gates.
-4. **Optional H3:** consider module relocation only after H2 import independence and explicit Owner rollback review.
-
-Grok Compose explicitly sets `AMUSANT_SLOW_EXECUTOR=grok_callback`; the Python fallback remains `hermes_runs`. Hermes is a separate alternative/rollback path, not co-running or an automatic fallback. OpenAB ACP, DynamoDB, their tests, ADRs and AWS evidence stay in the repository.
-
-Do not retry an ambiguous Routine Webhook, add a second TaskStore, add a global scheduler or speak without a later explicit request. PR #131 gives source/ARM64 runner evidence; PR #133/#132 report image publication/pre-pull and static settings. The latest #132 status has the legacy four-service stack installed and healthy after rollback; no successful Grok deployment, public Callback/StickS3 ingress, live task or physical Grok E2E PASS is recorded. The prior Hermes-current index is pinned in the [history record](../history/20261025-documentation-baseline.md).
+Do not create a second TaskStore, run Hermes and Grok as an automatic chain, resend ambiguous Webhooks, relocate legacy modules merely for tidiness, or treat H1/H2 docs/CI as device acceptance. [PLAN](../../PLAN.md) gives the minimal next sequence.
