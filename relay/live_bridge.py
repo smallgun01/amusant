@@ -1336,7 +1336,7 @@ async def run(host: str, port: int, token: str, *, device_mode: str = "pcm") -> 
                     # Do not accept device admission until Callback startup
                     # succeeds; recovery can submit a Webhook immediately.
                     callback_task = await stack.enter_async_context(serve_callback(callback_app, *callback_config))
-                if stop_event.is_set():
+                if callback_task is not None and stop_event.is_set():
                     return
                 device_server = await stack.enter_async_context(serve(handler, host, port, **serve_options))
                 if callback_task is not None and callback_task.done():
@@ -1358,13 +1358,13 @@ async def run(host: str, port: int, token: str, *, device_mode: str = "pcm") -> 
                         stop_task.cancel()
                         with suppress(asyncio.CancelledError):
                             await stop_task
-                # Stop device admission first; keep Callback available while
-                # the dispatcher drains, then close both listeners.
-                device_server.close()
-                await device_server.wait_closed()
-                if dispatcher_started:
-                    await _stop_dispatcher_bounded(dispatcher, shutdown_grace_seconds)
-                    dispatcher_started = False
+                    # Stop device admission first; keep Callback available while
+                    # the dispatcher drains, then close both listeners.
+                    device_server.close()
+                    await device_server.wait_closed()
+                    if dispatcher_started:
+                        await _stop_dispatcher_bounded(dispatcher, shutdown_grace_seconds)
+                        dispatcher_started = False
         finally:
             remove_shutdown_handlers(loop, installed_signals)
     finally:
