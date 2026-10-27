@@ -52,6 +52,22 @@ class OperatorReconcileCliTests(unittest.TestCase):
         )
         self.assertIn('"status":"abandoned"', stdout.getvalue())
 
+    def test_legacy_reconcile_does_not_pass_grok_only_option(self):
+        receipt = SimpleNamespace(status="failed", task_id="task-1", code="reconciled")
+        with patch("relay.operator_reconcile.build_task_store") as build_store:
+            build_store.return_value.operator_reconcile_uncertain.return_value = receipt
+            with redirect_stdout(io.StringIO()):
+                result = main([
+                    "--client-id", "owner-1", "--task-id", "task-1",
+                    "--terminal-state", "no_remote_run", "--operator-id", "operator-1",
+                    "--evidence-ref", "ticket-1", "--confirm-slot-release",
+                ])
+        self.assertEqual(result, 0)
+        self.assertNotIn(
+            "revoke_callback_token",
+            build_store.return_value.operator_reconcile_uncertain.call_args.kwargs,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

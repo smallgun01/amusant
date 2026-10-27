@@ -38,16 +38,18 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--confirm-slot-release is required; verify Hermes state or explicitly authorize a local Grok abandon")
     try:
         store = build_task_store(os.environ)
-        receipt = store.operator_reconcile_uncertain(
-            client_id=args.client_id,
-            task_id=args.task_id,
-            terminal_state=args.terminal_state,
-            verified_run_id=args.verified_run_id,
-            operator_id=args.operator_id,
-            evidence_ref=args.evidence_ref,
-            now=datetime.now(timezone.utc),
-            revoke_callback_token=args.revoke_grok_callback_token,
-        )
+        options = {
+            "client_id": args.client_id,
+            "task_id": args.task_id,
+            "terminal_state": args.terminal_state,
+            "verified_run_id": args.verified_run_id,
+            "operator_id": args.operator_id,
+            "evidence_ref": args.evidence_ref,
+            "now": datetime.now(timezone.utc),
+        }
+        if args.revoke_grok_callback_token:
+            options["revoke_callback_token"] = True
+        receipt = store.operator_reconcile_uncertain(**options)
     except Exception as exc:
         print(json.dumps({"status": "unavailable", "error_type": type(exc).__name__}, separators=(",", ":")))
         return 2

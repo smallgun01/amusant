@@ -63,7 +63,7 @@ def validate_grok_callback(payload: Any, *, result_token: str) -> ValidatedGrokR
     if str(parsed) != task_id:
         raise GrokResultError("task_id must use canonical UUID form")
     outcome = payload.get("reported_outcome")
-    if outcome not in {"completed", "not_completed"}:
+    if not isinstance(outcome, str) or outcome not in {"completed", "not_completed"}:
         raise GrokResultError("reported_outcome must be completed or not_completed")
     speak = _text(payload.get("speak"), "speak", MAX_SPEAK_CHARS)
     card = payload.get("card")

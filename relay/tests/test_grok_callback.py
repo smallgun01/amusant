@@ -502,6 +502,35 @@ class GrokCallbackTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(status, 400)
 
+    async def test_malformed_json_types_return_400_without_mutating_ledger(self):
+        def ledger_snapshot():
+            connection = sqlite3.connect(self.database)
+            try:
+                return {
+                    table: connection.execute(f"SELECT * FROM {table}").fetchall()
+                    for table in ("slow_tasks", "dispatch_outbox", "task_results", "task_inbox")
+                }
+            finally:
+                connection.close()
+
+        before = ledger_snapshot()
+        for field, value in (
+            ("reported_outcome", []),
+            ("reported_outcome", {}),
+            ("reported_outcome", [{"nested": []}]),
+            ("task_id", {"nested": []}),
+            ("speak", ["invalid"]),
+            ("card", {"title": {}, "lines": ["invalid"]}),
+            ("card", {"title": "valid", "lines": [["invalid"]]}),
+        ):
+            with self.subTest(field=field, value=value):
+                report = _report(self.task_id)
+                report[field] = value
+                status, response = await _asgi_call(self.callback_app, report)
+                self.assertEqual(status, 400)
+                self.assertFalse(response["accepted"])
+                self.assertEqual(ledger_snapshot(), before)
+
     async def test_callback_receiver_supports_asgi_lifespan_without_binding_listener(self):
         incoming = [
             {"type": "lifespan.startup"},
