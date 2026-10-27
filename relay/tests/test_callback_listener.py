@@ -165,11 +165,13 @@ class CallbackListenerTests(unittest.IsolatedAsyncioTestCase):
                 patch("relay.callback_listener.callback_listener_config", return_value=("127.0.0.1", occupied.getsockname()[1])),
                 patch("relay.live_bridge.build_process_runtime", return_value=(handler, dispatcher, self.store)),
                 patch("relay.application.build_grok_callback_receiver_app", return_value=self.app),
+                patch("relay.live_bridge.serve") as device_serve,
                 patch("relay.live_bridge.install_shutdown_handlers", return_value=()),
                 patch("relay.live_bridge.remove_shutdown_handlers"),
             ):
                 with self.assertRaises(OSError):
                     await run("127.0.0.1", device_port, "offline-device-token", device_mode="pcm")
+                device_serve.assert_not_called()
         self.assertFalse(dispatcher.started)
         with self.assertRaises(OSError):
             await asyncio.open_connection("127.0.0.1", device_port)
@@ -206,6 +208,38 @@ class CallbackListenerTests(unittest.IsolatedAsyncioTestCase):
         ):
             await run("127.0.0.1", device_port, "offline-device-token", device_mode="pcm")
         self.assertFalse(dispatcher.started)
+
+    async def test_device_bind_failure_closes_callback_without_dispatch(self):
+        class Dispatcher:
+            started = False
+            async def start(self):
+                self.started = True
+            async def stop(self):
+                pass
+
+        async def handler(_websocket):
+            pass
+
+        dispatcher = Dispatcher()
+        callback_port = self.port()
+        env = {"AMUSANT_LIVE_PROVIDER": "gemini", "GEMINI_API_KEY": "offline-fixture",
+               "AMUSANT_SLOW_EXECUTOR": "grok_callback", "AMUSANT_CLIENT_ID": self.owner}
+        with socket.socket() as occupied:
+            occupied.bind(("127.0.0.1", 0))
+            occupied.listen()
+            with (
+                patch.dict(os.environ, env, clear=True),
+                patch("relay.callback_listener.callback_listener_config", return_value=("127.0.0.1", callback_port)),
+                patch("relay.live_bridge.build_process_runtime", return_value=(handler, dispatcher, self.store)),
+                patch("relay.application.build_grok_callback_receiver_app", return_value=self.app),
+                patch("relay.live_bridge.install_shutdown_handlers", return_value=()),
+                patch("relay.live_bridge.remove_shutdown_handlers"),
+            ):
+                with self.assertRaises(OSError):
+                    await run("127.0.0.1", occupied.getsockname()[1], "offline-device-token", device_mode="pcm")
+        self.assertFalse(dispatcher.started)
+        with self.assertRaises(OSError):
+            await asyncio.open_connection("127.0.0.1", callback_port)
 
     async def test_slow_body_times_out_without_receipt(self):
         port = self.port()

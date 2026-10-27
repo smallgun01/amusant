@@ -14,7 +14,7 @@ import os
 import signal
 import time
 from collections.abc import Awaitable, Callable, Mapping
-from contextlib import suppress
+from contextlib import AsyncExitStack, suppress
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -1328,38 +1328,43 @@ async def run(host: str, port: int, token: str, *, device_mode: str = "pcm") -> 
         stop_event = asyncio.Event()
         installed_signals = install_shutdown_handlers(stop_event, loop)
         try:
-            async with serve(handler, host, port, **serve_options) as device_server:
-                if callback_app is None:
-                    if dispatcher is not None and not stop_event.is_set():
-                        await dispatcher.start()
-                        dispatcher_started = True
-                    await stop_event.wait()
-                else:
+            async with AsyncExitStack() as stack:
+                callback_task = None
+                if callback_app is not None:
                     from .callback_listener import serve_callback
 
-                    async with serve_callback(callback_app, *callback_config) as callback_task:
-                        # Recovery may submit a queued task immediately. Both
-                        # listeners must be ready before the first Webhook.
-                        if dispatcher is not None and not stop_event.is_set():
-                            await dispatcher.start()
-                            dispatcher_started = True
-                        stop_task = asyncio.create_task(stop_event.wait())
-                        try:
-                            done, _ = await asyncio.wait((stop_task, callback_task), return_when=asyncio.FIRST_COMPLETED)
-                            if callback_task in done:
-                                await callback_task
-                                raise RuntimeError("Callback listener stopped unexpectedly")
-                            # Stop device admission first; keep the Callback
-                            # listener available while the dispatcher drains.
-                            device_server.close()
-                            await device_server.wait_closed()
-                            if dispatcher_started:
-                                await _stop_dispatcher_bounded(dispatcher, shutdown_grace_seconds)
-                                dispatcher_started = False
-                        finally:
-                            stop_task.cancel()
-                            with suppress(asyncio.CancelledError):
-                                await stop_task
+                    # Do not accept device admission until Callback startup
+                    # succeeds; recovery can submit a Webhook immediately.
+                    callback_task = await stack.enter_async_context(serve_callback(callback_app, *callback_config))
+                if stop_event.is_set():
+                    return
+                device_server = await stack.enter_async_context(serve(handler, host, port, **serve_options))
+                if callback_task is not None and callback_task.done():
+                    await callback_task
+                    raise RuntimeError("Callback listener stopped unexpectedly")
+                if dispatcher is not None and not stop_event.is_set():
+                    await dispatcher.start()
+                    dispatcher_started = True
+                if callback_task is None:
+                    await stop_event.wait()
+                else:
+                    stop_task = asyncio.create_task(stop_event.wait())
+                    try:
+                        done, _ = await asyncio.wait((stop_task, callback_task), return_when=asyncio.FIRST_COMPLETED)
+                        if callback_task in done:
+                            await callback_task
+                            raise RuntimeError("Callback listener stopped unexpectedly")
+                    finally:
+                        stop_task.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await stop_task
+                # Stop device admission first; keep Callback available while
+                # the dispatcher drains, then close both listeners.
+                device_server.close()
+                await device_server.wait_closed()
+                if dispatcher_started:
+                    await _stop_dispatcher_bounded(dispatcher, shutdown_grace_seconds)
+                    dispatcher_started = False
         finally:
             remove_shutdown_handlers(loop, installed_signals)
     finally:
