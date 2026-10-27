@@ -141,8 +141,8 @@ jobs:
           {
             echo "## Published Grok ARM64 image digests"
             echo
-            echo "Source revision: `$GITHUB_SHA`"
+            printf 'Source revision: `%s`\n' "$GITHUB_SHA"
             echo
-            echo "- Relay: `$relay_image`"
-            echo "- Egress Proxy: `$egress_proxy_image`"
+            printf -- '- Relay: `%s`\n' "$relay_image"
+            printf -- '- Egress Proxy: `%s`\n' "$egress_proxy_image"
           } >> "$GITHUB_STEP_SUMMARY"

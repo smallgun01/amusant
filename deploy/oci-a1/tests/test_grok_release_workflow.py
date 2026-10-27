@@ -1,6 +1,9 @@
 """Static safety checks for the Owner-triggered Grok image release workflow."""
 from pathlib import Path
+import os
 import re
+import shutil
+import subprocess
 import unittest
 
 import yaml
@@ -68,6 +71,36 @@ class GrokImageReleaseWorkflowTests(unittest.TestCase):
             set(jobs["publish"]["outputs"]),
             {"relay_image", "egress_proxy_image"},
         )
+
+    def test_digest_summary_printf_renders_literal_markdown_without_substitution(self):
+        ref_step = next(
+            step for step in self.workflow["jobs"]["publish"]["steps"] if step.get("id") == "references"
+        )
+        script = ref_step["run"]
+        self.assertIn("printf 'Source revision: `%s`\\n' \"$GITHUB_SHA\"", script)
+        self.assertIn("printf -- '- Relay: `%s`\\n' \"$relay_image\"", script)
+        self.assertIn("printf -- '- Egress Proxy: `%s`\\n' \"$egress_proxy_image\"", script)
+        bash = shutil.which("bash")
+        if bash is None:
+            self.skipTest("bash is unavailable for executing the summary step")
+
+        relay_digest = "sha256:" + "a" * 64
+        egress_digest = "sha256:" + "b" * 64
+        source_revision = "1234567890abcdef" * 2 + "12345678"
+        env = {
+            **os.environ,
+            "RELAY_DIGEST": relay_digest,
+            "EGRESS_PROXY_DIGEST": egress_digest,
+            "GITHUB_SHA": source_revision,
+            "GITHUB_OUTPUT": os.devnull,
+            "GITHUB_STEP_SUMMARY": "/dev/stdout",
+        }
+        result = subprocess.run([bash, "-c", script], text=True, capture_output=True, env=env, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"Source revision: `{source_revision}`", result.stdout)
+        self.assertIn(f"- Relay: `ghcr.io/smallgun01/amusant-relay@{relay_digest}`", result.stdout)
+        self.assertIn(f"- Egress Proxy: `ghcr.io/smallgun01/amusant-egress-proxy@{egress_digest}`", result.stdout)
+        self.assertNotIn("command not found", result.stderr)
 
     def test_focused_safety_test_runs_in_lightweight_pull_request_ci(self):
         workflow = self.test_workflow
