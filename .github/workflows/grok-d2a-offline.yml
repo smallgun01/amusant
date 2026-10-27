@@ -215,5 +215,5 @@ jobs:
               --env-file "$GROK_SMOKE_DIR/compose.env" \
               -f deploy/oci-a1/compose.grok.yaml -f "$GROK_SMOKE_DIR/images.override.yaml" \
               down --remove-orphans || true
-            rm -rf -- "$GROK_SMOKE_DIR"
+            echo "Stopped the disposable Compose project; the hosted runner discards its temporary fixture after the job."
           fi
