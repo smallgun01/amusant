@@ -5,7 +5,6 @@ from collections.abc import Mapping
 from pathlib import Path
 import re
 
-from .dynamodb_task_store import DynamoDbTaskStore
 from .task_store import SQLiteTaskStore, TaskStore, _ID_RE
 
 TASK_STORE_ENV = "AMUSANT_TASK_STORE"
@@ -69,6 +68,7 @@ def build_task_store(
     except ImportError as exc:
         raise ValueError("boto3 is required for AMUSANT_TASK_STORE=dynamodb") from exc
     from .boto3_dynamodb_ledger import Boto3DynamoLedger
+    from .dynamodb_task_store import DynamoDbTaskStore
 
     kwargs: dict[str, object] = {"region_name": region}
     if endpoint:

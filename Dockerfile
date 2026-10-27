@@ -7,7 +7,8 @@ RUN pip install --no-cache-dir uv==0.11.25
 COPY pyproject.toml uv.lock ./
 COPY fast_voice ./fast_voice
 COPY relay ./relay
-RUN uv sync --locked --no-dev
+# This historical ACP/DynamoDB preflight image keeps the optional store adapter.
+RUN uv sync --locked --no-dev --extra dynamodb
 ENV PYTHONPATH=/app
 ARG GIT_SHA=unknown
 LABEL org.opencontainers.image.revision=$GIT_SHA

@@ -19,6 +19,7 @@ from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed
 
 from .dispatcher import ExecutionOutcome
+from .result_limits import MAX_CARD_LINES, MAX_CARD_TITLE, MAX_SPEAK_CHARS
 from .task_store import BoundedTaskResult, ClaimedTask
 
 ACP_PROTOCOL_VERSION = 1
@@ -29,10 +30,7 @@ _RFC1918 = (
     ipaddress.ip_network("172.16.0.0/12"),
     ipaddress.ip_network("192.168.0.0/16"),
 )
-MAX_SPEAK_CHARS = 240
 MAX_DETAILS_CHARS = 4096
-MAX_CARD_LINES = 4
-MAX_CARD_TITLE = 80
 MAX_PROMPT_CHARS = 4096
 MAX_ACP_CA_PEM_CHARS = 64 * 1024
 

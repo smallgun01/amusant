@@ -5,7 +5,7 @@ import json
 import re
 from typing import Any, Literal, TypedDict
 
-from .acp_client import MAX_CARD_LINES, MAX_CARD_TITLE, MAX_SPEAK_CHARS
+from .result_limits import MAX_CARD_LINES, MAX_CARD_TITLE, MAX_SPEAK_CHARS
 from .task_store import BoundedTaskResult, ClaimedTask, MAX_TASK_CHARS, TASK_KINDS
 
 HERMES_RESULT_SCHEMA_VERSION = 2
