@@ -45,6 +45,8 @@ class DeviceIngressUnitTests(unittest.TestCase):
         self.assertIn("ListenStream=10.0.0.10:443", socket_unit)
         self.assertIn("Accept=no", socket_unit)
         self.assertIn("systemd-socket-proxyd --connections-max=31", service_unit)
+        self.assertIn("Type=exec\n", service_unit)
+        self.assertNotIn("Type=notify", service_unit)
         self.assertIn("--exit-idle-time=120s 172.30.62.2:8443", service_unit)
         self.assertIn("DynamicUser=yes", service_unit)
         self.assertIn("User=amusant-device-ingress", service_unit)
