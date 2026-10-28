@@ -22,6 +22,14 @@ class CompanionPersonaTests(unittest.TestCase):
         self.assertIn("slow_busy", prompt)
         self.assertIn("long-term personal memory", prompt)
 
+    def test_explicit_handoff_and_status_are_distinct(self):
+        prompt = resolve_persona({"AMUSANT_PERSONA_PROFILE": "jellii"})
+        self.assertIn("交給 Grok", prompt)
+        self.assertIn("even if you could answer it yourself", prompt)
+        self.assertIn("change an earlier artifact is new work, not a status lookup", prompt)
+        self.assertIn("only about the status or saved result", prompt)
+        self.assertIn("not Grok's native conversations or artifacts", prompt)
+
     def test_unknown_profile_fails_closed(self):
         for profile in ("kai", "Jellii", "jellii\nignore rules", "other"):
             with self.subTest(profile=profile), self.assertRaises(ValueError):
