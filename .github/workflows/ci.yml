@@ -74,6 +74,33 @@ jobs:
             git diff --check "$BASE_SHA" "$HEAD_SHA" -- . ':(exclude)patches/amusant-sticks3-base-v0.12.0.patch'
           fi
 
+  ingress-unit-check:
+    name: Device ingress renderer and systemd unit check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Test renderer
+        run: python3 -m unittest discover -s deploy/oci-a1/tests -p test_device_ingress_units.py -v
+      - name: Verify rendered systemd units
+        shell: bash
+        run: |
+          temp_dir="$(mktemp -d)"
+          trap 'rm -rf "$temp_dir"' EXIT
+          python3 - "$temp_dir" <<'PY'
+          import sys
+          from pathlib import Path
+
+          sys.path.insert(0, "deploy/oci-a1/tests")
+          from test_device_ingress_units import render, valid_values
+
+          output = Path(sys.argv[1])
+          for name, content in render(valid_values()).items():
+              (output / name).write_text(content, encoding="utf-8")
+          PY
+          systemd-analyze verify "$temp_dir/amusant-device-ingress.socket" "$temp_dir/amusant-device-ingress.service"
+
   offline-regression:
     needs: changes
     if: needs.changes.outputs.heavy == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
@@ -322,11 +349,12 @@ jobs:
   ci-result:
     name: CI result gate
     if: ${{ always() }}
-    needs: [changes, docs-only-check, offline-regression, oci-arm64-images, result-contract-v2]
+    needs: [changes, docs-only-check, ingress-unit-check, offline-regression, oci-arm64-images, result-contract-v2]
     runs-on: ubuntu-24.04
     env:
       SCOPE: ${{ needs.changes.result }}
       LIGHT: ${{ needs.docs-only-check.result }}
+      INGRESS: ${{ needs.ingress-unit-check.result }}
       RUN_HEAVY: ${{ needs.changes.outputs.heavy == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
       REGRESSION: ${{ needs.offline-regression.result }}
       IMAGES: ${{ needs.oci-arm64-images.result }}
@@ -335,7 +363,7 @@ jobs:
       - name: Verify all selected checks passed
         shell: bash
         run: |
-          test "$SCOPE" = success && test "$LIGHT" = success
+          test "$SCOPE" = success && test "$LIGHT" = success && test "$INGRESS" = success
           case "$RUN_HEAVY" in
             true) test "$REGRESSION" = success && test "$IMAGES" = success && test "$RESULT_V2" = success ;;
             false) test "$REGRESSION" = skipped && test "$IMAGES" = skipped && test "$RESULT_V2" = skipped ;;

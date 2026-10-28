@@ -4,7 +4,7 @@ Requires=amusant-device-ingress.socket
 After=amusant-device-ingress.socket
 
 [Service]
-Type=notify
+Type=exec
 ExecStart=/usr/lib/systemd/systemd-socket-proxyd --connections-max=@MAX_CONNECTIONS@ --exit-idle-time=@EXIT_IDLE_SECONDS@s @RELAY_BIND_IP@:8443
 DynamicUser=yes
 User=amusant-device-ingress

@@ -37,8 +37,24 @@ requested ceiling across both implementations; the offline test accepts the
 expected 2–3 connections for its ceiling of 3, then verifies the next one is
 refused. See the [systemd 255 implementation](https://github.com/systemd/systemd/blob/v255/src/socket-proxy/socket-proxyd.c#L428-L466)
 and [current implementation](https://github.com/systemd/systemd/blob/main/src/socket-proxy/socket-proxyd.c#L1979-L2046).
-The idle timeout option requires systemd 246 or newer; the actual OCI host
-version is still unverified and must be checked before any installation.
+The idle timeout option requires systemd 246 or newer. This was a host-readiness
+unknown during the original offline PoC; the OCI Ubuntu 22.04 host was later
+verified by the Owner during the Grok staging rollout.
+
+### OCI startup compatibility finding (2026-10-28)
+
+On the real OCI Ubuntu 22.04 host, the socket was `active/listening`, but the
+rendered `Type=notify` proxy service timed out after 90 seconds waiting for a
+readiness notification (`Result=timeout`, terminated with SIGTERM). An
+Owner-managed host-only systemd drop-in setting `Type=exec` restored active
+socket-proxyd startup and an established TCP upstream connection to the
+private Relay listener on port 8443. The checked-in service template now uses
+`Type=exec` by default; the same fixed-target, `DynamicUser`, and sandboxing
+settings remain unchanged. `Type=exec` confirms process execution, **not**
+application-level readiness or a successful TLS-PSK handshake. A host-local
+TCP forwarding PASS does not constitute a public NSG, device-authentication,
+or Grok E2E PASS. The temporary OCI drop-in can remain until the reconciled
+unit is installed during a separately approved host maintenance window.
 
 ## Current status, timeouts, and public-ingress safeguards
 
