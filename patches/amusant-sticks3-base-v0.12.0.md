@@ -39,7 +39,15 @@ applied independently to clean copies of the pinned revision. With LF checkout,
 for each; no source deviations were observed. The Windows run forced LF output
 for the integration script's text writes to match the Linux workflow. The
 existing CJK header contains an extra blank line at EOF, retained for equivalence.
-Repeat the comparison with ash patches/sticks3-w15-cjk/verify-equivalence.sh /path/to/kai-clone
-and run all host, independent QR decode, build and hardware
-acceptance gates before adopting this candidate. This hash is evidence for the
-source patch, not a firmware image hash.
+Repeat the comparison on Linux with:
+
+```sh
+bash patches/sticks3-w15-cjk/verify-equivalence.sh /path/to/kai-clone
+```
+
+The expected SHA-256 for each canonical source diff is
+`cfb9cd82bcc108fc2d80d1f57fe6b3e0295d4491ed591c0e75345a1af093b988`.
+Source parity is a source packaging gate; it is neither a firmware binary hash
+nor a fresh physical QR 5/5 acceptance. Do not flash or reset NVS in this PR.
+The production workflow remains unchanged and this candidate is not the default;
+closing #136 and cutover require separate evidence and approval.

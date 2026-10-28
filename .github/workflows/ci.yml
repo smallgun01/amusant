@@ -44,8 +44,14 @@ jobs:
             echo heavy=true >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          git diff --check "$BASE_SHA" "$HEAD_SHA" --
-          if git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- | grep -Ev '^$|\.(md|mdx)$' >/dev/null; then
+          git diff --check "$BASE_SHA" "$HEAD_SHA" -- . ':(exclude)patches/amusant-sticks3-base-v0.12.0.patch'
+          changed=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" --)
+          # The CI workflow may accompany this candidate only; unrelated CI
+          # edits retain the ordinary heavy checks.
+          if printf '%s\n' "$changed" | grep -qx '.github/workflows/ci.yml' &&
+             ! printf '%s\n' "$changed" | grep -q '^patches/amusant-sticks3-base-v0.12.0.patch$'; then
+            echo heavy=true >> "$GITHUB_OUTPUT"
+          elif printf '%s\n' "$changed" | grep -Ev '^$|\.(md|mdx)$|^patches/|^\.github/workflows/(ci|sticks3-candidate)\.yml$' >/dev/null; then
             echo heavy=true >> "$GITHUB_OUTPUT"
           else
             echo heavy=false >> "$GITHUB_OUTPUT"
@@ -65,7 +71,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           if [[ "$BASE_SHA" =~ ^[a-fA-F0-9]{40}$ ]] && [[ "$HEAD_SHA" =~ ^[a-fA-F0-9]{40}$ ]]; then
-            git diff --check "$BASE_SHA" "$HEAD_SHA" --
+            git diff --check "$BASE_SHA" "$HEAD_SHA" -- . ':(exclude)patches/amusant-sticks3-base-v0.12.0.patch'
           fi
 
   offline-regression:
