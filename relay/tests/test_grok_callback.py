@@ -271,7 +271,8 @@ class GrokCallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 409)
 
         result = self.store.get_result(self.task_id)
-        self.assertIn("native run state is unverified", result["speak"])
+        self.assertTrue(result["speak"].startswith("Grok 回報："))
+        self.assertNotIn("native run state is unverified", result["speak"])
         self.assertIsNone(result["artifact_ref"])
         self.assertNotIn("box:/", result["details_md"])
         connection = sqlite3.connect(self.database)
@@ -314,7 +315,7 @@ class GrokCallbackTests(unittest.IsolatedAsyncioTestCase):
         ), 2)
         self.assertEqual(response["status"], "failed")
         self.assertEqual(response["reported_outcome"], "not_completed")
-        self.assertTrue(response["speak"].startswith("Grok reports it did not complete the task."))
+        self.assertTrue(response["speak"].startswith("Grok 回報這項工作未完成："))
         self.assertTrue(response["speak_now"])
         self.assertEqual(response["native_state"], "unknown")
         self.assertTrue(await router.mark_spoken(self.task_id))
