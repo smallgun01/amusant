@@ -81,16 +81,15 @@ def validate_grok_callback(payload: Any, *, result_token: str) -> ValidatedGrokR
     # The callback is an Agent report, not proof of native Run completion.
     # Prefix speech server-side so an untrusted report cannot present the
     # channel result as independently verified or claim success for failure.
-    prefix = (
-        "Grok reports completion; native run state is unverified. "
-        if outcome == "completed"
-        else "Grok reports it did not complete the task. "
-    )
+    # The machine-readable native_state remains unknown. Avoid reading the
+    # repetitive English engineering disclaimer aloud to the Taiwanese user.
+    # Frame the answer explicitly as Grok's report, never independent proof.
+    prefix = "Grok 回報：" if outcome == "completed" else "Grok 回報這項工作未完成："
     bounded_speak = prefix + speak[: MAX_SPEAK_CHARS - len(prefix)].rstrip()
     outcome_line = (
-        "Grok reports completion; native state is unknown."
+        "Grok 回報任務完成；原生執行狀態尚未獨立驗證。"
         if outcome == "completed"
-        else "Grok reported that it did not complete the task."
+        else "Grok 回報任務未完成；原生執行狀態尚未獨立驗證。"
     )
     result_lines = [outcome_line, *bounded_lines[:3]]
     normalized = {
