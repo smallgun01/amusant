@@ -2120,6 +2120,57 @@ class LiveBridgeTests(unittest.IsolatedAsyncioTestCase):
             await server.wait_closed()
 
 
+    async def test_spoken_ack_waits_for_generated_playback_window(self):
+        """Fast-produced speech may outlast the idle timer before turn_complete."""
+        task_id = "4db5aabc-284a-4a01-8a6d-5cddcc7934f1"
+        marked = []
+
+        class Handler:
+            async def __call__(self, _event, _turn_id):
+                return {"status": "completed", "task_id": task_id,
+                        "speak": "Saved result.", "speak_now": True}
+
+            async def mark_spoken(self, value):
+                marked.append(value)
+                return True
+
+        tool_provider = FakeProvider(auto_complete=False)
+        spoken_provider = FakeProvider(auto_complete=False)
+        server, ws = await self._open(
+            lambda: tool_provider,
+            slow_path_tool_handler=Handler(),
+            spoken_provider_factory=lambda: spoken_provider,
+            spoken_ack_timeout_seconds=0.05,
+            spoken_ack_max_duration_seconds=0.6,
+        )
+        try:
+            await self._send_turn(ws)
+            await self._controls_until(ws, lambda item, _items: item.get("state") == "thinking")
+            await tool_provider.callbacks["tool"](
+                ToolCallEvent("lookup-playback-budget", INBOX_TOOL_NAME, {"speak": True})
+            )
+            await tool_provider.callbacks["tool_batch_complete"]()
+            await asyncio.wait_for(spoken_provider.injected_event.wait(), timeout=1)
+            await self._wait_for_spoken_handoff()
+            # 0.2 seconds of PCM is sent quickly; completion comes after the
+            # old 0.05s idle deadline, but within the playout-aware deadline.
+            await spoken_provider.callbacks["audio"](
+                AudioFrame(bytes([1, 0]) * 4800, 24000)
+            )
+            await asyncio.sleep(0.11)
+            await spoken_provider.callbacks["complete"](TurnCompleteEvent(cancelled=False))
+            controls, _ = await self._controls_until(
+                ws, lambda item, _items: item.get("type") == "turn_complete"
+            )
+            self.assertFalse(any(
+                item.get("title") == "Saved result available" for item in controls
+            ))
+            self.assertEqual(marked, [task_id])
+        finally:
+            await ws.close()
+            server.close()
+            await server.wait_closed()
+
     async def test_zero_or_stalled_spoken_audio_never_marks_spoken(self):
         for emit_partial_audio in (False, True):
             with self.subTest(partial_audio=emit_partial_audio):
