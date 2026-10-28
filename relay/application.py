@@ -331,8 +331,14 @@ def build_supported_relay_runtime(
                 finish_submission=store.finish_grok_submission,
                 fail_before_send=store.fail,
             )
-        except GrokConfigError as exc:
-            raise ValueError(str(exc)) from None
+        except GrokConfigError:
+            # Keep FAST available; fail each unsent Grok task without occupying
+            # the owner slot. Never expose configuration values in logs.
+            class _InvalidGrokExecutor:
+                async def execute(self, task):
+                    store.fail(task.task_id, code="grok_configuration_invalid")
+                    return ExecutionOutcome(status="failed", code="grok_configuration_invalid")
+            selected_executor = _InvalidGrokExecutor()
     active_executors = (
         {config.slow_executor_kind: selected_executor}
         if selected_executor is not None
