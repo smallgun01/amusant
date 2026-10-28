@@ -1,0 +1,88 @@
+name: StickS3 consolidated candidate
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+    paths:
+      - '.github/workflows/sticks3-candidate.yml'
+      - '.github/workflows/ci.yml'
+      - 'patches/amusant-sticks3-base-v0.12.0.patch'
+      - 'patches/amusant-sticks3-base-v0.12.0.md'
+      - 'patches/sticks3-baseline/**'
+      - 'patches/sticks3-w15-cjk/apply_integration.py'
+      - 'patches/kai-v0.12.0-jellii/**'
+      - 'patches/kai-v0.12.0-wifi-w1/**'
+      - 'patches/kai-v0.12.0-wifi-w1.5/**'
+      - 'patches/kai-v0.12.0-cjk-display/**'
+      - 'patches/kai-v0.12.0-wifi-w2b1/**'
+      - 'patches/kai-v0.12.0-wifi-w2bqr/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  parity:
+    name: Source parity and whitespace smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check scoped outer diff policy
+        run: python3 patches/sticks3-baseline/test_diff_policy.py
+      - name: Reconstruct both source trees
+        run: |
+          git clone --no-tags https://github.com/zbruceli/kai.git /tmp/kai-upstream
+          bash patches/sticks3-baseline/verify-equivalence.sh /tmp/kai-upstream
+  candidate-build:
+    name: Candidate and rollback firmware validation
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    needs: parity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Reconstruct independently and verify source parity
+        run: |
+          git clone --no-tags https://github.com/zbruceli/kai.git /tmp/kai-upstream
+          VERIFY_WORK_DIR=/tmp/kai-compare bash patches/sticks3-baseline/verify-equivalence.sh /tmp/kai-upstream
+      - name: Install independent QR decoder
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zbar-tools
+      - name: Run consolidated host and QR regressions
+        run: |
+          root=/tmp/kai-compare/consolidated/firmware
+          python3 patches/kai-v0.12.0-wifi-w1/tests/run_host_tests.py --firmware-root "$root"
+          python3 patches/kai-v0.12.0-wifi-w1.5/tests/run_host_tests.py --firmware-root "$root"
+          python3 patches/kai-v0.12.0-wifi-w2b1/tests/run_host_tests.py --firmware-root "$root" --wifi-tests patches/kai-v0.12.0-wifi-w1.5/tests
+          python3 patches/kai-v0.12.0-wifi-w2bqr/tests/run_host_tests.py --firmware-root "$root"
+          python3 patches/kai-v0.12.0-wifi-w2bqr/tests/check_owner_setup_wiring.py --firmware-root "$root"
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -I"$root/src" patches/kai-v0.12.0-cjk-display/tests/test_cjk_layout.cpp -o /tmp/cjk-layout
+          /tmp/cjk-layout
+      - name: Install pinned PlatformIO
+        run: |
+          python3 -m venv /tmp/pioenv
+          /tmp/pioenv/bin/pip install 'platformio==6.2.0'
+      - name: Build candidate and retained layered rollback
+        run: |
+          set -o pipefail
+          for tree in consolidated layered; do
+            root="/tmp/kai-compare/$tree/firmware"
+            cp "$root/src/secrets.example.h" "$root/src/secrets.h"
+            /tmp/pioenv/bin/pio run -d "$root" -e sticks3 | tee "/tmp/$tree-sticks3.log"
+            rm "$root/src/secrets.h"
+          done
+          root=/tmp/kai-compare/consolidated/firmware
+          cp "$root/src/secrets.example.h" "$root/src/secrets.h"
+          trap 'rm -f "$root/src/secrets.h"' EXIT
+          /tmp/pioenv/bin/pio run -d "$root" -e sticks3_ble_diag | tee /tmp/consolidated-diag.log
+      - name: Verify production glyph metrics
+        run: |
+          root=/tmp/kai-compare/consolidated/firmware
+          python3 patches/kai-v0.12.0-cjk-display/tests/check_efont_tw.py --m5gfx "$root/.pio/libdeps/sticks3/M5GFX@0.2.30" --emit-header /tmp/jellii_cjk_font_metrics.generated.hpp
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -I"$root/src" -I/tmp patches/kai-v0.12.0-cjk-display/tests/test_cjk_font_width.cpp -o /tmp/cjk-width
+          /tmp/cjk-width
+      - name: Report image hashes and footprint comparison
+        run: python3 patches/sticks3-baseline/report_footprints.py
