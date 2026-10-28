@@ -152,6 +152,8 @@ class Turn:
     post_tool_deadline: float | None = None
     input_bytes: int = 0
     output_bytes: int = 0
+    # First server-side audio write for estimating long spoken playback time.
+    spoken_audio_started_at: float | None = None
     provider_epoch: int | None = None
     pending_audio: bytearray = field(default_factory=bytearray)
     ptt_started_at: float = field(default_factory=time.monotonic)
@@ -396,6 +398,15 @@ def make_handler(
             # Tool acknowledgement and tool-free spoken delivery have separate deadlines.
             idle_timeout = spoken_ack_timeout_seconds if turn.tool_disabled else post_tool_ack_timeout_seconds
             duration = spoken_ack_max_duration_seconds if turn.tool_disabled else post_tool_ack_max_duration_seconds
+            if turn.tool_disabled and turn.spoken_audio_started_at is not None:
+                # Live may send audio faster than real-time but defer turn_complete
+                # until its playout window. Do not treat the ordinary idle timeout
+                # as proof that the generated speech has finished playing.
+                audio_seconds = turn.output_bytes / (OUTPUT_RATE * 2)
+                playback_remaining = max(
+                    0.0, turn.spoken_audio_started_at + audio_seconds - loop.time()
+                )
+                idle_timeout = max(idle_timeout, playback_remaining + spoken_ack_timeout_seconds)
             if turn.post_tool_deadline is None:
                 turn.post_tool_deadline = loop.time() + duration
             remaining = max(0.0, turn.post_tool_deadline - loop.time())
@@ -417,8 +428,9 @@ def make_handler(
             if turn.tool_action_kind == "lookup":
                 if turn.tool_disabled and turn.spoken_task_id is not None:
                     LOG.warning(
-                        "Inbox spoken delivery incomplete turn_id=%d reason=response_timeout output_bytes=%d",
+                        "Inbox spoken delivery incomplete turn_id=%d reason=response_timeout output_bytes=%d output_audio_ms=%d",
                         turn.turn_id, turn.output_bytes,
+                        round(turn.output_bytes * 1000 / (OUTPUT_RATE * 2)),
                     )
                 if turn.tool_result_status == "completed":
                     title = "Saved result available"
@@ -715,6 +727,13 @@ def make_handler(
                             except ConnectionClosed:
                                 return
                             turn.output_bytes += len(chunk)
+                            if turn.tool_disabled and turn.spoken_audio_started_at is None:
+                                turn.spoken_audio_started_at = asyncio.get_running_loop().time()
+                    if turn.tool_response_sent and owns_response(turn, epoch):
+                        # Refresh *after* accounting for the audio just sent; the
+                        # spoken timeout needs the full PCM duration, not the
+                        # previous frame's byte count.
+                        reset_post_tool_timeout(turn, epoch)
                 except DeviceProtocolError:
                     await fail_turn(turn, "device_audio_encode_failed")
                     defer_provider_retire(
@@ -962,6 +981,7 @@ def make_handler(
                 turn.tool_disabled = True
                 turn.post_tool_output_seen = False
                 turn.output_bytes = 0
+                turn.spoken_audio_started_at = None
                 cancel_post_tool_timeout(turn)
                 handoff_deadline = asyncio.get_running_loop().time() + spoken_ack_max_duration_seconds
                 turn.post_tool_deadline = handoff_deadline
