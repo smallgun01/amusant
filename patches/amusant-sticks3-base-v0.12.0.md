@@ -42,7 +42,7 @@ existing CJK header contains an extra blank line at EOF, retained for equivalenc
 Repeat the comparison on Linux with:
 
 ```sh
-bash patches/sticks3-w15-cjk/verify-equivalence.sh /path/to/kai-clone
+bash patches/sticks3-baseline/verify-equivalence.sh /path/to/kai-clone
 ```
 
 The expected SHA-256 for each canonical source diff is

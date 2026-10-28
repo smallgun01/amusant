@@ -5,7 +5,16 @@ on:
     paths:
       - '.github/workflows/sticks3-candidate.yml'
       - '.github/workflows/ci.yml'
-      - 'patches/**'
+      - 'patches/amusant-sticks3-base-v0.12.0.patch'
+      - 'patches/amusant-sticks3-base-v0.12.0.md'
+      - 'patches/sticks3-baseline/**'
+      - 'patches/sticks3-w15-cjk/apply_integration.py'
+      - 'patches/kai-v0.12.0-jellii/**'
+      - 'patches/kai-v0.12.0-wifi-w1/**'
+      - 'patches/kai-v0.12.0-wifi-w1.5/**'
+      - 'patches/kai-v0.12.0-cjk-display/**'
+      - 'patches/kai-v0.12.0-wifi-w2b1/**'
+      - 'patches/kai-v0.12.0-wifi-w2bqr/**'
   workflow_dispatch:
 permissions:
   contents: read
@@ -19,11 +28,11 @@ jobs:
         with:
           persist-credentials: false
       - name: Check scoped outer diff policy
-        run: python3 patches/sticks3-w15-cjk/test_diff_policy.py
+        run: python3 patches/sticks3-baseline/test_diff_policy.py
       - name: Reconstruct both source trees
         run: |
           git clone --no-tags https://github.com/zbruceli/kai.git /tmp/kai-upstream
-          bash patches/sticks3-w15-cjk/verify-equivalence.sh /tmp/kai-upstream
+          bash patches/sticks3-baseline/verify-equivalence.sh /tmp/kai-upstream
   candidate-build:
     name: Candidate and rollback firmware validation
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
@@ -37,7 +46,7 @@ jobs:
       - name: Reconstruct independently and verify source parity
         run: |
           git clone --no-tags https://github.com/zbruceli/kai.git /tmp/kai-upstream
-          VERIFY_WORK_DIR=/tmp/kai-compare bash patches/sticks3-w15-cjk/verify-equivalence.sh /tmp/kai-upstream
+          VERIFY_WORK_DIR=/tmp/kai-compare bash patches/sticks3-baseline/verify-equivalence.sh /tmp/kai-upstream
       - name: Install independent QR decoder
         run: |
           sudo apt-get update
@@ -76,4 +85,4 @@ jobs:
           g++ -std=c++17 -O2 -Wall -Wextra -Werror -I"$root/src" -I/tmp patches/kai-v0.12.0-cjk-display/tests/test_cjk_font_width.cpp -o /tmp/cjk-width
           /tmp/cjk-width
       - name: Report image hashes and footprint comparison
-        run: python3 patches/sticks3-w15-cjk/report_footprints.py
+        run: python3 patches/sticks3-baseline/report_footprints.py
