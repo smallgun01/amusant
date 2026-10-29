@@ -27,8 +27,8 @@ class CallbackListenerConfigTests(unittest.TestCase):
         env = {
             "RELAY_CALLBACK_BIND_IP": "172.29.2.2",
             "RELAY_CALLBACK_LISTEN_PORT": "8645",
-            "AMUSANT_GROK_CALLBACK_URL": "https://callback.invalid/callback/results",
-            "AMUSANT_GROK_CALLBACK_TRUSTED_HOSTS": "callback.invalid",
+            "AMUSANT_GROK_CALLBACK_URL": "https://callback.example.com/callback/results",
+            "AMUSANT_GROK_CALLBACK_TRUSTED_HOSTS": "callback.example.com",
             "AMUSANT_GROK_CALLBACK_SERVICE_PORT": "443",
         }
         self.assertEqual(callback_listener_config(env, device_host="172.29.1.2"), ("172.29.2.2", 8645))
@@ -40,9 +40,9 @@ class CallbackListenerConfigTests(unittest.TestCase):
             {"RELAY_CALLBACK_BIND_IP": "::"},
             {"RELAY_CALLBACK_LISTEN_PORT": "0"},
             {"AMUSANT_GROK_CALLBACK_TRUSTED_HOSTS": "evil.invalid"},
-            {"AMUSANT_GROK_CALLBACK_TRUSTED_HOSTS": "callback.invalid,evil.invalid"},
-            {"AMUSANT_GROK_CALLBACK_URL": "https://callback.invalid:0/callback/results"},
-            {"AMUSANT_GROK_CALLBACK_URL": "https://callback.invalid/callback/results?token=bad"},
+            {"AMUSANT_GROK_CALLBACK_TRUSTED_HOSTS": "callback.example.com,evil.invalid"},
+            {"AMUSANT_GROK_CALLBACK_URL": "https://callback.example.com:0/callback/results"},
+            {"AMUSANT_GROK_CALLBACK_URL": "https://callback.example.com/callback/results?token=bad"},
         ):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 callback_listener_config({**env, **change}, device_host="172.29.1.2")
@@ -69,7 +69,7 @@ class CallbackListenerTests(unittest.IsolatedAsyncioTestCase):
             token_expires_at=now + timedelta(minutes=5), callback_deadline_at=now + timedelta(minutes=2), now=now,
         )
         self.app = create_grok_callback_app(
-            self.store, self.owner, trusted_hosts=["callback.invalid"], expected_port=443, max_inflight=4,
+            self.store, self.owner, trusted_hosts=["callback.example.com"], expected_port=443, max_inflight=4,
         )
 
     def cleanup_root(self):
@@ -84,7 +84,7 @@ class CallbackListenerTests(unittest.IsolatedAsyncioTestCase):
             sock.bind(("127.0.0.1", 0))
             return sock.getsockname()[1]
 
-    async def request(self, port, *, host="callback.invalid", token=None, payload=None, forwarded=""):
+    async def request(self, port, *, host="callback.example.com", token=None, payload=None, forwarded=""):
         body = json.dumps(payload if payload is not None else {
             "schema_version": "amusant-grok-pilot-0", "task_id": self.task_id,
             "reported_outcome": "completed", "speak": "Offline result.",
@@ -107,7 +107,7 @@ class CallbackListenerTests(unittest.IsolatedAsyncioTestCase):
     async def test_real_loopback_server_auth_host_receipt_and_shutdown(self):
         port = self.port()
         async with serve_callback(self.app, "127.0.0.1", port):
-            status, _ = await self.request(port, host="attacker.invalid", forwarded="X-Forwarded-Host: callback.invalid\r\n")
+            status, _ = await self.request(port, host="attacker.invalid", forwarded="X-Forwarded-Host: callback.example.com\r\n")
             self.assertEqual(status, 400)
             status, _ = await self.request(port, token="wrong-capability")
             self.assertEqual(status, 401)
@@ -141,6 +141,58 @@ class CallbackListenerTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(host=host), self.assertRaises(ValueError):
                 async with serve_callback(self.app, host, 8645):
                     self.fail("unsafe listener must not start")
+
+    async def test_invalid_callback_configuration_keeps_fast_listener_available(self):
+        from fast_voice.contracts import ToolCallEvent
+        env = {
+            "AMUSANT_LIVE_PROVIDER": "gemini", "GEMINI_API_KEY": "offline-fixture",
+            "AMUSANT_SLOW_EXECUTOR": "grok_callback", "AMUSANT_CLIENT_ID": self.owner,
+            "AMUSANT_BACKEND_ID": "grok_bot", "AMUSANT_TASK_STORE": "sqlite",
+            "AMUSANT_TASK_DB": str(self.root / "separate.sqlite3"),
+            "AMUSANT_GROK_ROUTINE_URL": "https://routine.example.com/webhook",
+            "AMUSANT_GROK_ROUTINE_TOKEN": "valid-offline-token",
+            "AMUSANT_GROK_CALLBACK_URL": "https://callback.invalid/callback/results",
+            "AMUSANT_GROK_CALLBACK_TRUSTED_HOSTS": "callback.invalid",
+            "RELAY_CALLBACK_BIND_IP": "172.29.2.2", "HTTPS_PROXY": "http://egress_proxy:3128",
+        }
+        stop = {}
+        factory = {}
+        def make_handler(*args, **kwargs):
+            factory["router"] = kwargs["slow_path_tool_handler_factory"]
+            async def handler(websocket):
+                await websocket.send("fast-ready")
+            return handler
+        def install(event, _loop):
+            stop["event"] = event
+            return ()
+        port = self.port()
+        with (patch.dict(os.environ, env, clear=True),
+              patch("relay.application.make_handler", side_effect=make_handler),
+              patch("relay.grok_callback_executor._post_once") as post,
+              patch("relay.live_bridge.install_shutdown_handlers", side_effect=install),
+              patch("relay.live_bridge.remove_shutdown_handlers")):
+            process = asyncio.create_task(run("127.0.0.1", port, "offline-device-token"))
+            try:
+                for _ in range(100):
+                    if process.done():
+                        await process
+                    try:
+                        async with websocket_connect(f"ws://127.0.0.1:{port}/ws", proxy=None) as ws:
+                            self.assertEqual(await ws.recv(), "fast-ready")
+                        break
+                    except OSError:
+                        await asyncio.sleep(0.02)
+                else:
+                    self.fail("FAST listener did not start")
+                router = factory["router"](self.owner, "conversation")
+                reply = await router(ToolCallEvent(name="delegate_task", call_id="one", arguments={"task": "offline"}), 1)
+                self.assertEqual(reply["code"], "slow_unavailable")
+                self.assertEqual(reply["submission"], "not_sent")
+                post.assert_not_called()
+            finally:
+                if "event" in stop:
+                    stop["event"].set()
+                await asyncio.wait_for(process, 10)
 
     async def test_callback_bind_failure_stops_wss_before_dispatch(self):
         class Dispatcher:
@@ -247,7 +299,7 @@ class CallbackListenerTests(unittest.IsolatedAsyncioTestCase):
             async with serve_callback(self.app, "127.0.0.1", port):
                 reader, writer = await asyncio.open_connection("127.0.0.1", port)
                 writer.write((
-                    "POST /callback/results HTTP/1.1\r\nHost: callback.invalid\r\n"
+                    "POST /callback/results HTTP/1.1\r\nHost: callback.example.com\r\n"
                     f"Authorization: Bearer {self.token}\r\nContent-Type: application/json\r\n"
                     "Content-Length: 100\r\nConnection: close\r\n\r\n{"
                 ).encode())
@@ -260,13 +312,13 @@ class CallbackListenerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_one_inflight_callback_rejects_concurrent_request(self):
         app = create_grok_callback_app(
-            self.store, self.owner, trusted_hosts=["callback.invalid"], expected_port=443, max_inflight=1,
+            self.store, self.owner, trusted_hosts=["callback.example.com"], expected_port=443, max_inflight=1,
         )
         port = self.port()
         async with serve_callback(app, "127.0.0.1", port):
             _reader, writer = await asyncio.open_connection("127.0.0.1", port)
             writer.write((
-                "POST /callback/results HTTP/1.1\r\nHost: callback.invalid\r\n"
+                "POST /callback/results HTTP/1.1\r\nHost: callback.example.com\r\n"
                 f"Authorization: Bearer {self.token}\r\nContent-Type: application/json\r\n"
                 "Content-Length: 100\r\nConnection: close\r\n\r\n{"
             ).encode())
@@ -307,7 +359,7 @@ class CallbackListenerTests(unittest.IsolatedAsyncioTestCase):
             connection = http.client.HTTPConnection("127.0.0.1", callback_port, timeout=3)
             try:
                 connection.request("POST", "/callback/results", json.dumps(report).encode(), {
-                    "Host": "callback.invalid", "Authorization": f"Bearer {payload['result_token']}",
+                    "Host": "callback.example.com", "Authorization": f"Bearer {payload['result_token']}",
                     "Content-Type": "application/json",
                 })
                 response = connection.getresponse()
@@ -322,11 +374,11 @@ class CallbackListenerTests(unittest.IsolatedAsyncioTestCase):
             "AMUSANT_LIVE_PROVIDER": "gemini", "GEMINI_API_KEY": "offline-unused-fixture",
             "AMUSANT_CLIENT_ID": "process-owner", "AMUSANT_BACKEND_ID": "grok_bot",
             "AMUSANT_TASK_STORE": "sqlite", "AMUSANT_TASK_DB": str(database),
-            "AMUSANT_SLOW_EXECUTOR": "grok_callback", "AMUSANT_GROK_ROUTINE_URL": "https://routine.invalid/webhook",
+            "AMUSANT_SLOW_EXECUTOR": "grok_callback", "AMUSANT_GROK_ROUTINE_URL": "https://routine.example.com/webhook",
             "AMUSANT_GROK_ROUTINE_TOKEN": "offline-routine-token",
-            "AMUSANT_GROK_CALLBACK_URL": "https://callback.invalid/callback/results",
-            "AMUSANT_GROK_CALLBACK_TRUSTED_HOSTS": "callback.invalid",
-            "AMUSANT_GROK_CALLBACK_SERVICE_PORT": "443", "HTTPS_PROXY": "http://proxy.invalid:3128",
+            "AMUSANT_GROK_CALLBACK_URL": "https://callback.example.com/callback/results",
+            "AMUSANT_GROK_CALLBACK_TRUSTED_HOSTS": "callback.example.com",
+            "AMUSANT_GROK_CALLBACK_SERVICE_PORT": "443", "HTTPS_PROXY": "http://egress_proxy:3128",
         }
         stop = {}
 

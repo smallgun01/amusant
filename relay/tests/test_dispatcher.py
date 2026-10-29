@@ -454,6 +454,53 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(handled, 1)
         self.assertEqual(store.get_by_task_id(TASK_ID)["dispatch_state"], "sent")
 
+    async def test_grok_invalid_config_refuses_admission_and_preserves_fast(self):
+        env = {
+            "AMUSANT_LIVE_PROVIDER": "gemini", "GEMINI_API_KEY": "offline-key",
+            "AMUSANT_CLIENT_ID": CLIENT, "AMUSANT_BACKEND_ID": "grok_bot",
+            "AMUSANT_TASK_DB": str(self.db_path), "AMUSANT_SLOW_EXECUTOR": "grok_callback",
+            "AMUSANT_GROK_ROUTINE_URL": "https://routine.example.com/webhook",
+            "AMUSANT_GROK_ROUTINE_TOKEN": "valid-offline-token",
+            "AMUSANT_GROK_CALLBACK_URL": "https://callback.example.com/callback/results",
+            "HTTPS_PROXY": "http://egress_proxy:3128",
+        }
+        invalids = (
+            {"AMUSANT_GROK_ROUTINE_URL": "https://routine.invalid/webhook"},
+            {"AMUSANT_GROK_CALLBACK_URL": "https://callback.invalid/callback/results"},
+            {"AMUSANT_GROK_ROUTINE_TOKEN": "placeholder-token"},
+            {"HTTPS_PROXY": "http://egress-proxy.invalid:3128"},
+            {"HTTPS_PROXY": "http://[bad"},
+        )
+        def capture(*args, **kwargs):
+            return kwargs["slow_path_tool_handler_factory"]
+        with patch("relay.application.make_handler", side_effect=capture), \
+             patch("relay.grok_callback_executor._post_once") as post:
+            for change in invalids:
+                with self.subTest(change=change):
+                    factory, dispatcher, store = build_supported_relay_runtime(
+                        expected_device_token="device-token-12", environ={**env, **change},
+                        sdk_types=FakeSchemaTypes,
+                    )
+                    self.assertIsNone(dispatcher)
+                    router = factory(CLIENT, CONVERSATION)
+                    for call in ("one", "two"):
+                        response = await router(ToolCallEvent(name="delegate_task", call_id=call,
+                                                               arguments={"task": "offline"}), 1)
+                        self.assertEqual(response, {"status": "unavailable", "code": "slow_unavailable", "submission": "not_sent"})
+                    db = sqlite3.connect(self.db_path)
+                    try:
+                        self.assertEqual(db.execute("SELECT count(*) FROM slow_tasks").fetchone()[0], 0)
+                    finally:
+                        db.close()
+            factory, dispatcher, store = build_supported_relay_runtime(
+                expected_device_token="device-token-12", environ=env, sdk_types=FakeSchemaTypes,
+            )
+            self.assertIsNotNone(dispatcher)
+            response = await factory(CLIENT, CONVERSATION)(
+                ToolCallEvent(name="delegate_task", call_id="next", arguments={"task": "offline"}), 1)
+            self.assertEqual(response["status"], "accepted")
+            post.assert_not_called()
+
     def test_hermes_default_requires_configuration_and_never_silently_uses_acp(self):
         env = {
             "AMUSANT_LIVE_PROVIDER": "gemini",

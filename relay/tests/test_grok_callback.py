@@ -28,7 +28,7 @@ from relay.task_store import SQLiteTaskStore, TaskAdmissionRequest
 CLIENT = "grok-owner"
 CALLBACK_URL = "https://callback.example.com:8443/callback/results"
 ROUTINE_URL = "https://routine.example.com/webhook"
-PROXY_URL = "http://egress-proxy.invalid:3128"
+PROXY_URL = "http://egress_proxy:3128"
 
 
 def _report(task_id: str, *, outcome: str = "completed", speak: str = "The fixed Grok fixture answer."):
@@ -42,7 +42,7 @@ def _report(task_id: str, *, outcome: str = "completed", speak: str = "The fixed
     }
 
 
-async def _asgi_call(app, payload=None, *, token="fake-token", host="callback.invalid:8443", method="POST", path="/callback/results", extra_headers=(), raw_body=None):
+async def _asgi_call(app, payload=None, *, token="fake-token", host="callback.example.com:8443", method="POST", path="/callback/results", extra_headers=(), raw_body=None):
     body = raw_body if raw_body is not None else json.dumps(payload or {}, ensure_ascii=False).encode("utf-8")
     headers = [
         (b"host", host.encode("ascii")),
@@ -66,7 +66,7 @@ async def _asgi_call(app, payload=None, *, token="fake-token", host="callback.in
 
     await app({
         "type": "http", "method": method, "path": path, "query_string": b"",
-        "headers": headers, "scheme": "https", "server": ("callback.invalid", 8443),
+        "headers": headers, "scheme": "https", "server": ("callback.example.com", 8443),
     }, receive, send)
     start = next(message for message in messages if message["type"] == "http.response.start")
     response = next(message for message in messages if message["type"] == "http.response.body")
@@ -97,7 +97,7 @@ class GrokCallbackTests(unittest.IsolatedAsyncioTestCase):
         ))
         self.claimed = self.store.claim_due(now=self.now, lease_seconds=30)[0]
         self.callback_app = create_grok_callback_app(
-            self.store, CLIENT, trusted_hosts=["callback.invalid"],
+            self.store, CLIENT, trusted_hosts=["callback.example.com"],
             expected_port=8443, max_inflight=2,
         )
 
@@ -384,13 +384,13 @@ class GrokCallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 401)
         status, _ = await _asgi_call(self.callback_app, payload, token=token, host="attacker.invalid:8443")
         self.assertEqual(status, 400)
-        status, _ = await _asgi_call(self.callback_app, payload, token=token, host="callback.invalid")
+        status, _ = await _asgi_call(self.callback_app, payload, token=token, host="callback.example.com")
         self.assertEqual(status, 400)
         echoed = {**payload, "untrusted": f"echo={token}"}
         status, _ = await _asgi_call(self.callback_app, echoed, token=token)
         self.assertEqual(status, 400)
         other_owner_app = create_grok_callback_app(
-            self.store, "other-owner", trusted_hosts=["callback.invalid"],
+            self.store, "other-owner", trusted_hosts=["callback.example.com"],
             expected_port=8443, max_inflight=1,
         )
         status, _ = await _asgi_call(other_owner_app, payload, token=token)
@@ -480,7 +480,7 @@ class GrokCallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((abandon.status, abandon.code), ("abandoned", "grok_owner_abandoned"))
         inbox_before_late = self.store.get_inbox(second_id)
         late_app = create_grok_callback_app(
-            self.store, "another-owner", trusted_hosts=["callback.invalid"],
+            self.store, "another-owner", trusted_hosts=["callback.example.com"],
             expected_port=8443, max_inflight=2,
         )
         late_body = _report(second_id, speak="Late but authenticated.")
@@ -512,7 +512,7 @@ class GrokCallbackTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(revoked.status, "abandoned")
         revoked_app = create_grok_callback_app(
-            self.store, "revoked-owner", trusted_hosts=["callback.invalid"],
+            self.store, "revoked-owner", trusted_hosts=["callback.example.com"],
             expected_port=8443, max_inflight=1,
         )
         status, _ = await _asgi_call(

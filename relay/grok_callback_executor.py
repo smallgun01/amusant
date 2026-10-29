@@ -89,6 +89,9 @@ def _proxy_url(value: str) -> None:
         or parts.fragment
     ):
         raise GrokConfigError("HTTPS egress proxy URL must be configured without credentials")
+    host = parts.hostname.lower().rstrip(".")
+    if host == "invalid" or host.endswith(".invalid") or any(x in value.lower() for x in ("placeholder", "your-", "<", ">")):
+        raise GrokConfigError("HTTPS egress proxy URL contains a reserved or placeholder value")
     try:
         if parts.port is not None and not 1 <= parts.port <= 65_535:
             raise ValueError
@@ -262,8 +265,8 @@ class GrokCallbackExecutor:
             else:
                 category = "transport_other"
             submission_state = "acceptance_unknown"
-        logger.info("grok_webhook outcome=%s category=%s http_status=%s elapsed_ms=%d",
-                    submission_state, category, status, int((time.monotonic() - started) * 1000))
+        logger.info("grok_webhook task_ref=%s outcome=%s category=%s http_status=%s elapsed_ms=%d",
+                    hashlib.sha256(task.task_id.encode("utf-8")).hexdigest()[:16], submission_state, category, status, int((time.monotonic() - started) * 1000))
         self._finish_submission(task.task_id, state=submission_state, now=self._clock())
         return ExecutionOutcome(status="deferred", code=f"grok_{submission_state}")
 

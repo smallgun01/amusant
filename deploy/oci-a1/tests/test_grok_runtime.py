@@ -48,9 +48,9 @@ class GrokProfileTests(unittest.TestCase):
             "CALLBACK_API_CIDR": "172.30.64.0/29", "RELAY_CALLBACK_BIND_IP": "172.30.64.2",
             "RELAY_EGRESS_CIDR": "172.30.63.0/29", "RELAY_EGRESS_IP": "172.30.63.2",
             "EGRESS_PROXY_RELAY_BIND_IP": "172.30.63.3", "RELAY_HOST_PRIVATE_IP": "10.0.0.10",
-            "AMUSANT_CLIENT_ID": "offline-owner", "AMUSANT_GROK_ROUTINE_URL": "https://routine.invalid/webhook",
-            "AMUSANT_GROK_CALLBACK_URL": "https://callback.invalid/callback/results",
-            "AMUSANT_GROK_CALLBACK_TRUSTED_HOSTS": "callback.invalid",
+            "AMUSANT_CLIENT_ID": "offline-owner", "AMUSANT_GROK_ROUTINE_URL": "https://routine.example.com/webhook",
+            "AMUSANT_GROK_CALLBACK_URL": "https://callback.example.com/callback/results",
+            "AMUSANT_GROK_CALLBACK_TRUSTED_HOSTS": "callback.example.com",
             "AMUSANT_GROK_CALLBACK_SERVICE_PORT": "443", "OCI_DATA_DIR": str(self.root),
             "RELAY_STOP_GRACE_PERIOD": "30s", "AMUSANT_RELAY_SHUTDOWN_GRACE_SECONDS": "10",
             "RELAY_CPU_LIMIT": "0.5", "RELAY_MEMORY_LIMIT": "512m",
@@ -71,7 +71,9 @@ class GrokProfileTests(unittest.TestCase):
             {"RELAY_CALLBACK_BIND_IP": "0.0.0.0"},
             {"CALLBACK_API_CIDR": "172.30.62.0/29"},
             {"AMUSANT_GROK_CALLBACK_TRUSTED_HOSTS": "attacker.invalid"},
-            {"AMUSANT_GROK_CALLBACK_URL": "https://callback.invalid/callback/results?token=secret"},
+            {"AMUSANT_GROK_ROUTINE_URL": "https://routine.invalid/webhook"},
+            {"AMUSANT_GROK_CALLBACK_URL": "https://callback.invalid/callback/results"},
+            {"AMUSANT_GROK_CALLBACK_URL": "https://callback.example.com/callback/results?token=secret"},
             {"AMUSANT_GROK_ROUTINE_URL": "https://127.0.0.1/webhook"},
             {"AMUSANT_GROK_ROUTINE_URL": "https://localhost/webhook"},
             {"GROK_ROUTINE_TOKEN_FILE": str(self.root / "missing")},
@@ -171,7 +173,7 @@ class GrokProfileTests(unittest.TestCase):
             "RELAY_BIND_IP": "172.30.62.2", "RELAY_LISTEN_PORT": "8443",
             "RELAY_CALLBACK_BIND_IP": "172.30.64.2", "RELAY_CALLBACK_LISTEN_PORT": "8645",
             "AMUSANT_SLOW_EXECUTOR": "grok_callback",
-            "AMUSANT_GROK_CALLBACK_URL": "https://callback.invalid/callback/results",
+            "AMUSANT_GROK_CALLBACK_URL": "https://callback.example.com/callback/results",
         }
         with (patch.dict(os.environ, env, clear=True),
               patch.object(health.socket, "create_connection") as wss,
@@ -179,7 +181,7 @@ class GrokProfileTests(unittest.TestCase):
             http.return_value.getresponse.return_value.status = 405
             self.assertEqual(health.main(), 0)
             wss.assert_called_once_with(("172.30.62.2", 8443), timeout=2)
-            http.return_value.putheader.assert_called_once_with("Host", "callback.invalid")
+            http.return_value.putheader.assert_called_once_with("Host", "callback.example.com")
             http.return_value.getresponse.return_value.status = 500
             self.assertEqual(health.main(), 1)
 
