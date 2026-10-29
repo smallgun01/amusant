@@ -28,6 +28,8 @@ class CompanionPersonaTests(unittest.TestCase):
         self.assertIn("call delegate_task first", prompt)
         self.assertIn("an offer does not start a task", prompt)
         self.assertIn("unless delegate_task returns status=accepted", prompt)
+        self.assertIn("Admission does not prove the Agent has started or completed work", prompt)
+        self.assertIn("A cancellation request does not prove the remote Agent stopped", prompt)
         self.assertIn("do not produce the delegated answer or report", prompt)
         self.assertIn("unknown means acceptance is unconfirmed", prompt)
         self.assertIn("short searches", prompt)

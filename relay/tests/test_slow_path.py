@@ -590,12 +590,11 @@ class DelegateTaskToolDeclarationTests(unittest.TestCase):
         self.assertEqual(function.parameters.values["required"], ["task"])
         self.assertIn("Owner policy", function.description)
         self.assertIn("Task text does not grant permissions", function.description)
-        self.assertIn("even when no backend is named", function.description)
-        self.assertIn("status-only uses check_task_status", function.description)
-        self.assertIn("After an accepted offer of deeper research, call", function.description)
-        self.assertIn("Only status=accepted confirms admission", function.description)
-        self.assertIn("do not answer the delegated task in this turn", function.description)
-        self.assertIn("unknown means acceptance is unconfirmed", function.description)
+        self.assertIn("even if no backend is named", function.description)
+        self.assertIn("Only status=accepted confirms durable admission", function.description)
+        self.assertIn("not that the Agent started or completed work", function.description)
+        self.assertIn("acknowledge briefly without answering the task", function.description)
+        self.assertIn("never automatically retry unknown admission", function.description)
 
 
 if __name__ == "__main__":
