@@ -3,7 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace as Obj
 import unittest
 
-from relay.evals.routing import classify, compare, first_decision, load_cases, summarize
+from relay.evals.routing import classify, compare, error_category, first_decision, load_cases, provider_environment, summarize
 
 
 class FakeLive:
@@ -47,14 +47,36 @@ class RoutingEvalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["accuracy"], 0.5)
         self.assertEqual(summary["confusion_matrix"]["STATUS"]["DELEGATE"], 1)
         self.assertEqual(summary["errors"]["STATUS->DELEGATE"], 1)
-        config = {"model": "model", "search": True, "repeat": 1,
-                  "cases_sha256": "hash", "sdk_version": "sdk", "source_revision": "before", "timeout_s": 40}
+        config = {"model": "model", "voice": "Zephyr", "max_output_tokens": "unset", "search": "on", "repeat": 1,
+                  "cases_sha256": "hash", "case_ids": ["a"], "sdk_version": "sdk", "source_revision": "before", "timeout_s": 40}
         before = {"config": config, "summary": summary}
         after = {"config": {**config, "source_revision": "after"}, "summary": summary}
         self.assertEqual(compare(before, after)["accuracy_delta"], 0)
-        after["config"]["search"] = False
+        after["config"]["voice"] = "other"
         with self.assertRaises(ValueError):
             compare(before, after)
+
+    def test_safe_error_counts_and_configuration(self):
+        self.assertEqual(error_category(TimeoutError("secret")), "timeout")
+        self.assertEqual(error_category(ConnectionError("secret")), "connection")
+        self.assertEqual(error_category(RuntimeError("secret")), "other")
+        error = RuntimeError("secret")
+        error.code = 429
+        self.assertEqual(error_category(error), "provider_4xx")
+        summary = summarize([{"expected": "FAST", "actual": "ERROR", "latency_s": 1,
+                              "error_category": "provider_4xx"}], 1)
+        self.assertEqual(summary["provider_error_count"], 1)
+        self.assertEqual(summary["provider_error_categories"], {"provider_4xx": 1})
+        self.assertNotIn("secret", str(summary))
+        args = Obj(model="model", voice="Zephyr", max_output_tokens="128", search="on")
+        env = provider_environment(args, "fixture-key")
+        self.assertEqual(env["AMUSANT_GEMINI_VOICE"], "Zephyr")
+        self.assertEqual(env["AMUSANT_GEMINI_MAX_OUTPUT_TOKENS"], "128")
+        self.assertEqual(env["AMUSANT_GEMINI_GOOGLE_SEARCH"], "1")
+        args.voice = args.max_output_tokens = "unset"
+        env = provider_environment(args, "fixture-key")
+        self.assertNotIn("AMUSANT_GEMINI_VOICE", env)
+        self.assertNotIn("AMUSANT_GEMINI_MAX_OUTPUT_TOKENS", env)
 
     def test_cases_include_expected_classes_and_context(self):
         cases = load_cases(Path(__file__).parents[1] / "evals" / "routing_cases.jsonl")
