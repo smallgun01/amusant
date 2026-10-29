@@ -24,9 +24,10 @@ class CompanionPersonaTests(unittest.TestCase):
 
     def test_explicit_handoff_and_status_are_distinct(self):
         prompt = resolve_persona({"AMUSANT_PERSONA_PROFILE": "jellii"})
-        self.assertIn("交給 Grok", prompt)
+        self.assertIn("naming Grok is not required", prompt)
         self.assertIn("even if you could answer it yourself", prompt)
         self.assertIn("change an earlier artifact is new work, not a status lookup", prompt)
+        self.assertIn("a short immediate answer or search stays FAST", prompt)
         self.assertIn("only about the status or saved result", prompt)
         self.assertIn("not Grok's native conversations or artifacts", prompt)
 
