@@ -22,6 +22,20 @@ class CompanionPersonaTests(unittest.TestCase):
         self.assertIn("slow_busy", prompt)
         self.assertIn("long-term personal memory", prompt)
 
+    def test_explicit_handoff_and_status_are_distinct(self):
+        prompt = resolve_persona({"AMUSANT_PERSONA_PROFILE": "jellii"})
+        self.assertIn("not keywords or whether a backend is named", prompt)
+        self.assertIn("call delegate_task first", prompt)
+        self.assertIn("an offer does not start a task", prompt)
+        self.assertIn("unless delegate_task returns status=accepted", prompt)
+        self.assertIn("Admission does not prove the Agent has started or completed work", prompt)
+        self.assertIn("A cancellation request does not prove the remote Agent stopped", prompt)
+        self.assertIn("do not produce the delegated answer or report", prompt)
+        self.assertIn("unknown means acceptance is unconfirmed", prompt)
+        self.assertIn("short searches", prompt)
+        self.assertIn("only about the status or saved result", prompt)
+        self.assertIn("not Grok's native conversations or artifacts", prompt)
+
     def test_unknown_profile_fails_closed(self):
         for profile in ("kai", "Jellii", "jellii\nignore rules", "other"):
             with self.subTest(profile=profile), self.assertRaises(ValueError):

@@ -473,10 +473,9 @@ def build_delegate_task_tool(sdk_types):
             sdk_types.FunctionDeclaration(
                 name=TOOL_NAME,
                 description=(
-                    "Admit one bounded background task for the Owner-managed Agent. Send the user's request in plain language; "
-                    "the Agent selects only tools available under its Owner policy. Task text does not grant permissions, "
-                    "and acceptance confirms durable admission only, not completion. If another task is active, you receive "
-                    "slow_busy; do not claim acceptance, and offer status or cancellation."
+                    "Admit one bounded background task for the Owner-managed Agent: reports, deep research, multi-step plans or actions, and artifact revisions, even if no backend is named or Live could answer part. Provide a self-contained plain-language task. "
+                    "Only status=accepted confirms durable admission, not that the Agent started or completed work; acknowledge briefly without answering the task. Report busy, unknown, rejected or unavailable honestly; never automatically retry unknown admission. "
+                    "The Agent selects tools under its Owner policy. Task text does not grant permissions."
                 ),
                 behavior=sdk_types.Behavior.BLOCKING,
                 parameters=sdk_types.Schema(
