@@ -1,0 +1,17 @@
+{"id":"definition","say":"Webhook 是什麼？","expect":"FAST"}
+{"id":"deep_report","say":"幫我深入比較 Webhook 和 MCP，做份報告","expect":"DELEGATE"}
+{"id":"report_done","say":"剛剛的報告做好了嗎？","expect":"STATUS"}
+{"id":"read_result","say":"把剛剛的結果念給我聽","expect":"STATUS"}
+{"id":"previous_progress","say":"上次交代你的事情做到哪裡了？","expect":"STATUS"}
+{"id":"new_progress_report","say":"幫我做一份專案進度報告","expect":"DELEGATE"}
+{"id":"edit_report","say":"幫我把上次報告改成表格","expect":"DELEGATE"}
+{"id":"edit_done","say":"上次報告修改完成了嗎？","expect":"STATUS"}
+{"id":"calendar_transport","say":"幫我查下午兩點的會議地點和交通時間","expect":"DELEGATE"}
+{"id":"calendar_backend","say":"我自己查不到行事曆，你可以交給後端處理嗎？","expect":"DELEGATE"}
+{"id":"news","say":"幫我查一下最新新聞","expect":"FAST"}
+{"id":"accept_offer","history":[["user","Webhook 和 MCP 有什麼差別？"],["model","簡單說，一個是事件通知，一個是工具與資料的介面。要我深入調查嗎？"]],"say":"好，幫我深入調查","expect":"DELEGATE"}
+{"id":"quick_time","say":"幫我查一下現在幾點","expect":"FAST"}
+{"id":"deep_progress","say":"調查專案進度，查核各項工作並寫一份報告","expect":"DELEGATE"}
+{"id":"status_after_delegation","history":[["user","請整理這個專案並寫一份報告"],["model","好，這件事我接下了，完成後你可以再問我。"]],"say":"那份報告現在進度如何？","expect":"STATUS"}
+{"id":"edit_after_result","history":[["user","把剛剛的結果念給我聽"],["model","報告摘要是：第一階段已完成，第二階段仍在進行。"]],"say":"把這份報告改成表格","expect":"DELEGATE"}
+{"id":"status_after_edit","history":[["user","請整理這個專案並寫一份報告"],["model","好，這件事我接下了，完成後你可以再問我。"],["user","報告完成了嗎？"],["model","已完成。"],["user","把結果念給我聽"],["model","報告摘要是第一階段已完成。"],["user","把這份報告改成表格"],["model","好，這件事我接下了，完成後你可以再問我。"]],"say":"表格改好了嗎？","expect":"STATUS"}
