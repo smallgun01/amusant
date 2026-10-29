@@ -110,7 +110,7 @@ docker compose --project-name amusant-oci-a1-grok \
    "${grok_compose[@]}" ps
    ```
 
-   Confirm only Relay and Egress Proxy are present, both healthy, and the new ledger reports schema v10. Startup health is not Callback public-ingress, StickS3 external-ingress, or Provider acceptance. Keep Gate 2 Callback routing and Gate 3 device ingress disabled until separately approved. Do not dispatch a real task as part of image release.
+   Confirm only Relay and Egress Proxy are present, both healthy, and the new ledger reports schema v10. Startup health is not Callback public-ingress, StickS3 external-ingress, or Provider acceptance. The Grok OCI profile requires both the device listener and private Callback listener to pass its Compose healthcheck; preflight also rejects invalid Callback settings. A source-level FAST listener that remains available when Callback configuration is invalid is a degraded emergency state, not a healthy or acceptable Grok staging deployment. Repair configuration and restart under the separately authorized procedure; until then existing callbacks cannot be received. This healthcheck does not separately report FAST liveness or prove SLOW provider readiness. Keep Gate 2 Callback routing and Gate 3 device ingress disabled until separately approved. Do not dispatch a real task as part of image release.
 
 ## Rollback
 

@@ -51,10 +51,10 @@ with tempfile.TemporaryDirectory(dir=".") as tmp:
         "AMUSANT_TASK_STORE": "sqlite",
         "AMUSANT_TASK_DB": str(Path(tmp).resolve() / "tasks.sqlite3"),
         "AMUSANT_SLOW_EXECUTOR": "grok_callback",
-        "AMUSANT_GROK_ROUTINE_URL": "https://routine.invalid/webhook",
+        "AMUSANT_GROK_ROUTINE_URL": "https://routine.example.com/webhook",
         "AMUSANT_GROK_ROUTINE_TOKEN": "offline-routine-token-123",
-        "AMUSANT_GROK_CALLBACK_URL": "https://callback.invalid/callback/results",
-        "HTTPS_PROXY": "http://egress-proxy.invalid:3128",
+        "AMUSANT_GROK_CALLBACK_URL": "https://callback.example.com/callback/results",
+        "HTTPS_PROXY": "http://egress_proxy:3128",
     }
     handler, dispatcher, store = build_supported_relay_runtime(
         expected_device_token="device-token-12",

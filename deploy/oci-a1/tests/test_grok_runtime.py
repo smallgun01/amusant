@@ -184,6 +184,9 @@ class GrokProfileTests(unittest.TestCase):
             http.return_value.putheader.assert_called_once_with("Host", "callback.example.com")
             http.return_value.getresponse.return_value.status = 500
             self.assertEqual(health.main(), 1)
+            # FAST can be listening while the disabled Callback is unavailable.
+            http.side_effect = ConnectionRefusedError()
+            self.assertEqual(health.main(), 1)
 
     def test_docker_compose_config_is_static_and_exposes_no_ports(self):
         if not shutil.which("docker"):
