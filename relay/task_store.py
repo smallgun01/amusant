@@ -374,7 +374,7 @@ class SQLiteTaskStore:
             }
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
             if "slow_tasks" not in tables:
-                self._create_v2(connection)
+                self._create_v9_schema(connection)
                 self._migrate_v9_to_v10(connection)
             else:
                 if version < 2:
@@ -409,7 +409,8 @@ class SQLiteTaskStore:
         finally:
             connection.close()
 
-    def _create_v2(self, connection: sqlite3.Connection) -> None:
+    def _create_v9_schema(self, connection: sqlite3.Connection) -> None:
+        """Create the v9 baseline used before applying the v10 migration."""
         connection.executescript(
             f"""
             CREATE TABLE slow_tasks (
