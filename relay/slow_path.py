@@ -469,7 +469,7 @@ def build_delegate_task_tool(sdk_types):
             sdk_types.FunctionDeclaration(
                 name=TOOL_NAME,
                 description=(
-                    "Admit one bounded background task for the Owner-managed Agent. Use when the user explicitly hands work to Grok or the Agent, including a request to change an earlier artifact, even if you could answer directly. For status alone use check_task_status. Send the user's request in plain language; "
+                    "Admit one bounded background task for the Owner-managed Agent. Use for substantive work or an output to prepare in the background, including a report, substantive comparison, or revision of an earlier artifact, even when no backend is named. A short immediate answer or search stays FAST; for status alone use check_task_status. Send the user's request in plain language; "
                     "the Agent selects only tools available under its Owner policy. Task text does not grant permissions, "
                     "and acceptance confirms durable admission only, not completion. If another task is active, you receive "
                     "slow_busy; do not claim acceptance, and offer status or cancellation."
