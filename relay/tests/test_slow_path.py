@@ -590,8 +590,8 @@ class DelegateTaskToolDeclarationTests(unittest.TestCase):
         self.assertEqual(function.parameters.values["required"], ["task"])
         self.assertIn("Owner policy", function.description)
         self.assertIn("Task text does not grant permissions", function.description)
-        self.assertIn("explicitly hands work to Grok", function.description)
-        self.assertIn("For status alone use check_task_status", function.description)
+        self.assertIn("even when no backend is named", function.description)
+        self.assertIn("for status alone use check_task_status", function.description)
 
 
 if __name__ == "__main__":
