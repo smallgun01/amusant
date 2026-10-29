@@ -85,6 +85,7 @@ class SlowPathToolRouter:
         new_task_id=None,
         on_admitted: Callable[[], None] | None = None,
         executor_kind: str = "openab_acp",
+        admission_available: bool = True,
     ) -> None:
         if not isinstance(client_id, str) or not _ID_RE.fullmatch(client_id):
             raise ValueError("client_id must be a bounded authenticated identity")
@@ -113,6 +114,7 @@ class SlowPathToolRouter:
         self._now = now or (lambda: datetime.now(timezone.utc))
         self._new_task_id = new_task_id or (lambda: str(uuid4()))
         self._on_admitted = on_admitted
+        self._admission_available = admission_available
 
     async def __call__(self, event: ToolCallEvent, turn_id: int) -> Mapping[str, JSONValue]:
         if event.name == INBOX_TOOL_NAME:
@@ -121,6 +123,8 @@ class SlowPathToolRouter:
             return await self._cancel(event)
         if event.name != TOOL_NAME:
             return {"status": "rejected", "code": "unsupported_tool"}
+        if not self._admission_available:
+            return {"status": "unavailable", "code": "slow_unavailable", "submission": "not_sent"}
         if type(turn_id) is not int or turn_id <= 0:
             return {"status": "rejected", "code": "invalid_turn_id"}
         call_id = event.call_id

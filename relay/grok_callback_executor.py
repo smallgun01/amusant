@@ -5,6 +5,10 @@ import asyncio
 import hashlib
 import ipaddress
 import json
+import logging
+import socket
+import ssl
+import time
 import secrets
 import urllib.error
 import urllib.request
@@ -27,6 +31,7 @@ DEFAULT_CALLBACK_WAIT_SECONDS = 900
 MAX_CALLBACK_TOKEN_TTL_SECONDS = 86_400
 MAX_CALLBACK_WAIT_SECONDS = 86_400
 MAX_ROUTINE_INSTRUCTION_CHARS = 4_096
+logger = logging.getLogger(__name__)
 
 
 class GrokConfigError(ValueError):
@@ -34,7 +39,10 @@ class GrokConfigError(ValueError):
 
 
 def _https_url(value: str, name: str, *, path: str | None = None) -> None:
-    parts = urlsplit(value)
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        raise GrokConfigError(f"{name} is invalid") from None
     if (
         parts.scheme != "https"
         or not parts.hostname
@@ -53,6 +61,9 @@ def _https_url(value: str, name: str, *, path: str | None = None) -> None:
         raise GrokConfigError(f"{name} has an invalid port") from None
     if port is not None and not 1 <= port <= 65535:
         raise GrokConfigError(f"{name} has an invalid port")
+    host = parts.hostname.lower().rstrip(".")
+    if host == "invalid" or host.endswith(".invalid") or any(x in value.lower() for x in ("placeholder", "your-", "<", ">")):
+        raise GrokConfigError(f"{name} contains a reserved or placeholder value")
     if parts.hostname == "localhost" or parts.hostname.endswith(".localhost"):
         raise GrokConfigError(f"{name} must not use a local hostname")
     try:
@@ -65,7 +76,10 @@ def _https_url(value: str, name: str, *, path: str | None = None) -> None:
 
 
 def _proxy_url(value: str) -> None:
-    parts = urlsplit(value)
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        raise GrokConfigError("HTTPS egress proxy URL is invalid") from None
     if (
         parts.scheme not in {"http", "https"}
         or not parts.hostname
@@ -75,6 +89,9 @@ def _proxy_url(value: str) -> None:
         or parts.fragment
     ):
         raise GrokConfigError("HTTPS egress proxy URL must be configured without credentials")
+    host = parts.hostname.lower().rstrip(".")
+    if host == "invalid" or host.endswith(".invalid") or any(x in value.lower() for x in ("placeholder", "your-", "<", ">")):
+        raise GrokConfigError("HTTPS egress proxy URL contains a reserved or placeholder value")
     try:
         if parts.port is not None and not 1 <= parts.port <= 65_535:
             raise ValueError
@@ -150,7 +167,8 @@ class GrokCallbackExecutor:
         _https_url(config.routine_url, ROUTINE_URL_ENV)
         _https_url(config.callback_url, CALLBACK_URL_ENV, path="/callback/results")
         _proxy_url(config.egress_proxy_url)
-        if not isinstance(config.routine_token, str) or len(config.routine_token.strip()) < 12:
+        if (not isinstance(config.routine_token, str) or len(config.routine_token.strip()) < 12
+            or any(marker in config.routine_token.lower() for marker in ("placeholder", "your-token", "<", ">"))):
             raise GrokConfigError(f"{ROUTINE_TOKEN_ENV} must contain at least 12 characters")
         if (
             isinstance(config.callback_token_ttl_seconds, bool)
@@ -221,6 +239,9 @@ class GrokCallbackExecutor:
             # Cancellation may have won the TaskStore transaction immediately
             # before this call. In that case the transport is never invoked.
             return ExecutionOutcome(status="failed", code="grok_submission_not_sendable")
+        started = time.monotonic()
+        status = None
+        category = "http"
         try:
             status = await asyncio.to_thread(
                 self._transport,
@@ -231,8 +252,21 @@ class GrokCallbackExecutor:
                 self._config.http_timeout_seconds,
             )
             submission_state = "accepted" if status == 200 else "acceptance_unknown"
-        except Exception:
+        except Exception as exc:
+            reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+            if isinstance(reason, (TimeoutError, socket.timeout)):
+                category = "timeout"
+            elif isinstance(reason, socket.gaierror):
+                category = "dns"
+            elif isinstance(reason, ssl.SSLError):
+                category = "tls"
+            elif isinstance(reason, (ConnectionError, OSError)):
+                category = "connection_or_proxy"
+            else:
+                category = "transport_other"
             submission_state = "acceptance_unknown"
+        logger.info("grok_webhook task_ref=%s outcome=%s category=%s http_status=%s elapsed_ms=%d",
+                    hashlib.sha256(task.task_id.encode("utf-8")).hexdigest()[:16], submission_state, category, status, int((time.monotonic() - started) * 1000))
         self._finish_submission(task.task_id, state=submission_state, now=self._clock())
         return ExecutionOutcome(status="deferred", code=f"grok_{submission_state}")
 

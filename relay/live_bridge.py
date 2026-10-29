@@ -1319,11 +1319,19 @@ async def run(host: str, port: int, token: str, *, device_mode: str = "pcm") -> 
         from .application import build_grok_callback_receiver_app
         from .callback_listener import callback_listener_config
 
-        callback_config = callback_listener_config(os.environ, device_host=host)
-        handler, dispatcher, store = build_process_runtime(token, os.environ, include_store=True)
-        callback_app = build_grok_callback_receiver_app(
-            store=store, authenticated_client_id=os.environ.get("AMUSANT_CLIENT_ID", ""), environ=os.environ,
+        try:
+            callback_config = callback_listener_config(os.environ, device_host=host)
+        except ValueError:
+            # A listener with an unsafe binding or Host contract must not open.
+            # Preserve FAST and existing ledger state while SLOW admission is disabled.
+            LOG.warning("grok_callback_listener_configuration_invalid; slow admission disabled")
+        handler, dispatcher, store = build_process_runtime(
+            token, os.environ, include_store=True, grok_listener_available=callback_config is not None,
         )
+        if callback_config is not None:
+            callback_app = build_grok_callback_receiver_app(
+                store=store, authenticated_client_id=os.environ.get("AMUSANT_CLIENT_ID", ""), environ=os.environ,
+            )
     else:
         handler, dispatcher = build_process_runtime(token, os.environ)
     if device_mode == "sticks3":

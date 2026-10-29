@@ -198,6 +198,9 @@ def validate_grok(values: dict[str, str]) -> None:
         labels = parts.hostname.split(".")
         if len(parts.hostname) > 253 or any(not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) for label in labels):
             raise PreflightError(f"{name} must use a canonical hostname")
+        if (parts.hostname.rstrip(".") == "invalid" or parts.hostname.rstrip(".").endswith(".invalid")
+                or any(x in values[name].lower() for x in ("placeholder", "your-", "<", ">"))):
+            raise PreflightError(f"{name} contains a reserved or placeholder value")
         if parts.hostname == "localhost" or parts.hostname.endswith(".localhost"):
             raise PreflightError(f"{name} must not use a local hostname")
         try:

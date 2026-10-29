@@ -26,9 +26,9 @@ from relay.slow_path import (
 from relay.task_store import SQLiteTaskStore, TaskAdmissionRequest
 
 CLIENT = "grok-owner"
-CALLBACK_URL = "https://callback.invalid:8443/callback/results"
-ROUTINE_URL = "https://routine.invalid/webhook"
-PROXY_URL = "http://egress-proxy.invalid:3128"
+CALLBACK_URL = "https://callback.example.com:8443/callback/results"
+ROUTINE_URL = "https://routine.example.com/webhook"
+PROXY_URL = "http://egress_proxy:3128"
 
 
 def _report(task_id: str, *, outcome: str = "completed", speak: str = "The fixed Grok fixture answer."):
@@ -42,7 +42,7 @@ def _report(task_id: str, *, outcome: str = "completed", speak: str = "The fixed
     }
 
 
-async def _asgi_call(app, payload=None, *, token="fake-token", host="callback.invalid:8443", method="POST", path="/callback/results", extra_headers=(), raw_body=None):
+async def _asgi_call(app, payload=None, *, token="fake-token", host="callback.example.com:8443", method="POST", path="/callback/results", extra_headers=(), raw_body=None):
     body = raw_body if raw_body is not None else json.dumps(payload or {}, ensure_ascii=False).encode("utf-8")
     headers = [
         (b"host", host.encode("ascii")),
@@ -66,7 +66,7 @@ async def _asgi_call(app, payload=None, *, token="fake-token", host="callback.in
 
     await app({
         "type": "http", "method": method, "path": path, "query_string": b"",
-        "headers": headers, "scheme": "https", "server": ("callback.invalid", 8443),
+        "headers": headers, "scheme": "https", "server": ("callback.example.com", 8443),
     }, receive, send)
     start = next(message for message in messages if message["type"] == "http.response.start")
     response = next(message for message in messages if message["type"] == "http.response.body")
@@ -97,7 +97,7 @@ class GrokCallbackTests(unittest.IsolatedAsyncioTestCase):
         ))
         self.claimed = self.store.claim_due(now=self.now, lease_seconds=30)[0]
         self.callback_app = create_grok_callback_app(
-            self.store, CLIENT, trusted_hosts=["callback.invalid"],
+            self.store, CLIENT, trusted_hosts=["callback.example.com"],
             expected_port=8443, max_inflight=2,
         )
 
@@ -193,22 +193,71 @@ class GrokCallbackTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_executor_rejects_url_embedded_credentials_and_query(self):
         for url in (
-            "https://user:password@routine.invalid/webhook",
-            "https://routine.invalid/webhook?token=secret",
-            "https://callback.invalid:8443/callback/results?capability=secret",
+            "https://user:password@routine.example.com/webhook",
+            "https://routine.example.com/webhook?token=secret",
+            "https://callback.example.com:8443/callback/results?capability=secret",
         ):
             with self.subTest(url=url), self.assertRaises(GrokConfigError):
                 GrokCallbackExecutor(
                     GrokRoutineConfig(
-                        routine_url=url if "routine.invalid" in url else ROUTINE_URL,
+                        routine_url=url if "routine.example.com" in url else ROUTINE_URL,
                         routine_token="fake-routine-ingress-token",
-                        callback_url=url if "callback.invalid" in url else CALLBACK_URL,
+                        callback_url=url if "callback.example.com" in url else CALLBACK_URL,
                         egress_proxy_url=PROXY_URL,
                     ),
                     begin_submission=self.store.begin_grok_submission,
                     finish_submission=self.store.finish_grok_submission,
                     fail_before_send=self.store.fail,
                 )
+
+    async def test_webhook_diagnostics_do_not_expose_exception_secrets(self):
+        def broken(*args):
+            raise TimeoutError("secret-token payload private-url")
+        with self.assertLogs("relay.grok_callback_executor", level="INFO") as logs:
+            outcome = await self.make_executor(broken).execute(self.claimed)
+        self.assertEqual(outcome.code, "grok_acceptance_unknown")
+        self.assertIn("category=timeout", logs.output[0])
+        self.assertNotIn("secret-token", logs.output[0])
+        self.assertNotIn("payload", logs.output[0])
+
+    async def test_http_statuses_and_transport_errors_remain_conservative(self):
+        import socket
+        import ssl
+        cases = [(200, "accepted", "category=http"), (401, "acceptance_unknown", "http_status=401"),
+                 (403, "acceptance_unknown", "http_status=403"), (429, "acceptance_unknown", "http_status=429"),
+                 (503, "acceptance_unknown", "http_status=503"), (302, "acceptance_unknown", "http_status=302"),
+                 (socket.gaierror("secret"), "acceptance_unknown", "category=dns"),
+                 (ssl.SSLError("secret"), "acceptance_unknown", "category=tls"),
+                 (OSError("proxy secret"), "acceptance_unknown", "category=connection_or_proxy")]
+        for value, expected, diagnostic in cases:
+            with self.subTest(value=type(value).__name__, expected=diagnostic):
+                finishes = []
+                def transport(*args):
+                    if isinstance(value, Exception):
+                        raise value
+                    return value
+                executor = GrokCallbackExecutor(
+                    GrokRoutineConfig(ROUTINE_URL, "fake-routine-ingress-token", CALLBACK_URL, PROXY_URL),
+                    begin_submission=lambda *args, **kwargs: None,
+                    finish_submission=lambda *args, **kwargs: finishes.append(kwargs["state"]),
+                    fail_before_send=lambda *args, **kwargs: None, transport=transport,
+                    clock=lambda: self.now,
+                )
+                with self.assertLogs("relay.grok_callback_executor", level="INFO") as logs:
+                    await executor.execute(self.claimed)
+                self.assertEqual(finishes, [expected])
+                self.assertIn(diagnostic, logs.output[0])
+                self.assertNotIn("secret", logs.output[0])
+
+    async def test_reserved_host_is_rejected_before_send(self):
+        with self.assertRaises(GrokConfigError):
+            GrokCallbackExecutor(
+                GrokRoutineConfig("https://routine.invalid/webhook", "fake-routine-ingress-token",
+                                  CALLBACK_URL, PROXY_URL),
+                begin_submission=self.store.begin_grok_submission,
+                finish_submission=self.store.finish_grok_submission,
+                fail_before_send=self.store.fail,
+            )
 
     async def test_golden_path_callback_before_webhook_ack_and_idempotent_replay(self):
         routine_posts = 0
@@ -335,13 +384,13 @@ class GrokCallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 401)
         status, _ = await _asgi_call(self.callback_app, payload, token=token, host="attacker.invalid:8443")
         self.assertEqual(status, 400)
-        status, _ = await _asgi_call(self.callback_app, payload, token=token, host="callback.invalid")
+        status, _ = await _asgi_call(self.callback_app, payload, token=token, host="callback.example.com")
         self.assertEqual(status, 400)
         echoed = {**payload, "untrusted": f"echo={token}"}
         status, _ = await _asgi_call(self.callback_app, echoed, token=token)
         self.assertEqual(status, 400)
         other_owner_app = create_grok_callback_app(
-            self.store, "other-owner", trusted_hosts=["callback.invalid"],
+            self.store, "other-owner", trusted_hosts=["callback.example.com"],
             expected_port=8443, max_inflight=1,
         )
         status, _ = await _asgi_call(other_owner_app, payload, token=token)
@@ -431,7 +480,7 @@ class GrokCallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((abandon.status, abandon.code), ("abandoned", "grok_owner_abandoned"))
         inbox_before_late = self.store.get_inbox(second_id)
         late_app = create_grok_callback_app(
-            self.store, "another-owner", trusted_hosts=["callback.invalid"],
+            self.store, "another-owner", trusted_hosts=["callback.example.com"],
             expected_port=8443, max_inflight=2,
         )
         late_body = _report(second_id, speak="Late but authenticated.")
@@ -463,7 +512,7 @@ class GrokCallbackTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(revoked.status, "abandoned")
         revoked_app = create_grok_callback_app(
-            self.store, "revoked-owner", trusted_hosts=["callback.invalid"],
+            self.store, "revoked-owner", trusted_hosts=["callback.example.com"],
             expected_port=8443, max_inflight=1,
         )
         status, _ = await _asgi_call(

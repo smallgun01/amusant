@@ -213,6 +213,7 @@ def build_relay_handler(
     post_tool_ack_timeout_seconds: float = POST_TOOL_ACK_TIMEOUT_SECONDS,
     post_tool_ack_max_duration_seconds: float = POST_TOOL_ACK_MAX_DURATION_SECONDS,
     executor_kind: str = DEFAULT_SLOW_EXECUTOR,
+    admission_available: bool = True,
 ):
     """Compose Live tool declaration + per-authenticated-session admission.
 
@@ -269,6 +270,7 @@ def build_relay_handler(
             acceptance_timeout_seconds=acceptance_timeout_seconds,
             on_admitted=on_admitted,
             executor_kind=executor_kind,
+            admission_available=admission_available,
         )
 
     return make_handler(
@@ -292,6 +294,7 @@ def build_supported_relay_runtime(
     conversation_id_factory: ConversationIdFactory | None = None,
     post_tool_ack_timeout_seconds: float = POST_TOOL_ACK_TIMEOUT_SECONDS,
     post_tool_ack_max_duration_seconds: float = POST_TOOL_ACK_MAX_DURATION_SECONDS,
+    grok_listener_available: bool = True,
 ):
     """Build the selected executor dispatcher and Live handler.
 
@@ -324,15 +327,17 @@ def build_supported_relay_runtime(
     else:
         if config.task_store_kind != "sqlite" or not isinstance(store, SQLiteTaskStore):
             raise ValueError("grok_callback requires the existing SQLite TaskStore")
-        try:
-            selected_executor = load_grok_callback_executor(
-                environ,
-                begin_submission=store.begin_grok_submission,
-                finish_submission=store.finish_grok_submission,
-                fail_before_send=store.fail,
-            )
-        except GrokConfigError as exc:
-            raise ValueError(str(exc)) from None
+        if grok_listener_available:
+            try:
+                selected_executor = load_grok_callback_executor(
+                    environ,
+                    begin_submission=store.begin_grok_submission,
+                    finish_submission=store.finish_grok_submission,
+                    fail_before_send=store.fail,
+                )
+            except GrokConfigError:
+                # Keep FAST and status/cancel available; do not admit new work.
+                selected_executor = None
     active_executors = (
         {config.slow_executor_kind: selected_executor}
         if selected_executor is not None
@@ -371,6 +376,7 @@ def build_supported_relay_runtime(
         acceptance_timeout_seconds=config.acceptance_timeout_seconds,
         on_admitted=None if dispatcher is None else dispatcher.notify,
         executor_kind=config.slow_executor_kind,
+        admission_available=selected_executor is not None,
         client_factory=client_factory,
         sdk_types=sdk_types,
         conversation_id_factory=conversation_id_factory,
