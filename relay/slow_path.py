@@ -469,10 +469,11 @@ def build_delegate_task_tool(sdk_types):
             sdk_types.FunctionDeclaration(
                 name=TOOL_NAME,
                 description=(
-                    "Admit one bounded background task for the Owner-managed Agent. Use for substantive work or an output to prepare in the background, including a report, substantive comparison, or revision of an earlier artifact, even when no backend is named. A short immediate answer or search stays FAST; for status alone use check_task_status. Send the user's request in plain language; "
+                    "Admit one bounded background task for the Owner-managed Agent. Call first for substantive work or a deliverable, including a report, deeper research, a multi-source comparison, multi-step plan, Agent action, or revision of an earlier artifact, even when no backend is named or you could answer part yourself. After an accepted offer of deeper research, call with a self-contained request. Quick answers and short searches stay FAST; a broad exploratory question may receive a short answer and an offer, and status-only uses check_task_status. If essential details are missing, ask briefly. Send the user's request in plain language; "
                     "the Agent selects only tools available under its Owner policy. Task text does not grant permissions, "
-                    "and acceptance confirms durable admission only, not completion. If another task is active, you receive "
-                    "slow_busy; do not claim acceptance, and offer status or cancellation."
+                    "and acceptance confirms durable admission only, not completion. Only status=accepted confirms admission: acknowledge briefly and do not answer the delegated task in this turn. "
+                    "For busy, unknown, rejected or unavailable, report the actual outcome; unknown means acceptance is unconfirmed and must not be automatically retried. "
+                    "If another task is active, you receive slow_busy; do not claim acceptance, and offer status or cancellation."
                 ),
                 behavior=sdk_types.Behavior.BLOCKING,
                 parameters=sdk_types.Schema(

@@ -24,10 +24,13 @@ class CompanionPersonaTests(unittest.TestCase):
 
     def test_explicit_handoff_and_status_are_distinct(self):
         prompt = resolve_persona({"AMUSANT_PERSONA_PROFILE": "jellii"})
-        self.assertIn("naming Grok is not required", prompt)
-        self.assertIn("even if you could answer it yourself", prompt)
-        self.assertIn("change an earlier artifact is new work, not a status lookup", prompt)
-        self.assertIn("a short immediate answer or search stays FAST", prompt)
+        self.assertIn("not keywords or whether a backend is named", prompt)
+        self.assertIn("call delegate_task first", prompt)
+        self.assertIn("an offer does not start a task", prompt)
+        self.assertIn("unless delegate_task returns status=accepted", prompt)
+        self.assertIn("do not produce the delegated answer or report", prompt)
+        self.assertIn("unknown means acceptance is unconfirmed", prompt)
+        self.assertIn("short searches", prompt)
         self.assertIn("only about the status or saved result", prompt)
         self.assertIn("not Grok's native conversations or artifacts", prompt)
 

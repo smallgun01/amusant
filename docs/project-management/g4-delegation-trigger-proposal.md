@@ -14,13 +14,24 @@ The bridge allows the first supported Relay action per turn; a later action is r
 
 Users speak naturally to Jellii. Classify the requested work and output: substantive background work and artifact revisions should be delegated; short immediate questions and searches stay FAST. Naming Grok is not required. An explicit handoff remains an optional signal, not a deterministic keyword.
 
-- 「潔莉，幫我整理 #134 的問題，做一份報告」: intend one `delegate_task` admission.
-- 「剛剛那份報告好了嗎？」: intend `check_task_status`, with no new admission.
-- 「潔莉，幫我把之前的法國行程改成五天」: intend a new delegated task, not an Inbox lookup.
-- 「今天天氣怎樣？」 or 「幫我查一下最新新聞」: FAST answer or short grounded search, no SLOW task.
-- 「交給 Grok，整理這個 issue 並做成報告」: optional explicit handoff; intend one admission.
+| Natural zh-TW request or condition | Expected first route / response |
+| --- | --- |
+| 「潔莉，幫我整理 #134 的問題，寫一份報告」 | `delegate_task` first |
+| 「請深入比較這幾個方案，整理來源和限制」 | `delegate_task` first |
+| 「幫我把之前的法國行程改成五天」 | `delegate_task` first; do not claim access to the old artifact |
+| 「幫我查一下時間」 | FAST, no new task |
+| 「今天天氣怎樣？」 | FAST / short grounded lookup |
+| 「幫我查一下最新新聞」 | FAST / short grounded lookup |
+| 「這兩個字有什麼差別？」 | FAST / short comparison |
+| 「剛剛那份報告好了嗎？」 | `check_task_status`; no new task |
+| 「最近台灣旅遊有哪些趨勢？」 without a deliverable | brief FAST answer and optional offer to investigate |
+| After an offer: 「好，幫我深入查」 | `delegate_task` with the self-contained agreed request |
+| 「幫我做一份報告」 with no topic | clarify essential missing detail |
+| Delegation returns `busy` or `unknown` | report busy or acceptance unconfirmed; no claim of work underway and no automatic retry |
 
-This PR guides the persona and tool description using the intended work and expected output rather than requiring a backend name or matching a generic phrase such as 「幫我」. This remains a model instruction, not a deterministic switch or a guarantee. Ordinary requests without the phrase remain usable; measure implicit requests separately rather than declaring them unsupported. If the request is unclear or missing its task, ask briefly instead of inventing one. A task's wording does not itself grant additional permissions.
+For a requested deliverable, a spoken “好，我去處理” is **not** a delegation: the model must actually issue `delegate_task`. Only `status=accepted` permits a brief acknowledgement; do not produce the delegated report in the same Live turn. An offer is not admission. A voluntary explicit Grok handoff remains valid, but is not the default invocation.
+
+This PR guides the persona and tool description using the intended work and expected output rather than requiring a backend name or matching a generic phrase such as 「幫我」. This remains a model instruction, not a deterministic switch or a guarantee. Natural requests are the primary acceptance cases; do not require a backend name. If the request is unclear or missing its task, ask briefly instead of inventing one. A task's wording does not itself grant additional permissions.
 
 Only claim that Grok was given the task after durable admission is confirmed. Busy means not accepted or queued; unknown admission means acceptance is unconfirmed and must not be automatically retried. An accepted task is not a completed task. A status lookup reads Relay's ledger/Inbox; it is not a Grok native cross-run search. A request to revise an earlier artifact is a new task, but native artifact recovery is independently unverified: do not invent the previous file, its contents or a v2 result.
 
@@ -39,6 +50,12 @@ This PR implements the minimal persona and tool-description wording and declarat
 Proposed follow-up telemetry: record per PTT only bounded, allowlisted metadata: declared tool categories and Search enabled/disabled; first observed Relay function name or none; accepted, busy, rejected, unavailable or unknown outcome; blocked subsequent action count; and elapsed time from PTT end to first observed call or response. Distinguish no observed Relay function from Search not used: Search activity is unknown unless actually observable. Avoid raw audio, transcripts, task text, function arguments, search queries, identifiers that expose content, and credentials. Verify logging and exception paths also respect this boundary.
 
 Offline tests should cover the configured declarations, safe telemetry with zero calls, accepted/busy/rejected/unknown outcomes, invalid or duplicate calls, multiple calls in a turn, and no second router action. They cannot establish the model's selection accuracy.
+
+### Proposed Live routing evaluation (not yet run)
+
+Following [Kai's routing eval](https://github.com/zbruceli/kai/blob/main/relay/evals/routing.py), exercise genuine Gemini Live first decisions using the actual configured Jellii system instruction and declared tools, including Search configuration. Replace the tool executor with a fake: observe the call and never dispatch to Grok. Preapprove the exact provider model, case count, repetitions and budget before any paid calls. Repeat each natural utterance and report first-route outcomes, per-category successes and denominators, SLOW misses (including merely offering or claiming to work without a function call), false handoffs, status mistakes, and ambiguous/clarification cases. Score accepted-offer follow-ups with their preceding conversation context. Separately feed synthetic accepted/busy/unknown results to assess truthful post-call speech without creating a real task. Report Search activity as unknown when not observable.
+
+Kai's [v0.12.0 results](https://github.com/zbruceli/kai/blob/main/CHANGELOG.md) report 104 cases repeated three times and 94% overall under its own rubric; Kai's offer-acceptable cases are not equivalent to Amusant's required function call or durable admission. This proposed eval does not establish physical PTT or durable admission; those need a separate Owner-approved physical test. No provider call has been made for this PR.
 
 For an Owner-approved physical evaluation, use natural zh-TW phrases and vary task content and wording without recording it in telemetry. Test FAST, explicit handoff, status, and revision of an earlier artifact; include empty/unclear and busy/unknown cases where feasible. Specify the number of trials and approved provider budget in advance, keep conditions comparable, and report successes and failures with denominators and latencies. A Search-off session is temporary and restored after the experiment. Distinguish synthetic offline cases from paid, physical Grok admissions.
 
