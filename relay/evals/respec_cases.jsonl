@@ -1,0 +1,16 @@
+{"id":"F01","say":"Webhook 是什麼？","expect":"FAST"}
+{"id":"F02","say":"明天台中天氣怎麼樣？","expect":"FAST"}
+{"id":"F03","say":"台中到台北的高鐵末班車是幾點？","expect":"FAST"}
+{"id":"F04","say":"最近工作好煩，陪我聊聊。","expect":"FAST"}
+{"id":"D01","say":"我明天早上有什麼安排？","expect":"DELEGATE"}
+{"id":"D02","say":"幫我看看今天有沒有什麼重要的事情需要處理。","expect":"DELEGATE"}
+{"id":"D03","say":"我之前訂的高鐵是幾點出發？","expect":"DELEGATE"}
+{"id":"D04","history":[["user","我們之前在另一個入口討論過旅行計畫。"],["model","了解，你指的是另一個入口的討論。"]],"say":"幫我查一下上次討論的旅行計畫。","expect":"DELEGATE"}
+{"id":"D05","say":"昨天我跟 Grok 聊過的那個行程，幫我找出來。","expect":"DELEGATE"}
+{"id":"D06","say":"幫我把明天下午兩點的虛構專案會議加進行事曆。","expect":"DELEGATE"}
+{"id":"D07","history":[["user","這是三個虛構方案：甲、乙、丙。"],["model","了解，有甲乙丙三個方案。"]],"say":"幫我深入比較這三個方案，整理優缺點。","expect":"DELEGATE"}
+{"id":"S01","history":[["user","請交辦查信箱。"],["model","已透過潔莉受理這個任務。"]],"say":"剛剛請你查的信箱，查好了嗎？","expect":"STATUS"}
+{"id":"S02","history":[["user","請幫我交辦一項工作。"],["model","已透過潔莉受理這個任務。"]],"say":"剛剛交代你的事情做到哪裡了？","expect":"STATUS"}
+{"id":"S03","history":[["user","請交辦查信箱。"],["model","已透過潔莉受理這個任務。"]],"say":"把剛剛查到的結果念給我聽。","expect":"STATUS"}
+{"id":"H01","say":"昨天直接在 Grok 那邊交代的事情，幫我查查後來怎樣了。","expect":"DELEGATE"}
+{"id":"H02","history":[["user","請幫我交辦一項工作。"],["model","已透過潔莉受理這個任務。"]],"say":"我剛剛透過潔莉交代的事情完成了嗎？","expect":"STATUS"}
