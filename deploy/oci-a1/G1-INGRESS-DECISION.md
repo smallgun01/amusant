@@ -1,5 +1,7 @@
 # Issue #27 G1: private device ingress decision
 
+> **Operational update, 2026-10-30 (Owner-reported):** The previously proposed host socket-proxyd path has since been installed and exercised on OCI. A scoped OCI NSG + temporary host INPUT source-`/32` TCP443 canary passed; real StickS3 PTT reached Gemini Live, and a later Grok SLOW functional E2E completed with a server-side `spoken` ACK. **DNS routing remains pending:** the tested firmware still targets a numeric OCI public IPv4. The intended device hostname must be DNS-only (no Cloudflare HTTP proxy for native TLS-PSK), and DNS does not replace source-IP firewall rules. The host INPUT canary is not reboot-persistent; broader ingress, negative auth, reconnect and reboot recovery are not accepted. See [STATUS](../../STATUS.md) and [#132](https://github.com/smallgun01/amusant/issues/132). The historical offline-PoC wording below describes the original PR, not today's installed host state.
+
 ## Decision
 
 For the offline G1 PoC, select the OCI host's built-in `systemd-socket-proxyd`
