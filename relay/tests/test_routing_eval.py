@@ -97,7 +97,10 @@ class RoutingEvalTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(status.parameters.required)
             self.assertEqual(set(status.parameters.properties), {"task_id", "speak"})
             self.assertIn("omit task_id for the latest task", status.description)
-            self.assertIn("Do not delegate a new task to check progress", status.description)
+            if executor == "grok_callback":
+                self.assertIn("even for a status question", status.description)
+            else:
+                self.assertIn("Do not delegate a new task to check progress", status.description)
 
 
 if __name__ == "__main__":

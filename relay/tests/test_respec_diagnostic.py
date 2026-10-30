@@ -51,3 +51,11 @@ class RespecDiagnosticTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(c.get("history") for c in cases if c["expect"] == "STATUS"))
         self.assertEqual({c["id"]: c for c in CASES if c["id"] not in ("C01", "C02")},
                          {c["id"]: c for c in cases if c["id"] in {"F01", "F02", "D01", "D03", "H01", "H02"}})
+
+    def test_grok_status_description_distinguishes_sources(self):
+        from google.genai import types
+        from relay.slow_path import build_relay_tools
+        declarations = {f.name: f.description for f in build_relay_tools(types, executor_kind="grok_callback").function_declarations}
+        self.assertIn("even for a status question", declarations["check_task_status"])
+        self.assertIn("another Agent interface", declarations["delegate_task"])
+        self.assertIn("source is unclear", declarations["check_task_status"])
