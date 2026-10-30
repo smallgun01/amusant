@@ -96,7 +96,7 @@ class RoutingEvalTests(unittest.IsolatedAsyncioTestCase):
             status = next(f for f in build_relay_tools(types, executor_kind=executor).function_declarations if f.name == "check_task_status")
             self.assertFalse(status.parameters.required)
             self.assertEqual(set(status.parameters.properties), {"task_id", "speak"})
-            self.assertIn("omit task_id for the latest task", status.description)
+            self.assertIn("omit task_id for the latest Relay task" if executor == "grok_callback" else "omit task_id for the latest task", status.description)
             if executor == "grok_callback":
                 self.assertIn("even for a status question", status.description)
             else:

@@ -57,5 +57,6 @@ class RespecDiagnosticTests(unittest.IsolatedAsyncioTestCase):
         from relay.slow_path import build_relay_tools
         declarations = {f.name: f.description for f in build_relay_tools(types, executor_kind="grok_callback").function_declarations}
         self.assertIn("even for a status question", declarations["check_task_status"])
-        self.assertIn("another Agent interface", declarations["delegate_task"])
+        self.assertIn("outside Amusant Relay", declarations["delegate_task"])
+        self.assertIn("tasks admitted through Amusant Relay", declarations["check_task_status"])
         self.assertIn("source is unclear", declarations["check_task_status"])
