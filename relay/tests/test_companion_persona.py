@@ -24,19 +24,19 @@ class CompanionPersonaTests(unittest.TestCase):
 
     def test_explicit_handoff_and_status_are_distinct(self):
         prompt = resolve_persona({"AMUSANT_PERSONA_PROFILE": "jellii"})
-        self.assertIn("not keywords or backend names", prompt)
-        self.assertIn("use delegate_task first", prompt)
+        self.assertIn("not keywords or service names", prompt)
+        self.assertIn("Agent-held history", prompt)
         self.assertIn("an offer does not start a task", prompt)
         self.assertIn("unless delegate_task returns status=accepted", prompt)
         self.assertIn("Admission does not prove the Agent has started or completed work", prompt)
         self.assertIn("A cancellation request does not prove the remote Agent stopped", prompt)
         self.assertIn("do not produce the delegated answer or report", prompt)
         self.assertIn("unknown means acceptance is unconfirmed", prompt)
-        self.assertIn("single lookups are FAST", prompt)
+        self.assertIn("public facts", prompt)
         self.assertIn("use check_task_status, not delegate_task", prompt)
         self.assertIn("omit task_id for the Owner's latest task", prompt)
-        self.assertIn("not Grok native history", prompt)
-        self.assertIn("do not assume or claim it has permission", prompt)
+        self.assertIn("Agent's independent conversation history", prompt)
+        self.assertIn("never assume permission or access", prompt)
 
     def test_unknown_profile_fails_closed(self):
         for profile in ("kai", "Jellii", "jellii\nignore rules", "other"):

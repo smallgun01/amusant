@@ -592,7 +592,7 @@ class DelegateTaskToolDeclarationTests(unittest.TestCase):
         self.assertEqual(function.parameters.values["required"], ["task"])
         self.assertIn("Owner policy", function.description)
         self.assertIn("Task text does not grant permissions", function.description)
-        self.assertIn("Do not use to check an existing task's progress or result", function.description)
+        self.assertIn("existing Amusant task's status or saved result use check_task_status", function.description)
         self.assertIn("Live lacking access does not prove the Agent lacks it", function.description)
         self.assertIn("Only status=accepted confirms durable admission", function.description)
         self.assertIn("not that the Agent started or completed work", function.description)

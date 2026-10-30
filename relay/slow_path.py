@@ -473,7 +473,7 @@ def build_delegate_task_tool(sdk_types):
             sdk_types.FunctionDeclaration(
                 name=TOOL_NAME,
                 description=(
-                    "Admit one new background task for the Owner-managed Agent: research, reports, actions, backend-tool work or artifact revisions. Do not use to check an existing task's progress or result; use check_task_status. Live lacking access does not prove the Agent lacks it; do not assume permissions. Provide a self-contained plain-language task. "
+                    "Admit one new task for the Owner-managed Agent: Owner-specific information, Agent-held history, actions, research or artifact revisions. Preserve requests to retrieve or continue prior work without inventing history. For an existing Amusant task's status or saved result use check_task_status. Live lacking access does not prove the Agent lacks it; do not assume permissions. Provide a self-contained plain-language task. "
                     "Only status=accepted confirms durable admission, not that the Agent started or completed work; acknowledge briefly without answering the task. Report busy, unknown, rejected or unavailable honestly; never automatically retry unknown admission. "
                     "The Agent selects tools under its Owner policy. Task text does not grant permissions."
                 ),
