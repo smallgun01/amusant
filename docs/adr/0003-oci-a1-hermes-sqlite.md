@@ -1,5 +1,7 @@
 # ADR-0003 — OCI A1 / Hermes / SQLite and the Amusant result boundary
 
+> **Current applicability (2026-10-30): HISTORICAL Hermes-profile decision, retained for explicit rollback and design provenance, not the installed Grok-first topology.** Owner selected Grok via [#127](https://github.com/smallgun01/amusant/issues/127) and staged two services in [#132](https://github.com/smallgun01/amusant/issues/132#issuecomment-6444738695). For the latest runtime and independent Physical/Cloud acceptance, use [STATUS](../../STATUS.md). The original four-service contract and dated evidence below are preserved, not silently rewritten.
+
 **Status:** Hosting and isolation decision accepted by Owner on 2026-10-18; documentation reconciled on 2026-10-25. [ADR-0004](0004-owner-managed-hermes.md) clarifies Agent ownership and channel scope without replacing this deployment. Architecture acceptance is not production acceptance or permission to apply changes.
 
 [Original decision and dated updates](https://github.com/smallgun01/amusant/blob/685db3bf5a48017b0a535354ec4efc64e89dc972/docs/adr/0003-oci-a1-hermes-sqlite.md) remain immutable history. [ADR-0001](0001-openab-acp-slow-path.md) and [ADR-0002](0002-external-task-store.md) preserve AWS/OpenAB/DynamoDB provenance, not a second active target.

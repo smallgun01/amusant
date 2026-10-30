@@ -1,5 +1,7 @@
 # ADR-0004 — Owner-managed Hermes, tool-agnostic Amusant
 
+> **Current applicability (2026-10-30): the ownership boundary survives, but Hermes as the selected SLOW backend is SUPERSEDED by the later Owner-approved Grok-first decision** ([#127](https://github.com/smallgun01/amusant/issues/127), [#132](https://github.com/smallgun01/amusant/issues/132)). Hermes/Facade remain historical and explicitly selectable compatibility/rollback implementations, not the running Grok pair or automatic fallback. This ADR's earlier 10/27 *candidate* wording below is dated history; see [SPEC](../../SPEC.md) and [STATUS](../../STATUS.md) for current truth.
+
 - **Status:** Accepted Owner decision, 2026-10-25; source implementation progress reconciled 2026-10-26. This ADR records the decision, not deployment acceptance.
 - **Scope:** Product responsibility and integration boundary. Generic delegation was subsequently implemented in merged #120; native Owner access and live operations remain separate unaccepted gates.
 - **Related:** [SPEC v0.6](../../SPEC.md), [ADR-0003](0003-oci-a1-hermes-sqlite.md), issues #48/#55/#56/#101/#105; PRs #116/#117/#118.
