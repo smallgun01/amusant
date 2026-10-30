@@ -32,6 +32,14 @@ class RespecDiagnosticTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["calls"], [])
         self.assertNotIn("actual", result)
 
+    async def test_malformed_task_preserves_call(self):
+        for args in ({"task": 123}, {}, None, {"task": ""}):
+            with self.subTest(args=args):
+                message = Obj(tool_call=Obj(function_calls=[Obj(name="delegate_task", args=args)]))
+                result = await observe(FakeLive([message]), [], 1)
+                self.assertEqual(result["calls"][0]["name"], "delegate_task")
+                self.assertEqual(result["calls"][0]["task_status"], "invalid_or_missing")
+
     def test_cases_include_separate_sources_and_clarification(self):
         self.assertEqual({c["expect"] for c in CASES}, {"FAST", "DELEGATE", "STATUS", "CLARIFY"})
         self.assertIn("Grok", next(c["say"] for c in CASES if c["id"] == "H01"))
@@ -41,3 +49,5 @@ class RespecDiagnosticTests(unittest.IsolatedAsyncioTestCase):
         cases = load_cases(Path(__file__).parents[1] / "evals" / "respec_cases.jsonl")
         self.assertEqual(len(cases), 16)
         self.assertTrue(all(c.get("history") for c in cases if c["expect"] == "STATUS"))
+        self.assertEqual({c["id"]: c for c in CASES if c["id"] not in ("C01", "C02")},
+                         {c["id"]: c for c in cases if c["id"] in {"F01", "F02", "D01", "D03", "H01", "H02"}})

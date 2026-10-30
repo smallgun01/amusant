@@ -10,17 +10,22 @@ from google.genai import types
 from fast_voice.factory import build_live_provider
 from relay.companion_persona import JELLII_SYSTEM_INSTRUCTION
 from relay.slow_path import build_relay_tools
+from relay.evals.routing import load_cases
 
-CASES = (
-    {"id": "F01", "say": "Webhook 是什麼？", "expect": "FAST"},
-    {"id": "F02", "say": "明天台中天氣怎麼樣？", "expect": "FAST"},
-    {"id": "D01", "say": "我明天早上有什麼安排？", "expect": "DELEGATE"},
-    {"id": "D03", "say": "我之前訂的高鐵是幾點出發？", "expect": "DELEGATE"},
-    {"id": "H01", "say": "昨天直接在 Grok 那邊交代的事情，幫我查查後來怎樣了。", "expect": "DELEGATE"},
-    {"id": "H02", "history": [["user", "請幫我透過潔莉交辦一項工作。"], ["model", "這項任務已受理。"]], "say": "我剛剛透過潔莉交代的事情完成了嗎？", "expect": "STATUS"},
+CASES = tuple(c for c in load_cases(Path(__file__).with_name("respec_cases.jsonl")) if c["id"] in {"F01", "F02", "D01", "D03", "H01", "H02"}) + (
     {"id": "C01", "say": "幫我處理一下。", "expect": "CLARIFY"},
     {"id": "C02", "say": "上次的事情後來怎麼了？", "expect": "CLARIFY"},
 )
+
+
+def capture_call(call):
+    name = getattr(call, "name", None)
+    args = getattr(call, "args", None)
+    task = args.get("task") if isinstance(args, dict) else None
+    valid = isinstance(task, str) and bool(task.strip())
+    return {"name": name if name in ("delegate_task", "check_task_status", "cancel_task") else "OTHER",
+            "task": task[:2000] if name == "delegate_task" and valid else None,
+            "task_status": ("valid" if valid else "invalid_or_missing") if name == "delegate_task" else None}
 
 
 async def observe(live, turns, timeout):
@@ -31,7 +36,7 @@ async def observe(live, turns, timeout):
             calls = getattr(getattr(message, "tool_call", None), "function_calls", None) or []
             if calls:
                 # Only synthetic fixtures reach this path. Never send a tool response.
-                return {"calls": [{"name": c.name if c.name in ("delegate_task", "check_task_status", "cancel_task") else "OTHER", "task": (c.args.get("task") or "")[:2000] if c.name == "delegate_task" and isinstance(c.args, dict) else None} for c in calls], "transcript": "".join(text) or None, "transcript_status": "PARTIAL" if text else "UNKNOWN"}
+                return {"calls": [capture_call(c) for c in calls], "transcript": "".join(text) or None, "transcript_status": "PARTIAL" if text else "UNKNOWN"}
             server = getattr(message, "server_content", None)
             out = getattr(getattr(server, "output_transcription", None), "text", None)
             if isinstance(out, str):
