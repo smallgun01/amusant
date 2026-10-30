@@ -710,10 +710,10 @@ index 0000000..6e503eb
 +}  // namespace jellii_text
 +
 diff --git a/firmware/src/main.cpp b/firmware/src/main.cpp
-index 45e4b96..49f67b4 100644
+index 45e4b96..9a0b071 100644
 --- a/firmware/src/main.cpp
 +++ b/firmware/src/main.cpp
-@@ -9,16 +9,24 @@
+@@ -9,16 +9,31 @@
  #include <WebSocketsClient.h>
  #include <WiFi.h>
  #include <driver/rtc_io.h>
@@ -729,6 +729,13 @@ index 45e4b96..49f67b4 100644
  #include "face.h"
 +#include "power_policy.h"
  #include "secrets.h"
++
++#if !defined(KAI_PSK_HEX) || !defined(KAI_PSK_IDENTITY) || !defined(KAI_DEVICE_TOKEN)
++#error "TLS-PSK identity, key and device token are required"
++#endif
++static_assert(sizeof(KAI_PSK_IDENTITY) > 1, "TLS-PSK identity must not be empty");
++static_assert(sizeof(KAI_PSK_HEX) == 65, "TLS-PSK key must contain 64 characters");
++static_assert(sizeof(KAI_DEVICE_TOKEN) > 1, "Device token must not be empty");
  #include "voice_codec.h"
 +#include "wifi_ble_provisioning.h"
 +#include "wifi_config.h"
@@ -738,7 +745,7 @@ index 45e4b96..49f67b4 100644
  
  // libopus (fixed point) keeps sizeable frames on the stack; Arduino's default 8 KB loop stack is too tight.
  SET_LOOP_TASK_STACK_SIZE(16 * 1024);
-@@ -35,6 +43,7 @@ static constexpr int DECODE_PER_LOOP = 4;            // ~16 ms of decoding per l
+@@ -35,6 +50,7 @@ static constexpr int DECODE_PER_LOOP = 4;            // ~16 ms of decoding per l
  // answer, so the tail is short, the radio naps and the CPU slows down whenever nothing is happening,
  // and deep sleep powers the screen/audio rail off. On USB Kai never deep-sleeps, so it stays instant.
  static constexpr uint8_t BRIGHTNESS_AWAKE = 90;
@@ -746,7 +753,7 @@ index 45e4b96..49f67b4 100644
  static constexpr uint8_t BRIGHTNESS_DIM = 15;
  static constexpr uint32_t DIM_AFTER_MS = 15000;
  static constexpr uint32_t DEEP_SLEEP_AFTER_MS = 45000;      // on battery
-@@ -76,6 +85,20 @@ RTC_DATA_ATTR static uint8_t cachedBssid[6];
+@@ -76,6 +92,20 @@ RTC_DATA_ATTR static uint8_t cachedBssid[6];
  RTC_DATA_ATTR static int32_t cachedChannel = 0;
  RTC_DATA_ATTR static uint32_t cachedRelayIp = 0;
  RTC_DATA_ATTR static uint8_t untouchedTimerWakes = 0;  // timer wakes in a row with no button press
@@ -767,7 +774,7 @@ index 45e4b96..49f67b4 100644
  #ifdef KAI_TELEMETRY
  RTC_DATA_ATTR static int64_t sleptAtUs = 0;  // RTC wall clock keeps running through deep sleep
  RTC_DATA_ATTR static int16_t sleptMv = 0;
-@@ -162,6 +185,16 @@ static void backlight(uint8_t level) {
+@@ -162,6 +192,16 @@ static void backlight(uint8_t level) {
    M5.Display.setBrightness(level);
  }
  
@@ -784,7 +791,7 @@ index 45e4b96..49f67b4 100644
  #ifdef KAI_TELEMETRY
  static int64_t rtcNowUs() {
    timeval tv;
-@@ -243,16 +276,16 @@ static void powerSave(uint32_t now) {
+@@ -243,16 +283,16 @@ static void powerSave(uint32_t now) {
      if (mode == Mode::Idle) face::setExpr(Expr::Sleeping);
      dimmed = true;
    }
@@ -806,7 +813,7 @@ index 45e4b96..49f67b4 100644
    }
  }
  
-@@ -510,14 +543,17 @@ static void onWsEvent(WStype_t type, uint8_t* payload, size_t length) {
+@@ -510,14 +550,17 @@ static void onWsEvent(WStype_t type, uint8_t* payload, size_t length) {
  // ---- connectivity ----------------------------------------------------------
  
  static void startWifi() {
@@ -826,7 +833,22 @@ index 45e4b96..49f67b4 100644
    }
  }
  
-@@ -566,15 +602,17 @@ static void startRelayConnection() {
+@@ -542,14 +585,9 @@ static void startRelayConnection() {
+       host = ip.toString();
+     }
+   }
+-#ifdef KAI_PSK_HEX
+   // Encrypted and mutually authenticated (TLS 1.2 ECDHE-PSK): an impostor on the Wi-Fi can't complete the
+   // handshake, so the token and the owner's speech never reach it. ~0.2 s at 240 MHz.
+   ws.beginSslWithPsk(host.c_str(), RELAY_TLS_PORT, "/ws", KAI_PSK_IDENTITY, KAI_PSK_HEX);
+-#else
+-#warning "No KAI_PSK_HEX in secrets.h: the link to the relay is unencrypted"
+-  ws.begin(host, RELAY_PORT, "/ws");
+-#endif
+   ws.setExtraHeaders("Authorization: Bearer " KAI_DEVICE_TOKEN);
+   ws.onEvent(onWsEvent);
+   ws.setReconnectInterval(wokeFromSleep ? 1000 : 3000);
+@@ -566,15 +604,17 @@ static void startRelayConnection() {
  }
  
  static void maintainConnection() {
@@ -846,7 +868,7 @@ index 45e4b96..49f67b4 100644
      }
      if (!earlyTalk) {
        if (mode == Mode::Listening) audio::stopMic(discardMic);
-@@ -598,20 +636,289 @@ static void maintainConnection() {
+@@ -598,20 +638,289 @@ static void maintainConnection() {
      ws.disconnect();
      wsStarted = false;
      cachedRelayIp = 0;
@@ -1141,7 +1163,7 @@ index 45e4b96..49f67b4 100644
    c.lines[c.count++] = String("Relay ") + (wsConnected ? "connected" : "offline");
    c.lines[c.count++] = String("Battery ") + String(M5.Power.getBatteryLevel()) + "%" +
                         (audio::onUsbPower() ? " on USB" : "");
-@@ -620,13 +927,36 @@ static void showStatus() {
+@@ -620,13 +929,36 @@ static void showStatus() {
    showCard(c);
  }
  
@@ -1178,7 +1200,7 @@ index 45e4b96..49f67b4 100644
  
    // Front: push to talk (also barges in while Kai is talking).
    if (M5.BtnA.wasPressed() && wsConnected && mode != Mode::Listening) {
-@@ -645,13 +975,37 @@ static void handleButtons() {
+@@ -645,13 +977,37 @@ static void handleButtons() {
      setMode(Mode::Thinking);
    }
  
@@ -1217,7 +1239,7 @@ index 45e4b96..49f67b4 100644
        showStatus();
      }
    } else if (M5.BtnB.wasClicked()) {
-@@ -671,6 +1025,10 @@ void setup() {
+@@ -671,6 +1027,10 @@ void setup() {
    cfg.fallback_board = m5::board_t::board_M5StickS3;
    M5.begin(cfg);
    Serial.begin(115200);
@@ -1228,7 +1250,7 @@ index 45e4b96..49f67b4 100644
  
    M5.Power.setExtOutput(false);  // 5V boost for Grove/Hat/IR: unused, and it was left running
    M5.Imu.sleep();                // not used yet
-@@ -688,25 +1046,66 @@ void setup() {
+@@ -688,25 +1048,66 @@ void setup() {
      if (untouchedTimerWakes < 255) untouchedTimerWakes++;
    }
  

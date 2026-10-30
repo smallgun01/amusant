@@ -29,6 +29,8 @@ jobs:
           persist-credentials: false
       - name: Check scoped outer diff policy
         run: python3 patches/sticks3-baseline/test_diff_policy.py
+      - name: Test secret-free preflash validation
+        run: python3 -m unittest discover -s patches/sticks3-baseline -p test_preflash.py -v
       - name: Reconstruct both source trees
         run: |
           git clone --no-tags https://github.com/zbruceli/kai.git /tmp/kai-upstream
