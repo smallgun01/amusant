@@ -1409,6 +1409,7 @@ async def run(host: str, port: int, token: str, *, device_mode: str = "pcm") -> 
     }
     if ssl_context is not None:
         serve_options["ssl"] = ssl_context
+        serve_options["ssl_handshake_timeout"] = 15.0
     try:
         loop = asyncio.get_running_loop()
         stop_event = asyncio.Event()
