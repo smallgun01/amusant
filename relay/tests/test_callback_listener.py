@@ -346,9 +346,12 @@ class CallbackListenerTests(unittest.IsolatedAsyncioTestCase):
         while device_port == callback_port:
             device_port = self.port()
         seen = threading.Event()
+        device_ready = threading.Event()
         calls = []
 
         def fake_routine(_url, body, _bearer, _proxy, _timeout):
+            if not device_ready.wait(5):
+                raise TimeoutError("fake device did not connect")
             payload = json.loads(body)
             calls.append(payload["task_id"])
             report = {
@@ -395,6 +398,34 @@ class CallbackListenerTests(unittest.IsolatedAsyncioTestCase):
         ):
             process = asyncio.create_task(run("127.0.0.1", device_port, "offline-device-token", device_mode="pcm"))
             try:
+                ws = None
+                for _ in range(200):
+                    if process.done():
+                        await process
+                    try:
+                        ws = await websocket_connect(
+                            f"ws://127.0.0.1:{device_port}/ws", open_timeout=2,
+                            additional_headers={"Authorization": "Bearer offline-device-token"}, proxy=None)
+                        break
+                    except OSError:
+                        await asyncio.sleep(0.02)
+                self.assertIsNotNone(ws, "device listener must start")
+                try:
+                    await ws.send(json.dumps({"type": "hello"}))
+                    self.assertEqual(json.loads(await asyncio.wait_for(ws.recv(), 3)),
+                                     {"type": "inbox", "count": 0})
+                    device_ready.set()
+                    self.assertEqual(json.loads(await asyncio.wait_for(ws.recv(), 5)),
+                                     {"type": "inbox", "count": 1})
+                finally:
+                    await ws.close()
+                async with websocket_connect(
+                    f"ws://127.0.0.1:{device_port}/ws", open_timeout=2,
+                    additional_headers={"Authorization": "Bearer offline-device-token"}, proxy=None,
+                ) as reconnected:
+                    await reconnected.send(json.dumps({"type": "hello"}))
+                    self.assertEqual(json.loads(await asyncio.wait_for(reconnected.recv(), 3)),
+                                     {"type": "inbox", "count": 1})
                 for _ in range(200):
                     if seen.is_set() or process.done():
                         break
@@ -404,6 +435,7 @@ class CallbackListenerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(store.get_by_task_id(task_id)["status"], "completed")
                 self.assertIsNotNone(store.get_inbox(task_id))
             finally:
+                device_ready.set()
                 if "event" in stop:
                     stop["event"].set()
                 await asyncio.wait_for(process, 10)
