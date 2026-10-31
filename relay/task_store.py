@@ -2095,6 +2095,25 @@ class SQLiteTaskStore:
         finally:
             connection.close()
 
+    def inbox_ready(self, *, client_id: str) -> bool:
+        """Read-only presence of an unviewed, readable final result for this client."""
+        if not isinstance(client_id, str) or not _ID_RE.fullmatch(client_id):
+            raise AdmissionUnavailable("invalid_identity")
+        connection = self._connect()
+        try:
+            return connection.execute(
+                "SELECT 1 FROM slow_tasks AS t JOIN task_inbox AS i USING(task_id) "
+                "JOIN task_results AS r USING(task_id) "
+                "WHERE t.client_id=? AND i.delivery_state IN ('pending','notified') "
+                "AND (t.status='completed' OR (t.status='failed' AND "
+                "t.executor_kind='grok_callback' AND t.grok_reported_outcome='not_completed')) "
+                "AND r.speak IS NOT NULL LIMIT 1", (client_id,),
+            ).fetchone() is not None
+        except sqlite3.Error:
+            raise AdmissionUnavailable("task_store_unavailable") from None
+        finally:
+            connection.close()
+
     def lookup_inbox(
         self,
         *,

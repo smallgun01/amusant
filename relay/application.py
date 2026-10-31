@@ -214,6 +214,7 @@ def build_relay_handler(
     post_tool_ack_max_duration_seconds: float = POST_TOOL_ACK_MAX_DURATION_SECONDS,
     executor_kind: str = DEFAULT_SLOW_EXECUTOR,
     admission_available: bool = True,
+    inbox_badges=None,
 ):
     """Compose Live tool declaration + per-authenticated-session admission.
 
@@ -271,6 +272,7 @@ def build_relay_handler(
             on_admitted=on_admitted,
             executor_kind=executor_kind,
             admission_available=admission_available,
+            on_inbox_read=None if inbox_badges is None else inbox_badges.notify,
         )
 
     return make_handler(
@@ -282,6 +284,7 @@ def build_relay_handler(
         conversation_id_factory=conversation_id_factory,
         post_tool_ack_timeout_seconds=post_tool_ack_timeout_seconds,
         post_tool_ack_max_duration_seconds=post_tool_ack_max_duration_seconds,
+        inbox_badges=inbox_badges,
     )
 
 
@@ -295,6 +298,7 @@ def build_supported_relay_runtime(
     post_tool_ack_timeout_seconds: float = POST_TOOL_ACK_TIMEOUT_SECONDS,
     post_tool_ack_max_duration_seconds: float = POST_TOOL_ACK_MAX_DURATION_SECONDS,
     grok_listener_available: bool = True,
+    inbox_badges=None,
 ):
     """Build the selected executor dispatcher and Live handler.
 
@@ -308,6 +312,10 @@ def build_supported_relay_runtime(
     if config.slow_executor_kind == "grok_callback" and config.task_store_kind != "sqlite":
         raise ValueError("grok_callback requires the existing SQLite TaskStore")
     store = build_task_store(environ, max_pending_tasks=config.max_pending_tasks)
+    if inbox_badges is not None:
+        if config.slow_executor_kind != "grok_callback":
+            raise ValueError("Inbox badges require the SQLite Grok profile")
+        inbox_badges.store = store
     selected_executor = None
     if config.slow_executor_kind == "openab_acp":
         selected_executor = load_acp_executor(environ)
@@ -377,6 +385,7 @@ def build_supported_relay_runtime(
         on_admitted=None if dispatcher is None else dispatcher.notify,
         executor_kind=config.slow_executor_kind,
         admission_available=selected_executor is not None,
+        inbox_badges=inbox_badges,
         client_factory=client_factory,
         sdk_types=sdk_types,
         conversation_id_factory=conversation_id_factory,
@@ -391,6 +400,7 @@ def build_grok_callback_receiver_app(
     store,
     authenticated_client_id: str,
     environ: Mapping[str, str],
+    on_committed=None,
 ):
     """Build the restricted ASGI app without binding a public or local listener.
 
@@ -416,6 +426,7 @@ def build_grok_callback_receiver_app(
         trusted_hosts=hosts,
         expected_port=port,
         max_inflight=int(raw_limit),
+        on_committed=on_committed,
     )
 
 

@@ -123,6 +123,7 @@ def create_grok_callback_app(
     max_inflight: int,
     expected_port: int | None = None,
     store_timeout_seconds: float = 5.0,
+    on_committed=None,
 ) -> Callable[..., Awaitable[None]]:
     """Create a one-route app. TLS termination/reverse proxy remain a separate gate.
 
@@ -171,7 +172,7 @@ def create_grok_callback_app(
             status, body, headers = _response(429, {"accepted": False, "error": "callback capacity is full"})
         else:
             try:
-                status, body, headers = await _handle(scope, receive, store, client_id, hosts, expected_port, store_timeout_seconds)
+                status, body, headers = await _handle(scope, receive, store, client_id, hosts, expected_port, store_timeout_seconds, on_committed)
             finally:
                 limiter.leave()
         await send({"type": "http.response.start", "status": status, "headers": headers})
@@ -180,7 +181,7 @@ def create_grok_callback_app(
     return app
 
 
-async def _handle(scope, receive, store, client_id, hosts, expected_port, store_timeout_seconds):
+async def _handle(scope, receive, store, client_id, hosts, expected_port, store_timeout_seconds, on_committed=None):
     headers = _headers(scope)
     host_values = headers.get(b"host", [])
     if len(host_values) != 1:
@@ -272,20 +273,28 @@ async def _handle(scope, receive, store, client_id, hosts, expected_port, store_
         validated = validate_grok_callback(payload, result_token=token)
     except GrokResultError:
         return _response(400, {"accepted": False, "error": "report does not match the bounded schema"})
-    try:
-        receipt = await asyncio.wait_for(
-            asyncio.to_thread(
-                store.commit_grok_callback,
-                client_id=client_id,
-                task_id=validated.task_id,
-                token=token,
-                digest=validated.digest,
-                reported_outcome=validated.reported_outcome,
-                result=validated.result,
-                now=datetime.now(timezone.utc),
-            ),
-            timeout=float(store_timeout_seconds),
+    async def commit():
+        receipt = await asyncio.to_thread(
+            store.commit_grok_callback,
+            client_id=client_id, task_id=validated.task_id, token=token,
+            digest=validated.digest, reported_outcome=validated.reported_outcome,
+            result=validated.result, now=datetime.now(timezone.utc),
         )
+        if not receipt.duplicate and not receipt.late and on_committed is not None:
+            try:
+                on_committed(client_id)
+            except Exception:
+                pass
+        return receipt
+
+    commit_task = asyncio.create_task(commit())
+    # The SQLite thread can commit after a response timeout; still reconcile then.
+    def observe_commit(done):
+        if not done.cancelled():
+            done.exception()
+    commit_task.add_done_callback(observe_commit)
+    try:
+        receipt = await asyncio.wait_for(asyncio.shield(commit_task), timeout=float(store_timeout_seconds))
     except GrokCallbackUnauthorized:
         return _response(401, {"accepted": False, "error": "task capability is not valid"})
     except GrokCallbackConflict:
