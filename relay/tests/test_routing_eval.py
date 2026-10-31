@@ -83,6 +83,22 @@ class RoutingEvalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({case["expect"] for case in cases}, {"FAST", "DELEGATE", "STATUS"})
         self.assertTrue(any(case.get("history") and case["id"] == "accept_offer" for case in cases))
 
+    async def test_clarification_fixtures_use_fake_provider_only(self):
+        cases = load_cases(Path(__file__).parents[1] / "evals" / "clarification_cases.jsonl")
+        self.assertEqual(len(cases), 9)
+        self.assertTrue(next(c for c in cases if c["id"] == "C08")["history"])
+        self.assertNotIn("history", next(c for c in cases if c["id"] == "C09"))
+        for case in cases:
+            if case["expect"] == "FAST":
+                message = Obj(tool_call=None, server_content=Obj(turn_complete=True))
+            else:
+                name = {"DELEGATE": "delegate_task", "STATUS": "check_task_status"}[case["expect"]]
+                message = Obj(tool_call=Obj(function_calls=[Obj(name=name)]))
+            live = FakeLive([message])
+            route, _ = await first_decision(live, [case["say"]], 1)
+            self.assertEqual(route, case["expect"], case["id"])
+            self.assertEqual(len(live.sent), 1)
+
     def test_actual_sdk_relay_declarations_preserve_schema(self):
         try:
             from google.genai import types

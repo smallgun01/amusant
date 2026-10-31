@@ -27,6 +27,8 @@ class CompanionPersonaTests(unittest.TestCase):
         self.assertIn("not keywords or service names", prompt)
         self.assertIn("Agent-held history", prompt)
         self.assertIn("an offer does not start a task", prompt)
+        self.assertIn("essential intent or indispensable action details are missing", prompt)
+        self.assertNotIn("clarification only when", prompt)
         self.assertIn("unless delegate_task returns status=accepted", prompt)
         self.assertIn("Admission does not prove the Agent has started or completed work", prompt)
         self.assertIn("A cancellation request does not prove the remote Agent stopped", prompt)
