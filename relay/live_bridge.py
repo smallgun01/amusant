@@ -166,6 +166,56 @@ def _safe_device(value: Any) -> str:
     return cleaned or "kai-sim"
 
 
+class InboxBadgeSessions:
+    """Coalesce durable-state reconciliation for authenticated hello sessions."""
+
+    def __init__(self):
+        self.store = None
+        self._sessions = {}
+
+    def register(self, client_id, send):
+        session = {"client_id": client_id, "send": send, "generation": 0, "task": None}
+        key = object()
+        self._sessions[key] = session
+        self._schedule(session)
+        return key
+
+    def unregister(self, key):
+        session = self._sessions.pop(key, None)
+        if session is not None and session["task"] is not None:
+            session["task"].cancel()
+
+    def notify(self, client_id):
+        for session in tuple(self._sessions.values()):
+            if session["client_id"] == client_id:
+                self._schedule(session)
+
+    def _schedule(self, session):
+        session["generation"] += 1
+        if session["task"] is None or session["task"].done():
+            session["task"] = asyncio.create_task(self._reconcile(session))
+
+    async def _reconcile(self, session):
+        try:
+            while True:
+                generation = session["generation"]
+                ready = await asyncio.wait_for(
+                    asyncio.to_thread(self.store.inbox_ready, client_id=session["client_id"]), 2.0
+                )
+                if generation != session["generation"]:
+                    continue
+                await asyncio.wait_for(session["send"]({"type": "inbox", "count": int(ready)}), 2.0)
+                if generation == session["generation"]:
+                    return
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            # If state changed during a failed send/query, retry the newer state.
+            if generation != session["generation"]:
+                session["task"] = asyncio.create_task(self._reconcile(session))
+            return
+
+
 def make_handler(
     expected_token: str,
     provider_factory: ProviderFactory,
@@ -179,6 +229,7 @@ def make_handler(
     post_tool_ack_max_duration_seconds: float = POST_TOOL_ACK_MAX_DURATION_SECONDS,
     spoken_ack_timeout_seconds: float = SPOKEN_ACK_TIMEOUT_SECONDS,
     spoken_ack_max_duration_seconds: float = SPOKEN_ACK_MAX_DURATION_SECONDS,
+    inbox_badges: InboxBadgeSessions | None = None,
 ):
     """Build a Kai-compatible /ws handler with explicit local turn ownership."""
     if slow_path_tool_handler_factory is not None:
@@ -216,6 +267,7 @@ def make_handler(
             await ws.close(code=1008, reason="unauthorized client")
             return
 
+        badge_key = None
         session_slow_path_tool_handler = slow_path_tool_handler
         if slow_path_tool_handler_factory is not None:
             try:
@@ -1192,6 +1244,8 @@ def make_handler(
                 kind = control.get("type")
                 if kind == "hello":
                     device = _safe_device(control.get("device"))
+                    if inbox_badges is not None and badge_key is None:
+                        badge_key = inbox_badges.register(authenticated_client_id, send_json)
                 elif kind == "ptt_start":
                     previous = active_turn
                     if previous is not None and previous.ptt_open:
@@ -1264,6 +1318,8 @@ def make_handler(
                 await send_json({"type": "card", "title": "Live unavailable", "lines": ["Provider error (runtime_error).", "No audio was saved."], "icon": "mic"})
                 await send_json({"type": "state", "state": "idle"})
         finally:
+            if badge_key is not None:
+                inbox_badges.unregister(badge_key)
             disconnected_turn = active_turn
             if disconnected_turn is not None:
                 cancel_post_tool_timeout(disconnected_turn)
@@ -1325,12 +1381,14 @@ async def run(host: str, port: int, token: str, *, device_mode: str = "pcm") -> 
             # A listener with an unsafe binding or Host contract must not open.
             # Preserve FAST and existing ledger state while SLOW admission is disabled.
             LOG.warning("grok_callback_listener_configuration_invalid; slow admission disabled")
+        inbox_badges = InboxBadgeSessions()
         handler, dispatcher, store = build_process_runtime(
-            token, os.environ, include_store=True, grok_listener_available=callback_config is not None,
+            token, os.environ, include_store=True, inbox_badges=inbox_badges, grok_listener_available=callback_config is not None,
         )
         if callback_config is not None:
             callback_app = build_grok_callback_receiver_app(
                 store=store, authenticated_client_id=os.environ.get("AMUSANT_CLIENT_ID", ""), environ=os.environ,
+                on_committed=inbox_badges.notify,
             )
     else:
         handler, dispatcher = build_process_runtime(token, os.environ)

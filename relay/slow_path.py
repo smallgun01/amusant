@@ -86,6 +86,7 @@ class SlowPathToolRouter:
         on_admitted: Callable[[], None] | None = None,
         executor_kind: str = "openab_acp",
         admission_available: bool = True,
+        on_inbox_change: Callable[[str], None] | None = None,
     ) -> None:
         if not isinstance(client_id, str) or not _ID_RE.fullmatch(client_id):
             raise ValueError("client_id must be a bounded authenticated identity")
@@ -115,6 +116,7 @@ class SlowPathToolRouter:
         self._new_task_id = new_task_id or (lambda: str(uuid4()))
         self._on_admitted = on_admitted
         self._admission_available = admission_available
+        self._on_inbox_change = on_inbox_change
 
     async def __call__(self, event: ToolCallEvent, turn_id: int) -> Mapping[str, JSONValue]:
         if event.name == INBOX_TOOL_NAME:
@@ -134,11 +136,22 @@ class SlowPathToolRouter:
         if validation_error is not None:
             return validation_error
         assert request is not None
+        async def admit_and_sync():
+            receipt = await asyncio.to_thread(self._store.admit, request)
+            if self._on_inbox_change is not None:
+                try:
+                    self._on_inbox_change(self._client_id)
+                except Exception:
+                    pass
+            return receipt
+
+        admission = asyncio.create_task(admit_and_sync())
+        def observe_admission(done):
+            if not done.cancelled():
+                done.exception()
+        admission.add_done_callback(observe_admission)
         try:
-            receipt = await asyncio.wait_for(
-                asyncio.to_thread(self._store.admit, request),
-                timeout=self._timeout,
-            )
+            receipt = await asyncio.wait_for(asyncio.shield(admission), timeout=self._timeout)
         except asyncio.TimeoutError:
             # The SQLite thread may still commit. A same-call retry is deduplicated.
             return {"status": "unknown", "task_id": request.task_id, "code": "acceptance_unconfirmed"}
@@ -267,17 +280,27 @@ class SlowPathToolRouter:
         lookup = getattr(self._store, "lookup_inbox", None)
         if not callable(lookup):
             return {"status": "unavailable", "code": "task_store_unavailable"}
-        try:
-            record = await asyncio.wait_for(
-                asyncio.to_thread(
-                    lookup,
-                    client_id=self._client_id,
-                    task_id=task_id,
-                    speak=speak,
-                    now=self._now(),
-                ),
-                timeout=self._timeout,
+        async def perform_lookup():
+            record = await asyncio.to_thread(
+                lookup, client_id=self._client_id, task_id=task_id,
+                speak=speak, now=self._now(),
             )
+            if (record is not None and record.get("delivery_state") == "read"
+                    and isinstance(record.get("speak"), str) and self._on_inbox_change is not None):
+                try:
+                    self._on_inbox_change(self._client_id)
+                except Exception:
+                    pass
+            return record
+
+        lookup_task = asyncio.create_task(perform_lookup())
+        # A timed-out thread may still commit a read; observe its eventual result.
+        def observe_lookup(done):
+            if not done.cancelled():
+                done.exception()
+        lookup_task.add_done_callback(observe_lookup)
+        try:
+            record = await asyncio.wait_for(asyncio.shield(lookup_task), timeout=self._timeout)
         except asyncio.TimeoutError:
             return {"status": "unknown", "code": "lookup_unconfirmed"}
         except AdmissionUnavailable:

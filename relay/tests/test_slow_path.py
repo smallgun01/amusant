@@ -315,6 +315,20 @@ class SQLiteSlowPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(retry_store.pending_dispatch_count(), 1)
 
 
+    async def test_late_admission_commit_reconciles_badge_after_timeout(self):
+        store = self.store()
+        notified = asyncio.Event()
+        router = SlowPathToolRouter(
+            store=SlowStore(store), client_id=CLIENT, conversation_id=CONVERSATION,
+            backend_id="example-backend", default_task_kind="agent", max_task_ttl_seconds=600,
+            acceptance_timeout_seconds=0.005, now=lambda: NOW, new_task_id=lambda: TASK_ID,
+            on_inbox_change=lambda client: notified.set(), executor_kind="grok_callback")
+        result = await router(ToolCallEvent("late", "delegate_task", {"task": "Synthetic task"}), 1)
+        self.assertEqual(result["status"], "unknown")
+        await asyncio.wait_for(notified.wait(), 2)
+        self.assertIsNotNone(store.get_by_task_id(TASK_ID))
+        self.assertFalse(store.inbox_ready(client_id=CLIENT))
+
     async def test_confirmed_and_duplicate_admissions_notify_on_owner_loop(self):
         store = self.store()
         notifications = []

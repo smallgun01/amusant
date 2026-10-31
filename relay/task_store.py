@@ -2095,6 +2095,27 @@ class SQLiteTaskStore:
         finally:
             connection.close()
 
+    def inbox_ready(self, *, client_id: str) -> bool:
+        """Read-only presence of a readable, unviewed result on the latest task."""
+        if not isinstance(client_id, str) or not _ID_RE.fullmatch(client_id):
+            raise AdmissionUnavailable("invalid_identity")
+        connection = self._connect()
+        try:
+            return connection.execute(
+                "SELECT 1 FROM slow_tasks AS t JOIN task_inbox AS i USING(task_id) "
+                "JOIN task_results AS r USING(task_id) "
+                "WHERE t.task_id=(SELECT task_id FROM slow_tasks WHERE client_id=? "
+                "ORDER BY created_at DESC, task_id DESC LIMIT 1) "
+                "AND i.delivery_state IN ('pending','notified') "
+                "AND (t.status='completed' OR (t.status='failed' AND "
+                "t.executor_kind='grok_callback' AND t.grok_reported_outcome='not_completed')) "
+                "AND r.speak IS NOT NULL LIMIT 1", (client_id,),
+            ).fetchone() is not None
+        except sqlite3.Error:
+            raise AdmissionUnavailable("task_store_unavailable") from None
+        finally:
+            connection.close()
+
     def lookup_inbox(
         self,
         *,
@@ -2130,7 +2151,7 @@ class SQLiteTaskStore:
                     "FROM slow_tasks AS t LEFT JOIN dispatch_outbox AS o USING(task_id) "
                     "LEFT JOIN task_inbox AS i USING(task_id) "
                     "LEFT JOIN task_results AS r USING(task_id) "
-                    "WHERE t.client_id=? ORDER BY t.created_at DESC LIMIT 1",
+                    "WHERE t.client_id=? ORDER BY t.created_at DESC,t.task_id DESC LIMIT 1",
                     (client_id,),
                 ).fetchone()
             else:
