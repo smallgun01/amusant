@@ -272,7 +272,7 @@ def build_relay_handler(
             on_admitted=on_admitted,
             executor_kind=executor_kind,
             admission_available=admission_available,
-            on_inbox_read=None if inbox_badges is None else inbox_badges.notify,
+            on_inbox_change=None if inbox_badges is None else inbox_badges.notify,
         )
 
     return make_handler(

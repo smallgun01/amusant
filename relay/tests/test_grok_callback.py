@@ -166,7 +166,7 @@ class GrokCallbackTests(unittest.IsolatedAsyncioTestCase):
         router = SlowPathToolRouter(store=self.store, client_id=CLIENT, conversation_id="conversation-1",
             backend_id="grok_bot", default_task_kind="agent", max_task_ttl_seconds=600,
             acceptance_timeout_seconds=1, now=lambda: self.now, executor_kind="grok_callback",
-            on_inbox_read=hub.notify)
+            on_inbox_change=hub.notify)
         result = await router(ToolCallEvent(name=INBOX_TOOL_NAME, call_id="read",
                                             arguments={"task_id": self.task_id}), 1)
         self.assertEqual(result["delivery_state"], "read")
@@ -269,7 +269,7 @@ class GrokCallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(good.frames, [{"type": "inbox", "count": 1}])
         self.assertEqual(hub._sessions, {})
 
-    async def test_older_unread_result_keeps_badge_after_latest_read(self):
+    async def test_older_unread_result_is_retained_after_latest_read(self):
         from relay.live_bridge import InboxBadgeSessions
         token = "fake-token"
         self.store.begin_grok_submission(
@@ -301,14 +301,66 @@ class GrokCallbackTests(unittest.IsolatedAsyncioTestCase):
         router = SlowPathToolRouter(store=self.store, client_id=CLIENT, conversation_id="conversation-1",
             backend_id="grok_bot", default_task_kind="agent", max_task_ttl_seconds=600,
             acceptance_timeout_seconds=1, now=lambda: now, executor_kind="grok_callback",
-            on_inbox_read=hub.notify)
+            on_inbox_change=hub.notify)
         result = await router(ToolCallEvent(name=INBOX_TOOL_NAME, call_id="latest", arguments={}), 3)
         self.assertEqual(result["task_id"], newer)
         self.assertEqual(self.store.get_inbox(newer)["delivery_state"], "read")
         self.assertEqual(self.store.get_inbox(self.task_id)["delivery_state"], "pending")
         await hub._sessions[key]["task"]
-        self.assertEqual(frames[-1], {"type": "inbox", "count": 1})
+        self.assertEqual(frames[-1], {"type": "inbox", "count": 0})
         hub.unregister(key)
+
+    async def _latest_task_admission_and_result(self, outcome):
+        from relay.live_bridge import InboxBadgeSessions
+        token = "fake-token"
+        self.store.begin_grok_submission(
+            self.task_id, token_sha256=hashlib.sha256(token.encode()).hexdigest(),
+            token_expires_at=self.now + timedelta(minutes=5),
+            callback_deadline_at=self.now + timedelta(minutes=2), now=self.now)
+        self.assertEqual((await _asgi_call(self.callback_app, _report(self.task_id), token=token))[0], 200)
+        hub = InboxBadgeSessions()
+        hub.store = self.store
+        frames = []
+        async def send(frame):
+            frames.append(frame["count"])
+        key = hub.register(CLIENT, send)
+        await hub._sessions[key]["task"]
+        self.assertEqual(frames[-1], 1)
+        now = self.now + timedelta(seconds=1)
+        newer = str(uuid4())
+        router = SlowPathToolRouter(store=self.store, client_id=CLIENT, conversation_id="conversation-2",
+            backend_id="grok_bot", default_task_kind="agent", max_task_ttl_seconds=600,
+            acceptance_timeout_seconds=1, now=lambda: now, new_task_id=lambda: newer,
+            executor_kind="grok_callback", on_inbox_change=hub.notify)
+        receipt = await router(ToolCallEvent(name="delegate_task", call_id="newer",
+                                             arguments={"task": "Synthetic task"}), 1)
+        self.assertEqual(receipt["status"], "accepted")
+        await hub._sessions[key]["task"]
+        self.assertEqual(frames[-1], 0)
+        self.assertEqual(self.store.get_inbox(self.task_id)["delivery_state"], "pending")
+        self.store.claim_due(now=now, lease_seconds=30)
+        self.assertFalse(self.store.inbox_ready(client_id=CLIENT))
+        self.store.begin_grok_submission(
+            newer, token_sha256=hashlib.sha256(token.encode()).hexdigest(),
+            token_expires_at=now + timedelta(minutes=5),
+            callback_deadline_at=now + timedelta(minutes=2), now=now)
+        app = create_grok_callback_app(self.store, CLIENT, trusted_hosts=["callback.example.com"],
+            expected_port=8443, max_inflight=2, on_committed=hub.notify)
+        self.assertEqual((await _asgi_call(app, _report(newer, outcome=outcome), token=token))[0], 200)
+        await hub._sessions[key]["task"]
+        self.assertEqual(frames[-1], 1)
+        result = await router(ToolCallEvent(name=INBOX_TOOL_NAME, call_id="latest", arguments={}), 2)
+        self.assertEqual(result["task_id"], newer)
+        await hub._sessions[key]["task"]
+        self.assertEqual(frames[-1], 0)
+        self.assertEqual(self.store.get_inbox(self.task_id)["delivery_state"], "pending")
+        hub.unregister(key)
+
+    async def test_latest_admission_and_completed_result_badge(self):
+        await self._latest_task_admission_and_result("completed")
+
+    async def test_latest_admission_and_not_completed_result_badge(self):
+        await self._latest_task_admission_and_result("not_completed")
 
     async def test_badge_racing_sync_reconciles_after_new_state(self):
         from relay.live_bridge import InboxBadgeSessions
