@@ -1,0 +1,9 @@
+{"id":"C01","say":"幫我把去蝦皮取件加進行事曆。","expect":"FAST"}
+{"id":"C02","say":"幫我把明天下午兩點去蝦皮取件加進行事曆。","expect":"DELEGATE"}
+{"id":"C03","say":"幫我把明天去蝦皮取件設成全天行程。","expect":"DELEGATE"}
+{"id":"C04","say":"幫我把去蝦皮取件和去商店換鞋加入行事曆。","expect":"FAST"}
+{"id":"C05","say":"幫我把明天下午兩點去商店換鞋加進行事曆。","expect":"DELEGATE"}
+{"id":"C06","say":"幫我深入研究台灣便利商店取件方式，整理比較。","expect":"DELEGATE"}
+{"id":"C07","history":[["user","幫我交辦查信箱。"],["model","已受理。"]],"say":"好了嗎？","expect":"STATUS"}
+{"id":"C08","history":[["user","幫我把去蝦皮取件和去商店換鞋加入行事曆。"],["model","兩件事分別是哪一天、幾點，還是全天？"]],"say":"取件明天下午兩點，換鞋後天全天。","expect":"DELEGATE"}
+{"id":"C09","say":"剛剛那兩件事是明天下午兩點和後天全天，幫我加進去。","expect":"FAST"}
